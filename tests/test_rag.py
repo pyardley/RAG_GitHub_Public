@@ -14,7 +14,7 @@ from rag.answer import ollama_payload, passage_limits, visible_answer
 from rag.follow import calls_in, choose_steps, contains_step, feature_paths, page_symbol, step_body, step_phrases
 from rag.gitrepo import default_branch_name
 from rag.web import Handler, _progress_view, github_blob_url, run_query, start_ingest
-from rag.search import Hit
+from rag.search import Hit, _feature_files, asks_for_features, topic_terms
 from rag.chunker import chunk_source
 from rag.cli import main
 from rag.files import is_skipped, iter_source_files, language_for, parse_repo
@@ -25,6 +25,10 @@ from rag.text import (
     search_text,
     symbol_matches,
 )
+
+
+def _hit(path: str, symbol: str, content: str, score: float) -> Hit:
+    return Hit(1, "hmcts/hwf-publicapp", path, 1, 2, symbol, "scenario", content, score)
 
 
 class ChunkerTest(unittest.TestCase):
@@ -53,6 +57,33 @@ class ChunkerTest(unittest.TestCase):
         )
         self.assertEqual(calls_in(body), [("address_page", "submit_full_address")])
         self.assertEqual(page_symbol("address_page", "submit_full_address"), "AddressPage#submit_full_address")
+        self.assertTrue(asks_for_features("Show features that test savings thresholds"))
+        self.assertEqual(topic_terms("Show features that test savings thresholds"), ["savings", "thresholds"])
+        self.assertFalse(
+            asks_for_features(
+                "Explain how features like /features/address/address_married.feature "
+                "are turned into button presses"
+            )
+        )
+        help_page = _hit("features/savings_investment/savings_investment_single.feature", "Help with savings", "Then I should see the help text", 0.9)
+        band = _hit(
+            "features/savings_investment/savings_investment_single.feature",
+            "Savings and investment page refund / Selecting £4,250 to £15,999",
+            "When I submit the form with between £4,250 and £15,999 checked",
+            0.4,
+        )
+        timeout = _hit(
+            "features/savings_investment/savings_investment_single.feature",
+            "Savings and investments page timeout (£16,000 or more option)",
+            "When I slowly submit the form with £16,000 or more checked",
+            0.95,
+        )
+        onward = _hit("features/marital_status.feature", "Selecting single", "Then I should be taken to savings and investments page", 0.8)
+        listed = _feature_files([help_page, band, timeout, onward], ["savings", "thresholds"], 8)
+        self.assertEqual(
+            [(hit.path, hit.symbol) for hit in listed],
+            [("features/savings_investment/savings_investment_single.feature", band.symbol)],
+        )
         page = "def submit_full_address\n  address_page.street('102')\n  continue\nend\n"
         self.assertEqual(
             calls_in(page),

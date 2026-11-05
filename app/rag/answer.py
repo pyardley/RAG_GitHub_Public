@@ -17,7 +17,7 @@ from rag.config import (
     OPENAI_BASE_URL,
     OPENAI_MODEL,
 )
-from rag.search import Hit
+from rag.search import Hit, asks_for_features
 
 _THINK_BLOCK = re.compile(r"<think>.*?</think>\s*", re.DOTALL | re.IGNORECASE)
 
@@ -26,6 +26,11 @@ _QUERY_INSTRUCTIONS = (
     "code passages. Cite file paths and line numbers from the passages. If the "
     "passages do not contain the answer, say what is missing. Do not invent "
     "files, methods, or behaviour."
+)
+_FEATURE_LIST_INSTRUCTIONS = (
+    " The question asks for feature files. List each feature file once, with its "
+    "scenario name and line numbers. Do not describe step definitions, page "
+    "objects, or any file that is not a feature."
 )
 _TRACE_INSTRUCTIONS = (
     " These passages contain a feature file and the code that carries a step out. "
@@ -175,7 +180,7 @@ def _messages(
     per_passage: int,
     total_chars: int | None,
 ) -> list[dict[str, str]]:
-    instructions = _IMPACT_INSTRUCTIONS if impact else _query_instructions(hits)
+    instructions = _IMPACT_INSTRUCTIONS if impact else _query_instructions(question, hits)
     passages = _format_passages(hits, max_hits=max_hits, per_passage=per_passage, total_chars=total_chars)
     return [
         {"role": "system", "content": instructions},
@@ -183,7 +188,9 @@ def _messages(
     ]
 
 
-def _query_instructions(hits: list[Hit]) -> str:
+def _query_instructions(question: str, hits: list[Hit]) -> str:
+    if asks_for_features(question):
+        return _QUERY_INSTRUCTIONS + _FEATURE_LIST_INSTRUCTIONS
     paths = {hit.path for hit in hits}
     has_feature = any(path.endswith(".feature") for path in paths)
     has_runner = any(

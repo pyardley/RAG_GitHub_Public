@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, replace
 
 import psycopg
 
@@ -29,11 +30,31 @@ class Hit:
     score: float
 
 
+def asks_for_features(question: str) -> bool:
+    """A request for the feature files themselves, rather than how a step runs."""
+    from rag.follow import feature_paths
+
+    if feature_paths(question) or _HOW_IT_RUNS.search(question):
+        return False
+    return _FEATURE_LIST.search(question) is not None
+
+
+def topic_terms(question: str) -> list[str]:
+    terms: list[str] = []
+    for word in re.findall(r"[A-Za-z0-9]+", question.lower()):
+        if len(word) < 3 or word in _LIST_WORDS or word in terms:
+            continue
+        terms.append(word)
+    return terms
+
+
 def search(conn, repository_ids: list[int], question: str, k: int) -> list[Hit]:
     from rag.embedder import Embedder
 
     if k < 1:
         raise ValueError("Result count must be at least 1")
+    listing = asks_for_features(question)
+    terms = topic_terms(question) if listing else []
     embedding = _vector_literal(Embedder().embed_query(question))
     sql = """
         WITH semantic AS (
@@ -42,6 +63,7 @@ def search(conn, repository_ids: list[int], question: str, k: int) -> list[Hit]:
                 SELECT id, embedding <=> %(embedding)s::vector AS ord
                 FROM chunks
                 WHERE repository_id = ANY(%(repos)s)
+                  AND (%(features_only)s = FALSE OR right(path, 8) = '.feature')
                 ORDER BY ord
                 LIMIT 50
             ) nearest
@@ -49,11 +71,23 @@ def search(conn, repository_ids: list[int], question: str, k: int) -> list[Hit]:
         lexical AS (
             SELECT id, row_number() OVER (ORDER BY rank DESC) AS rnk
             FROM (
-                SELECT id, ts_rank_cd(tsv, plainto_tsquery('simple', %(query)s)) AS rank
+                SELECT id,
+                       ts_rank_cd(
+                           tsv,
+                           CASE WHEN %(lexical_mode)s = 'or'
+                                THEN to_tsquery('simple', %(lexical)s)
+                                ELSE plainto_tsquery('simple', %(lexical)s)
+                           END
+                       ) AS rank
                 FROM chunks
                 WHERE repository_id = ANY(%(repos)s)
-                  AND numnode(plainto_tsquery('simple', %(query)s)) > 0
-                  AND tsv @@ plainto_tsquery('simple', %(query)s)
+                  AND (%(features_only)s = FALSE OR right(path, 8) = '.feature')
+                  AND %(lexical_mode)s <> 'none'
+                  AND CASE WHEN %(lexical_mode)s = 'or'
+                           THEN tsv @@ to_tsquery('simple', %(lexical)s)
+                           ELSE numnode(plainto_tsquery('simple', %(lexical)s)) > 0
+                                AND tsv @@ plainto_tsquery('simple', %(lexical)s)
+                      END
                 ORDER BY rank DESC
                 LIMIT 50
             ) matched
@@ -71,10 +105,21 @@ def search(conn, repository_ids: list[int], question: str, k: int) -> list[Hit]:
     with conn.cursor() as cur:
         cur.execute(
             sql,
-            {"embedding": embedding, "repos": repository_ids, "query": question, "k": k},
+            {
+                "embedding": embedding,
+                "repos": repository_ids,
+                "lexical": " | ".join(terms) if terms else question,
+                "lexical_mode": "or" if terms else "and",
+                "features_only": listing,
+                "k": max(k, 40) if listing else k,
+            },
         )
         hits = [_hit_from_row(row) for row in cur.fetchall()]
-    chain = _feature_chain(conn, repository_ids, question, hits)
+    if listing:
+        hits = _feature_files(hits, terms, k)
+        chain: list[Hit] = []
+    else:
+        chain = _feature_chain(conn, repository_ids, question, hits)
     conn.commit()
     return _with_chain(chain, hits, k)
 
@@ -206,6 +251,48 @@ def _with_chain(chain: list[Hit], hits: list[Hit], k: int) -> list[Hit]:
     return merged
 
 
+def _boost_topic_paths(hits: list[Hit], terms: list[str]) -> list[Hit]:
+    if not terms:
+        return hits
+    ranked: list[Hit] = []
+    for hit in hits:
+        path = hit.path.lower().replace("_", " ").replace("-", " ")
+        extra = 0.25 * sum(term in path for term in terms)
+        ranked.append(replace(hit, score=hit.score + extra))
+    ranked.sort(key=lambda hit: (-hit.score, hit.path, hit.start_line))
+    return ranked
+
+
+def _feature_files(hits: list[Hit], terms: list[str], k: int) -> list[Hit]:
+    boosted = _boost_topic_paths(hits, terms)
+    named = [hit for hit in boosted if _names_topic(hit, terms)]
+    pool = named or boosted
+    groups: dict[str, list[Hit]] = {}
+    for hit in pool:
+        groups.setdefault(hit.path, []).append(hit)
+    chosen = [_threshold_scenario(group) for group in groups.values()]
+    chosen.sort(key=lambda hit: (-max(item.score for item in groups[hit.path]), hit.path))
+    return chosen[:k]
+
+
+def _names_topic(hit: Hit, terms: list[str]) -> bool:
+    if not terms:
+        return True
+    haystack = f"{hit.path} {hit.symbol or ''}".lower().replace("_", " ").replace("-", " ")
+    return any(term in haystack for term in terms)
+
+
+def _threshold_scenario(hits: list[Hit]) -> Hit:
+    def rank(hit: Hit) -> tuple[bool, bool, float]:
+        symbol = (hit.symbol or "").lower()
+        text = f"{symbol}\n{hit.content}".lower()
+        specific = "£" in text or "threshold" in text or "range" in text
+        incidental = any(word in symbol for word in ("timeout", "navigating", "help with"))
+        return (specific and not incidental, specific, hit.score)
+
+    return max(hits, key=rank)
+
+
 def _reference_order(hit: Hit) -> tuple:
     test = hit.path.startswith(("spec/", "features/", "test/", "tests/", "performance-tests/"))
     return (test, hit.repo, hit.path, hit.start_line)
@@ -227,3 +314,20 @@ def _hit_from_row(row: tuple) -> Hit:
 
 def _vector_literal(values: list[float]) -> str:
     return "[" + ",".join(f"{value:.7f}" for value in values) + "]"
+
+
+_FEATURE_LIST = re.compile(
+    r"\b(?:show|list|find|which|what)\b.{0,80}\bfeatures?\b"
+    r"|\bfeatures?\b.{0,40}\b(?:that|which|test|cover|exercise)\b"
+    r"|\bfeature files?\b",
+    re.IGNORECASE | re.DOTALL,
+)
+_HOW_IT_RUNS = re.compile(
+    r"\b(?:how|implement(?:ed|ation|s)?|turned into|button|step definition|page object)\b",
+    re.IGNORECASE,
+)
+_LIST_WORDS = {
+    "show", "list", "find", "which", "what", "feature", "features", "file", "files",
+    "that", "test", "tests", "testing", "the", "and", "for", "with", "from", "into",
+    "about", "does", "are", "you", "all", "any", "please",
+}
