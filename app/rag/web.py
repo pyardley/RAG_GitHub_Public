@@ -11,7 +11,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from rag.answer import (
     AnswerError,
@@ -23,6 +23,7 @@ from rag.answer import (
 from rag.config import LLM_PROVIDER
 from rag.db import connect, list_repositories, resolve_repositories
 from rag.files import parse_repo
+from rag.gitrepo import default_branch
 from rag.ingest import ingest_repository
 from rag.search import Hit, impact, search
 
@@ -50,6 +51,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/status":
             status, payload = public_status()
+            self._json(payload, status)
+            return
+        if path == "/api/default-branch":
+            repo = parse_qs(urlparse(self.path).query).get("repo", [""])[0]
+            status, payload = lookup_default_branch(repo)
             self._json(payload, status)
             return
         self._json({"error": "Not found"}, 404)
@@ -104,6 +110,17 @@ def serve(host: str, port: int) -> None:
         print("\nStopping.", flush=True)
     finally:
         httpd.server_close()
+
+
+def lookup_default_branch(repo: str) -> tuple[int, dict]:
+    try:
+        _name, url = parse_repo(repo)
+    except ValueError as exc:
+        return 400, {"error": str(exc)}
+    branch = default_branch(url)
+    if not branch:
+        return 404, {"error": "The default branch could not be read"}
+    return 200, {"branch": branch}
 
 
 def public_status() -> tuple[int, dict]:

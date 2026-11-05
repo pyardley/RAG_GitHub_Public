@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 
 from rag.answer import ollama_payload, passage_limits, visible_answer
 from rag.chunker import chunk_source
+from rag.gitrepo import default_branch_name
 from rag.web import Handler, _progress_view, github_blob_url, run_query, start_ingest
 from rag.search import Hit
 from rag.cli import main
@@ -116,6 +117,11 @@ function format(value) {
         self.assertEqual(chunks[0].start_line, 1)
         self.assertEqual(chunks[-1].end_line, 250)
         self.assertLess(chunks[1].start_line, chunks[0].end_line)
+
+    def test_default_branch_name_reads_the_symbolic_ref(self):
+        output = "ref: refs/heads/master\tHEAD\nd6867d299ece441f1f26c14ab1ddd8cd1e571eb0\tHEAD\n"
+        self.assertEqual(default_branch_name(output), "master")
+        self.assertIsNone(default_branch_name("d6867d299ece441f1f26c14ab1ddd8cd1e571eb0\tHEAD\n"))
 
     def test_blank_file(self):
         self.assertEqual(chunk_source("ruby", "\n\n"), [])

@@ -202,6 +202,8 @@
     const prompts = { query: "", impact: "", search: "" };
     let mode = "query";
     let poll = null;
+    let branchTimer = null;
+    let branchLookup = 0;
 
     const repoSelect = document.querySelector("#repo");
     const prompt = document.querySelector("#prompt");
@@ -213,6 +215,10 @@
     });
     document.querySelector("#ask").addEventListener("submit", onAsk);
     document.querySelector("#index-form").addEventListener("submit", onIndex);
+    document.querySelector("#index-repo").addEventListener("input", () => {
+      clearTimeout(branchTimer);
+      branchTimer = setTimeout(refreshDefaultBranch, 400);
+    });
     document.querySelector("#index-toggle").addEventListener("click", () => {
       document.querySelector("#index-form").hidden = !document.querySelector("#index-form").hidden;
     });
@@ -285,7 +291,10 @@
       }
       document.querySelector("#index-form").hidden = false;
       const repoInput = document.querySelector("#index-repo");
-      if (ingest.running && ingest.repo && !repoInput.value) repoInput.value = ingest.repo;
+      if (ingest.running && ingest.repo && !repoInput.value) {
+        repoInput.value = ingest.repo;
+        refreshDefaultBranch();
+      }
       paintMeter(ingest);
       log.hidden = !(ingest.log || ingest.error);
       log.textContent = [ingest.error, ingest.log].filter(Boolean).join("\n");
@@ -326,6 +335,50 @@
       if (body && body.ingest && !body.ingest.running && !body.ingest.error) {
         setStatus(body.ingest.repo ? `Indexed ${body.ingest.repo}` : "Index updated");
       }
+    }
+
+    async function refreshDefaultBranch() {
+      const spec = document.querySelector("#index-repo").value.trim();
+      const branchInput = document.querySelector("#index-branch");
+      const requestId = ++branchLookup;
+      if (!spec) {
+        branchInput.placeholder = "optional";
+        return;
+      }
+      const branch = await lookupDefaultBranch(spec);
+      if (requestId !== branchLookup) return;
+      branchInput.placeholder = branch ? `optional - default: ${branch}` : "optional";
+    }
+
+    async function lookupDefaultBranch(spec) {
+      try {
+        const response = await fetch(`/api/default-branch?repo=${encodeURIComponent(spec)}`);
+        const body = await response.json();
+        if (response.ok && body.branch) return body.branch;
+        if (!body || body.error !== "Not found") return null;
+      } catch (_error) {
+        // The page can ask GitHub directly when this server has no lookup route yet.
+      }
+      const name = githubRepoName(spec);
+      if (!name) return null;
+      try {
+        const response = await fetch(`https://api.github.com/repos/${name}`, {
+          headers: { Accept: "application/vnd.github+json" }
+        });
+        if (!response.ok) return null;
+        const body = await response.json();
+        return body.default_branch || null;
+      } catch (_error) {
+        return null;
+      }
+    }
+
+    function githubRepoName(spec) {
+      const trimmed = spec.trim().replace(/\.git$/, "");
+      const remote = trimmed.match(/github\.com[:/]([^/]+)\/([^/#?\s]+)/i);
+      if (remote) return `${remote[1]}/${remote[2]}`;
+      const short = trimmed.match(/^([^/\s]+)\/([^/\s]+)$/);
+      return short ? `${short[1]}/${short[2]}` : null;
     }
 
     async function onIndex(event) {

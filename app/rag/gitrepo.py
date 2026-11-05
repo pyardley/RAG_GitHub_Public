@@ -46,6 +46,25 @@ def remote_commit(url: str, branch: str | None) -> str | None:
     return sha
 
 
+def default_branch(url: str) -> str | None:
+    """Return the remote HEAD branch name, such as master or main."""
+    try:
+        output = _run(["git", "-c", "safe.directory=*", "ls-remote", "--symref", url, "HEAD"])
+    except RuntimeError:
+        return None
+    return default_branch_name(output)
+
+
+def default_branch_name(output: str) -> str | None:
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] == "ref:" and parts[1].startswith("refs/heads/"):
+            name = parts[1].removeprefix("refs/heads/")
+            if name:
+                return name
+    return None
+
+
 def _destination(name: str) -> Path:
     root = REPOS_DIR.resolve()
     destination = (root / name).resolve()
