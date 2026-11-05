@@ -1,0 +1,2 @@
+fastembed>=0.6.1
+psycopg[binary]>=3.2.0
