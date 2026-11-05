@@ -4,6 +4,20 @@ A local retrieval system for GitHub repositories. Postgres stores the index. Its
 
 The first repository to index is [hmcts/hwf-publicapp](https://github.com/hmcts/hwf-publicapp).
 
+## Table of contents
+
+- [What you need](#what-you-need)
+- [Start](#start)
+- [Web](#web)
+- [Ask questions](#ask-questions)
+- [Index another repository](#index-another-repository)
+- [Written answers](#written-answers)
+  - [Local model with Ollama](#local-model-with-ollama)
+  - [Hosted model](#hosted-model)
+- [How the index is built](#how-the-index-is-built)
+- [Data](#data)
+- [Tests](#tests)
+
 ## What you need
 
 - Docker, with Compose v2 (`docker compose`)
