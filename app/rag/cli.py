@@ -9,6 +9,7 @@ from rag.answer import AnswerError, active_model, answer, configuration_hint, la
 from rag.db import connect, list_repositories, resolve_repositories
 from rag.ingest import ingest_repository
 from rag.search import Hit, impact, search
+from rag.web import serve
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -49,12 +50,19 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("repos", help="List indexed repositories")
 
+    serve_parser = sub.add_parser("serve", help="Run the web interface")
+    serve_parser.add_argument("--host", default="127.0.0.1", help="Address to listen on")
+    serve_parser.add_argument("--port", type=int, default=8080, help="Port to listen on")
+
     args = parser.parse_args(argv)
     try:
         if args.command == "ingest":
             return ingest_repository(args.repo, args.branch, args.force)
         if args.command == "repos":
             return _repos()
+        if args.command == "serve":
+            serve(args.host, args.port)
+            return 0
         if args.command == "query":
             return _query(args.question, args.repo, args.k, args.no_answer, args.model)
         if args.command == "impact":

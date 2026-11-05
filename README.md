@@ -21,6 +21,16 @@ docker compose run --rm -T rag ingest https://github.com/hmcts/hwf-publicapp
 
 The first build downloads the embedding model (about 700 MB) and takes a few minutes. The first ingest clones the repository and embeds it on CPU. Later ingests of the same commit return immediately.
 
+## Web
+
+```powershell
+docker compose up -d
+```
+
+Open http://localhost:8080. Switch between Query, Impact, and Search, choose an indexed repository, and run it. Each passage links to those lines in the indexed commit on GitHub. Index another GitHub repository from the same page. A first index takes several minutes and the page shows its progress.
+
+`docker compose run` still runs one command, so the wrappers keep working while the web app is up.
+
 On macOS or Linux the same commands work. `rag.ps1` and `rag.sh` are thin wrappers:
 
 ```powershell

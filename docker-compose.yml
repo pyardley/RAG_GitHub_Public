@@ -46,9 +46,11 @@ services:
     volumes:
       - ./app:/app
       - repos:/data/repos
+    ports:
+      - "8080:8080"
     entrypoint: ["python", "-m", "rag"]
-    command: ["--help"]
-    restart: "no"
+    command: ["serve", "--host", "0.0.0.0", "--port", "8080"]
+    restart: unless-stopped
 
 volumes:
   pgdata:

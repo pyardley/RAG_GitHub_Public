@@ -1,12 +1,18 @@
+import json
 import sys
 import tempfile
+import threading
 import unittest
+import urllib.error
+import urllib.request
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 
 from rag.answer import ollama_payload, passage_limits, visible_answer
 from rag.chunker import chunk_source
+from rag.web import Handler, github_blob_url, run_query, start_ingest
 from rag.search import Hit
 from rag.cli import main
 from rag.files import is_skipped, iter_source_files, language_for, parse_repo
@@ -210,6 +216,57 @@ class AnswerTest(unittest.TestCase):
         self.assertLessEqual(passages.count("\n\n["), 8)
         self.assertIn("app/file_0.rb:1-4", passages)
         self.assertNotIn("app/file_11.rb", passages)
+
+
+class WebTest(unittest.TestCase):
+    def test_github_link_points_at_the_indexed_lines(self):
+        url = github_blob_url(
+            "hmcts/hwf-publicapp",
+            "b1d15f83c0a9",
+            "app/controllers/application_controller.rb",
+            44,
+            46,
+        )
+        self.assertEqual(
+            url,
+            "https://github.com/hmcts/hwf-publicapp/blob/"
+            "b1d15f83c0a9/app/controllers/application_controller.rb#L44-L46",
+        )
+        self.assertIsNone(github_blob_url("hmcts/hwf-publicapp", "pending", "app/fee.rb", 1, 3))
+        self.assertIsNone(github_blob_url("hmcts/hwf-publicapp", "b1d15f83c0a9", "../fee.rb", 1, 1))
+
+    def test_empty_question_is_rejected_before_the_database(self):
+        with self.assertRaises(ValueError):
+            run_query({"question": "  "})
+
+    def test_ingest_rejects_a_repository_path_before_starting(self):
+        with self.assertRaises(ValueError):
+            start_ingest({"repo": "../secrets"})
+
+    def test_home_page_lists_the_three_tasks(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        port = server.server_address[1]
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/") as response:
+                page = response.read().decode("utf-8")
+            self.assertEqual(response.status, 200)
+            self.assertIn("Impact", page)
+            self.assertIn("Search", page)
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/query",
+                data=json.dumps({"question": ""}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(request)
+            self.assertEqual(caught.exception.code, 400)
+            caught.exception.close()
+        finally:
+            server.shutdown()
+            server.server_close()
 
 
 class CliTest(unittest.TestCase):
