@@ -27,6 +27,14 @@ _QUERY_INSTRUCTIONS = (
     "passages do not contain the answer, say what is missing. Do not invent "
     "files, methods, or behaviour."
 )
+_TRACE_INSTRUCTIONS = (
+    " These passages contain a feature file and the code that carries a step out. "
+    "Answer as a numbered sequence for the feature step that is shown: the step "
+    "text, the step definition that matches it, each method that definition calls, "
+    "and the browser action in those methods, such as fill_in or click. Cite the "
+    "path and line numbers at each stage. If a stage is not in the passages, say so "
+    "and stop."
+)
 _IMPACT_INSTRUCTIONS = (
     "You assess the impact of changing a named part of a software repository. "
     "Use only the retrieved passages. Organise the answer as: what it is, where "
@@ -167,12 +175,24 @@ def _messages(
     per_passage: int,
     total_chars: int | None,
 ) -> list[dict[str, str]]:
-    instructions = _IMPACT_INSTRUCTIONS if impact else _QUERY_INSTRUCTIONS
+    instructions = _IMPACT_INSTRUCTIONS if impact else _query_instructions(hits)
     passages = _format_passages(hits, max_hits=max_hits, per_passage=per_passage, total_chars=total_chars)
     return [
         {"role": "system", "content": instructions},
         {"role": "user", "content": f"Question:\n{question}\n\nRetrieved passages:\n{passages}"},
     ]
+
+
+def _query_instructions(hits: list[Hit]) -> str:
+    paths = {hit.path for hit in hits}
+    has_feature = any(path.endswith(".feature") for path in paths)
+    has_runner = any(
+        "step_definitions" in path or "page_objects" in path or path.endswith("generic_helpers.rb")
+        for path in paths
+    )
+    if has_feature and has_runner:
+        return _QUERY_INSTRUCTIONS + _TRACE_INSTRUCTIONS
+    return _QUERY_INSTRUCTIONS
 
 
 def _post_json(request: urllib.request.Request, *, timeout: int, unreachable: str) -> dict:

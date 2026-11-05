@@ -50,7 +50,7 @@ docker compose run --rm -T rag impact "OnlineApplication"
 docker compose run --rm -T rag repos
 ```
 
-`query` retrieves the code passages most relevant to a question. `impact` looks up a class, method, or file and groups the result into definitions, references, and related code. References include specs and feature tests when those files mention the name.
+`query` retrieves the code passages most relevant to a question. When a question names a `.feature` file, retrieval also follows that step into its step definition and the page-object methods that fill fields and click buttons. `impact` looks up a class, method, or file and groups the result into definitions, references, and related code. References include specs and feature tests when those files mention the name.
 
 Search covers every indexed repository. Pass `--repo hmcts/hwf-publicapp` when more than one is loaded and you want only one.
 

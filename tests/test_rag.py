@@ -11,10 +11,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 
 from rag.answer import ollama_payload, passage_limits, visible_answer
-from rag.chunker import chunk_source
+from rag.follow import calls_in, choose_steps, contains_step, feature_paths, page_symbol, step_body, step_phrases
 from rag.gitrepo import default_branch_name
 from rag.web import Handler, _progress_view, github_blob_url, run_query, start_ingest
 from rag.search import Hit
+from rag.chunker import chunk_source
 from rag.cli import main
 from rag.files import is_skipped, iter_source_files, language_for, parse_repo
 from rag.text import (
@@ -27,6 +28,37 @@ from rag.text import (
 
 
 class ChunkerTest(unittest.TestCase):
+    def test_feature_chain_names_the_page_object_call(self):
+        question = (
+            "Explain how features like /features/address/address_married.feature "
+            "are turned into button presses"
+        )
+        self.assertEqual(feature_paths(question), ["features/address/address_married.feature"])
+        feature = """Feature: Address page
+  Scenario: Entering address with postcode
+    When I enter my address with postcode
+    Then I should be taken to contact page
+"""
+        self.assertEqual(
+            choose_steps(step_phrases(feature)),
+            ["I enter my address with postcode"],
+        )
+        self.assertTrue(contains_step(feature, "I enter my address with postcode"))
+        self.assertFalse(contains_step(feature, "I enter my address"))
+        step = "When(/^I enter my address with postcode$/) do\n  address_page.submit_full_address\nend\n"
+        self.assertEqual(calls_in(step), [("address_page", "submit_full_address")])
+        body = step_body(
+            "When(/^I click something$/) { other_page.go }\n" + step + "When(/^I enter my postcode$/) { address_page.post_code }",
+            "I enter my address with postcode",
+        )
+        self.assertEqual(calls_in(body), [("address_page", "submit_full_address")])
+        self.assertEqual(page_symbol("address_page", "submit_full_address"), "AddressPage#submit_full_address")
+        page = "def submit_full_address\n  address_page.street('102')\n  continue\nend\n"
+        self.assertEqual(
+            calls_in(page),
+            [("address_page", "street"), (None, "continue")],
+        )
+
     def test_ruby_methods_are_separate_symbols(self):
         source = """# frozen_string_literal: true
 

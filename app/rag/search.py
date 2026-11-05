@@ -74,8 +74,9 @@ def search(conn, repository_ids: list[int], question: str, k: int) -> list[Hit]:
             {"embedding": embedding, "repos": repository_ids, "query": question, "k": k},
         )
         hits = [_hit_from_row(row) for row in cur.fetchall()]
+    chain = _feature_chain(conn, repository_ids, question, hits)
     conn.commit()
-    return hits
+    return _with_chain(chain, hits, k)
 
 
 def impact(conn, repository_ids: list[int], target: str) -> dict[str, list[Hit]]:
@@ -176,6 +177,33 @@ def _impact_rows(conn, params: dict) -> tuple[list[tuple], bool]:
         rows.extend(content_rows)
     conn.commit()
     return rows, truncated
+
+
+def _feature_chain(conn, repository_ids: list[int], question: str, hits: list[Hit]) -> list[Hit]:
+    from rag.follow import feature_paths, follow_features
+
+    paths = feature_paths(question)
+    if not paths:
+        paths = [hit.path for hit in hits if hit.path.endswith(".feature")][:1]
+    if not paths:
+        return []
+    return follow_features(conn, repository_ids, paths)
+
+
+def _with_chain(chain: list[Hit], hits: list[Hit], k: int) -> list[Hit]:
+    if not chain:
+        return hits
+    merged: list[Hit] = []
+    seen: set[int] = set()
+    limit = min(16, max(k, len(chain)))
+    for hit in chain + hits:
+        if hit.chunk_id in seen:
+            continue
+        seen.add(hit.chunk_id)
+        merged.append(hit)
+        if len(merged) >= limit:
+            break
+    return merged
 
 
 def _reference_order(hit: Hit) -> tuple:
