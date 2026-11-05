@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from rag.chunker import Chunk, chunk_source, embed_text
@@ -25,7 +26,12 @@ class _PendingFile:
     chunks: list[Chunk]
 
 
-def ingest_repository(repo: str, branch: str | None, force: bool) -> int:
+def ingest_repository(
+    repo: str,
+    branch: str | None,
+    force: bool,
+    progress: Callable[[dict], None] | None = None,
+) -> int:
     name, url = parse_repo(repo)
     started = time.perf_counter()
     conn = connect()
@@ -33,7 +39,7 @@ def ingest_repository(repo: str, branch: str | None, force: bool) -> int:
         conn.execute("SELECT pg_advisory_lock(%s)", (_LOCK_KEY,))
         conn.commit()
         try:
-            return _ingest(conn, name, url, branch, force, started)
+            return _ingest(conn, name, url, branch, force, started, progress)
         finally:
             conn.rollback()
             conn.execute("SELECT pg_advisory_unlock(%s)", (_LOCK_KEY,))
@@ -42,7 +48,15 @@ def ingest_repository(repo: str, branch: str | None, force: bool) -> int:
         conn.close()
 
 
-def _ingest(conn, name: str, url: str, branch: str | None, force: bool, started: float) -> int:
+def _ingest(
+    conn,
+    name: str,
+    url: str,
+    branch: str | None,
+    force: bool,
+    started: float,
+    progress: Callable[[dict], None] | None,
+) -> int:
     existing = get_repository(conn, name)
     remote = remote_commit(url, branch)
     if (
@@ -54,8 +68,10 @@ def _ingest(conn, name: str, url: str, branch: str | None, force: bool, started:
     ):
         print(f"{name} is already indexed at {remote[:12]} ({existing['branch']}).")
         print("Pass --force to rebuild the index for this commit.")
+        _note(progress, phase="done", done=1, total=1, chunks=0, label="Already indexed")
         return 0
 
+    _note(progress, phase="clone", done=0, total=0, chunks=0, label=f"Cloning {name}")
     print(f"Cloning {name}" + (f" branch {branch}" if branch else ""), flush=True)
     destination, sha, checked_out = checkout(name, url, branch)
     print(f"Checked out {sha[:12]} ({checked_out})", flush=True)
@@ -66,6 +82,7 @@ def _ingest(conn, name: str, url: str, branch: str | None, force: bool, started:
         and not force
     ):
         print(f"{name} is already indexed at {sha[:12]} ({checked_out}).")
+        _note(progress, phase="done", done=1, total=1, chunks=0, label="Already indexed")
         return 0
 
     repository_id = _ensure_repository(conn, name, url)
@@ -79,15 +96,20 @@ def _ingest(conn, name: str, url: str, branch: str | None, force: bool, started:
     skipped = 0
     stored_chunks = 0
 
-    for path, relative, language in iter_source_files(destination):
+    files = list(iter_source_files(destination))
+    total = len(files)
+    _note(progress, phase="index", done=0, total=total, chunks=0, label=f"0 of {total} files")
+    for done, (path, relative, language) in enumerate(files, start=1):
         text = read_text(path)
         if text is None:
             skipped += 1
+            _note_file(progress, done, total, stored_chunks)
             continue
         kept.append(relative)
         digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
         if not force and known.get(relative) == digest:
             unchanged += 1
+            _note_file(progress, done, total, stored_chunks)
             continue
         pending.append(
             _PendingFile(relative, language, digest, chunk_source(language, text))
@@ -102,9 +124,11 @@ def _ingest(conn, name: str, url: str, branch: str | None, force: bool, started:
                 f"  {changed} files updated, {unchanged} unchanged, {stored_chunks} chunks stored",
                 flush=True,
             )
+        _note_file(progress, done, total, stored_chunks)
 
     if pending:
         stored_chunks += _flush(conn, embedder, repository_id, pending)
+        _note_file(progress, total, total, stored_chunks)
     _delete_missing(conn, repository_id, kept)
     with conn.cursor() as cur:
         cur.execute(
@@ -123,7 +147,31 @@ def _ingest(conn, name: str, url: str, branch: str | None, force: bool, started:
         f"{changed} files updated, {unchanged} unchanged, "
         f"{skipped} skipped, {stored_chunks} chunks stored, {elapsed:.0f}s."
     )
+    _note(
+        progress,
+        phase="done",
+        done=total,
+        total=total,
+        chunks=stored_chunks,
+        label=f"Indexed {changed} files, {stored_chunks} chunks",
+    )
     return 0
+
+
+def _note(progress: Callable[[dict], None] | None, **fields) -> None:
+    if progress is not None:
+        progress(fields)
+
+
+def _note_file(progress: Callable[[dict], None] | None, done: int, total: int, chunks: int) -> None:
+    _note(
+        progress,
+        phase="index",
+        done=done,
+        total=total,
+        chunks=chunks,
+        label=f"{done} of {total} files · {chunks} chunks stored",
+    )
 
 
 def _ensure_repository(conn, name: str, url: str) -> int:

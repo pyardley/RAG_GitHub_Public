@@ -35,6 +35,7 @@ _ingest_state: dict[str, Any] = {
     "repo": None,
     "log": "",
     "error": None,
+    "progress": None,
 }
 
 
@@ -170,7 +171,7 @@ def start_ingest(body: dict) -> tuple[int, dict]:
     with _ingest_lock:
         if _ingest_state["running"]:
             return 409, {"error": "An ingest is already running", "ingest": _ingest_view()}
-        _ingest_state.update(running=True, repo=repo.strip(), log="", error=None)
+        _ingest_state.update(running=True, repo=repo.strip(), log="", error=None, progress=None)
     threading.Thread(target=_run_ingest, args=(repo.strip(), branch, force), daemon=True).start()
     return 202, {"ingest": _ingest_view()}
 
@@ -219,7 +220,7 @@ def _run_ingest(repo: str, branch: str | None, force: bool) -> None:
     error: str | None = None
     try:
         with contextlib.redirect_stdout(buffer):
-            code = ingest_repository(repo, branch, force)
+            code = ingest_repository(repo, branch, force, progress=_report_progress)
         if code != 0:
             error = "Ingest failed"
     except SystemExit as exc:
@@ -265,14 +266,37 @@ def _model_view() -> dict:
     }
 
 
+def _report_progress(update: dict) -> None:
+    with _ingest_lock:
+        _ingest_state["progress"] = dict(update)
+
+
 def _ingest_view() -> dict:
     with _ingest_lock:
+        progress = _progress_view(_ingest_state["progress"])
         return {
             "running": _ingest_state["running"],
             "repo": _ingest_state["repo"],
             "log": _ingest_state["log"],
             "error": _ingest_state["error"],
+            "progress": progress,
         }
+
+
+def _progress_view(progress: dict | None) -> dict | None:
+    if not progress:
+        return None
+    total = int(progress.get("total") or 0)
+    done = int(progress.get("done") or 0)
+    percent = None if total <= 0 else min(100, round(100 * done / total))
+    return {
+        "phase": progress.get("phase") or "index",
+        "done": done,
+        "total": total,
+        "chunks": int(progress.get("chunks") or 0),
+        "label": progress.get("label") or "",
+        "percent": percent,
+    }
 
 
 def _hit(hit: Hit, commits: dict[str, str]) -> dict:

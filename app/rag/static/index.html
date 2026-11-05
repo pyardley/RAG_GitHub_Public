@@ -96,6 +96,14 @@
       font: 0.86rem/1.45 ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
     }
     pre.log { max-height: 12rem; background: #f7f3ea; border-radius: 8px; padding: 0.7rem; }
+    .meter { height: 0.6rem; background: #e4dccb; border-radius: 999px; overflow: hidden; }
+    .meter > div { height: 100%; width: 0; background: var(--accent); transition: width 0.25s ease; }
+    .meter.indeterminate > div { width: 40%; animation: meter-slide 1.1s ease-in-out infinite; }
+    @keyframes meter-slide {
+      from { transform: translateX(-120%); }
+      to { transform: translateX(280%); }
+    }
+    #index-meter-label { margin: 0.4rem 0 0; color: var(--muted); font-size: 0.9rem; }
     #status { min-height: 1.5rem; margin: 0.8rem 0; color: var(--muted); }
     #status.error { color: var(--warn); }
     .scope { color: var(--muted); margin: 0 0 0.8rem; }
@@ -153,6 +161,12 @@
         </label>
         <label class="check"><input id="index-force" type="checkbox"> Rebuild this commit</label>
         <button type="submit" id="index-go">Index</button>
+      </div>
+      <div id="index-meter" hidden>
+        <div class="meter" id="index-meter-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-label="Indexing progress">
+          <div id="index-meter-fill"></div>
+        </div>
+        <p id="index-meter-label"></p>
       </div>
       <pre class="log" id="index-log" hidden></pre>
     </form>
@@ -259,19 +273,52 @@
 
     function showIngest(ingest) {
       const log = document.querySelector("#index-log");
+      const meter = document.querySelector("#index-meter");
       const button = document.querySelector("#index-go");
       button.disabled = Boolean(ingest && ingest.running);
       button.textContent = ingest && ingest.running ? "Indexing…" : "Index";
-      if (!ingest || (!ingest.running && !ingest.log && !ingest.error)) return;
+      const active = ingest && (ingest.running || ingest.log || ingest.error);
+      if (!active) {
+        meter.hidden = true;
+        log.hidden = true;
+        return;
+      }
       document.querySelector("#index-form").hidden = false;
-      log.hidden = false;
+      const repoInput = document.querySelector("#index-repo");
+      if (ingest.running && ingest.repo && !repoInput.value) repoInput.value = ingest.repo;
+      paintMeter(ingest);
+      log.hidden = !(ingest.log || ingest.error);
       log.textContent = [ingest.error, ingest.log].filter(Boolean).join("\n");
-      log.scrollTop = log.scrollHeight;
-      if (ingest.running && !poll) poll = setInterval(pollIngest, 2000);
+      if (!log.hidden) log.scrollTop = log.scrollHeight;
+      if (ingest.running && !poll) poll = setInterval(pollIngest, 1000);
       if (!ingest.running && poll) {
         clearInterval(poll);
         poll = null;
       }
+    }
+
+    function paintMeter(ingest) {
+      const meter = document.querySelector("#index-meter");
+      const track = document.querySelector("#index-meter-track");
+      const fill = document.querySelector("#index-meter-fill");
+      const label = document.querySelector("#index-meter-label");
+      if (!ingest.running) {
+        meter.hidden = true;
+        return;
+      }
+      meter.hidden = false;
+      const progress = ingest.progress;
+      label.textContent = (progress && progress.label) || "Indexing…";
+      if (!progress || progress.percent == null) {
+        track.classList.add("indeterminate");
+        track.removeAttribute("aria-valuenow");
+        fill.style.width = "";
+        return;
+      }
+      track.classList.remove("indeterminate");
+      track.setAttribute("aria-valuenow", String(progress.percent));
+      fill.style.transform = "none";
+      fill.style.width = `${progress.percent}%`;
     }
 
     async function pollIngest() {
@@ -299,7 +346,7 @@
         return;
       }
       showIngest(body.ingest);
-      if (!poll) poll = setInterval(pollIngest, 2000);
+      if (!poll) poll = setInterval(pollIngest, 1000);
     }
 
     async function onAsk(event) {

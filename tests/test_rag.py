@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 
 from rag.answer import ollama_payload, passage_limits, visible_answer
 from rag.chunker import chunk_source
-from rag.web import Handler, github_blob_url, run_query, start_ingest
+from rag.web import Handler, _progress_view, github_blob_url, run_query, start_ingest
 from rag.search import Hit
 from rag.cli import main
 from rag.files import is_skipped, iter_source_files, language_for, parse_repo
@@ -234,6 +234,12 @@ class WebTest(unittest.TestCase):
         )
         self.assertIsNone(github_blob_url("hmcts/hwf-publicapp", "pending", "app/fee.rb", 1, 3))
         self.assertIsNone(github_blob_url("hmcts/hwf-publicapp", "b1d15f83c0a9", "../fee.rb", 1, 1))
+
+    def test_progress_percent_is_unknown_while_cloning(self):
+        cloning = _progress_view({"phase": "clone", "done": 0, "total": 0, "chunks": 0, "label": "Cloning"})
+        self.assertIsNone(cloning["percent"])
+        indexing = _progress_view({"phase": "index", "done": 25, "total": 100, "chunks": 80, "label": "25 of 100"})
+        self.assertEqual(indexing["percent"], 25)
 
     def test_empty_question_is_rejected_before_the_database(self):
         with self.assertRaises(ValueError):
