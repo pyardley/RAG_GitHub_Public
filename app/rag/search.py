@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass, replace
 
 import psycopg
@@ -48,15 +49,19 @@ def topic_terms(question: str) -> list[str]:
     return terms
 
 
-def retrieve(conn, repository_ids: list[int], question: str, k: int) -> tuple[list[Hit], list[str]]:
+def retrieve(conn, repository_ids: list[int], question: str, k: int, meter=None) -> tuple[list[Hit], list[str]]:
     """Search once, or once per query when a small model splits the question."""
     from rag.plan import search_queries
 
-    queries = search_queries(question)
+    queries = search_queries(question, meter)
     if len(queries) == 1:
-        return search(conn, repository_ids, queries[0], k), queries
-    groups = [search(conn, repository_ids, query, k) for query in queries]
-    return merge_hits(groups, k), queries
+        hits = search(conn, repository_ids, queries[0], k, meter)
+    else:
+        groups = [search(conn, repository_ids, query, k, meter) for query in queries]
+        hits = merge_hits(groups, k)
+    if meter is not None:
+        meter.finish_retrieval(len(hits))
+    return hits, queries
 
 
 def merge_hits(groups: list[list[Hit]], k: int) -> list[Hit]:
@@ -85,14 +90,17 @@ def merge_hits(groups: list[list[Hit]], k: int) -> list[Hit]:
     return [best[chunk_id] for chunk_id in order]
 
 
-def search(conn, repository_ids: list[int], question: str, k: int) -> list[Hit]:
+def search(conn, repository_ids: list[int], question: str, k: int, meter=None) -> list[Hit]:
     from rag.embedder import Embedder
 
     if k < 1:
         raise ValueError("Result count must be at least 1")
     listing = asks_for_features(question)
     terms = topic_terms(question) if listing else []
+    embed_started = time.perf_counter()
     embedding = _vector_literal(Embedder().embed_query(question))
+    embed_seconds = time.perf_counter() - embed_started
+    database_started = time.perf_counter()
     sql = """
         WITH semantic AS (
             SELECT id, row_number() OVER (ORDER BY ord) AS rnk
@@ -158,7 +166,10 @@ def search(conn, repository_ids: list[int], question: str, k: int) -> list[Hit]:
     else:
         chain = _feature_chain(conn, repository_ids, question, hits)
     conn.commit()
-    return _with_chain(chain, hits, k)
+    hits = _with_chain(chain, hits, k)
+    if meter is not None:
+        meter.add_search(embed_seconds, time.perf_counter() - database_started)
+    return hits
 
 
 def impact(conn, repository_ids: list[int], target: str) -> dict[str, list[Hit]]:

@@ -107,6 +107,9 @@
     #status { min-height: 1.5rem; margin: 0.8rem 0; color: var(--muted); }
     #status.error { color: var(--warn); }
     .scope { color: var(--muted); margin: 0 0 0.8rem; }
+    .usage { color: var(--muted); margin: 1.4rem 0 0; padding-top: 0.9rem; border-top: 1px solid var(--line); font-size: 0.92rem; }
+    .usage h2 { font-size: 1rem; margin: 0; color: var(--ink); }
+    .usage ul { margin: 0.4rem 0 0; padding-left: 1.2rem; }
     .answer {
       background: #f7f1e4;
       border-left: 4px solid var(--accent);
@@ -480,12 +483,36 @@
         empty.className = "empty";
         empty.textContent = "No matching code.";
         results.append(empty);
-        return;
+      } else {
+        const group = document.createElement("div");
+        group.className = "group";
+        for (const hit of body.hits) group.append(hitArticle(hit, mode === "search"));
+        results.append(group);
       }
-      const group = document.createElement("div");
-      group.className = "group";
-      for (const hit of body.hits) group.append(hitArticle(hit, mode === "search"));
-      results.append(group);
+      renderUsage(body.usage);
+    }
+
+    function renderUsage(usage) {
+      if (!usage || !usage.stages || !usage.stages.length) return;
+      const box = document.createElement("div");
+      box.className = "usage";
+      const heading = document.createElement("h2");
+      heading.textContent = "Resources";
+      const total = document.createElement("p");
+      total.textContent = `Total ${usage.seconds.toFixed(2)}s · ${usage.prompt_tokens} prompt + ${usage.completion_tokens} completion = ${usage.total_tokens} tokens`;
+      const list = document.createElement("ul");
+      for (const stage of usage.stages) {
+        const item = document.createElement("li");
+        const tokens = stage.total_tokens == null
+          ? ""
+          : ` · ${stage.prompt_tokens} prompt + ${stage.completion_tokens} completion tokens`;
+        const model = stage.model ? ` (${stage.model})` : "";
+        const note = stage.note ? `. ${stage.note}` : "";
+        item.textContent = `${stage.name}: ${stage.seconds.toFixed(2)}s${tokens}${model}${note}`;
+        list.append(item);
+      }
+      box.append(heading, total, list);
+      results.append(box);
     }
 
     function renderGroup(title, hits, total) {

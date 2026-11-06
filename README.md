@@ -93,6 +93,8 @@ A question is not sent to the index as one sentence. A small model first turns i
 
 Questions that ask for a list of features, or that name a `.feature` file, skip this step and use the question as written.
 
+Each response reports the elapsed time and the language-model tokens for planning the question, embedding the searches, searching the index, and writing the answer. Embedding runs locally, so that stage has a time and no token count. The total is the sum of those stages.
+
 With Ollama, `OLLAMA_RETRIEVAL_MODEL` plans the searches and `OLLAMA_MODEL` writes the answer. With a hosted API, `OPENAI_RETRIEVAL_MODEL` plans the searches and `OPENAI_MODEL` writes the answer. Leave the retrieval model on the small one.
 
 ### Local model with Ollama

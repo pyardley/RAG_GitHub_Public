@@ -17,6 +17,7 @@ from rag.web import Handler, _progress_view, github_blob_url, run_query, start_i
 from unittest.mock import patch
 
 from rag.plan import parse_queries, question_needs_plan
+from rag.usage import Meter, token_counts
 from rag.search import Hit, _feature_files, asks_for_features, merge_hits, topic_terms
 from rag.chunker import chunk_source
 from rag.cli import main
@@ -286,6 +287,20 @@ class PlanTest(unittest.TestCase):
             self.assertFalse(question_needs_plan(question))
             self.assertFalse(question_needs_plan("Show features that test savings thresholds"))
             self.assertTrue(question_needs_plan("Where are savings thresholds decided?"))
+
+    def test_usage_sums_language_model_tokens_and_keeps_retrieval_untokenised(self):
+        self.assertEqual(token_counts({"usage": {"prompt_tokens": 20, "completion_tokens": 5}}), (20, 5))
+        self.assertEqual(token_counts({"prompt_eval_count": 11, "eval_count": 3}), (11, 3))
+        meter = Meter()
+        meter.add_search(0.2, 0.05)
+        meter.add_search(0.1, 0.02)
+        meter.finish_retrieval(8)
+        usage = meter.as_dict()
+        self.assertEqual(usage["total_tokens"], 0)
+        self.assertEqual(usage["stages"][0]["name"], "Embed the searches")
+        self.assertEqual(usage["stages"][0]["total_tokens"], None)
+        self.assertAlmostEqual(usage["stages"][0]["seconds"], 0.3, places=3)
+        self.assertEqual(usage["stages"][1]["note"], "2 searches, 8 passages kept.")
 
     def test_merge_hits_keeps_the_higher_score_for_a_repeated_chunk(self):
         low = Hit(1, "hmcts/hwf-publicapp", "app/a.rb", 1, 2, "A", "method", "a", 0.1)

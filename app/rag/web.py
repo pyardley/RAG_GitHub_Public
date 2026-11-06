@@ -27,6 +27,7 @@ from rag.gitrepo import default_branch
 from rag.ingest import ingest_repository
 from rag.plan import retrieval_model
 from rag.search import Hit, impact, retrieve
+from rag.usage import Meter
 
 _PAGE = Path(__file__).with_name("static") / "index.html"
 _MAX_BODY = 1_000_000
@@ -197,24 +198,28 @@ def start_ingest(body: dict) -> tuple[int, dict]:
 def _retrieve(body: dict, question: str, *, written: bool, impact_mode: bool) -> tuple[int, dict]:
     repo = _optional_repo(body)
     count = _passage_count(body)
+    meter = Meter()
     try:
         conn = connect()
     except SystemExit as exc:
         return 503, {"error": _failure_text(exc)}
     try:
         repositories = resolve_repositories(conn, repo)
-        hits, queries = retrieve(conn, [item["id"] for item in repositories], question, count)
+        hits, queries = retrieve(conn, [item["id"] for item in repositories], question, count, meter)
     except SystemExit as exc:
         return 400, {"error": _failure_text(exc)}
     finally:
         conn.close()
-    text, answer_error = _written_answer(question, hits, impact_mode=impact_mode, enabled=written)
+    text, answer_error = _written_answer(
+        question, hits, impact_mode=impact_mode, enabled=written, meter=meter,
+    )
     return 200, {
         "repositories": [_scope(item) for item in repositories],
         "queries": queries,
         "hits": [_hit(item, _indexed_commits(repositories)) for item in hits],
         "answer": text,
         "answer_error": answer_error,
+        "usage": meter.as_dict(),
         "model": _model_view(),
     }
 
@@ -225,11 +230,12 @@ def _written_answer(
     *,
     impact_mode: bool,
     enabled: bool,
+    meter: Meter | None = None,
 ) -> tuple[str | None, str | None]:
     if not enabled or not hits or not language_model_configured():
         return None, None
     try:
-        return answer(question, hits, impact=impact_mode), None
+        return answer(question, hits, impact=impact_mode, meter=meter), None
     except AnswerError as exc:
         return None, str(exc)
 

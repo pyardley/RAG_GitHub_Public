@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import urllib.error
 import urllib.request
 
@@ -18,6 +19,7 @@ from rag.config import (
     OPENAI_MODEL,
 )
 from rag.search import Hit, asks_for_features
+from rag.usage import Meter, Stage, token_counts
 
 _THINK_BLOCK = re.compile(r"<think>.*?</think>\s*", re.DOTALL | re.IGNORECASE)
 
@@ -76,13 +78,35 @@ def configuration_hint() -> str:
     )
 
 
-def answer(question: str, hits: list[Hit], *, impact: bool, model: str | None = None) -> str | None:
+def answer(
+    question: str,
+    hits: list[Hit],
+    *,
+    impact: bool,
+    model: str | None = None,
+    meter: Meter | None = None,
+) -> str | None:
     if not hits or not language_model_configured():
         return None
     chosen = active_model(model)
-    if LLM_PROVIDER == "ollama":
-        return _complete_ollama(question, hits, impact=impact, model=chosen)
-    return _complete_openai(question, hits, impact=impact, model=chosen)
+    started = time.perf_counter()
+    prompt = completion = None
+    try:
+        if LLM_PROVIDER == "ollama":
+            text, body = _complete_ollama(question, hits, impact=impact, model=chosen)
+        else:
+            text, body = _complete_openai(question, hits, impact=impact, model=chosen)
+        prompt, completion = token_counts(body)
+        return text
+    finally:
+        if meter is not None:
+            meter.add(Stage(
+                "Write the answer",
+                time.perf_counter() - started,
+                prompt_tokens=prompt,
+                completion_tokens=completion,
+                model=chosen,
+            ))
 
 
 def visible_answer(text: str) -> str:
@@ -121,7 +145,7 @@ def ollama_payload(model: str, question: str, hits: list[Hit], *, impact: bool, 
     }
 
 
-def _complete_openai(question: str, hits: list[Hit], *, impact: bool, model: str) -> str:
+def _complete_openai(question: str, hits: list[Hit], *, impact: bool, model: str) -> tuple[str, dict]:
     payload = {
         "model": model,
         "temperature": 0.1,
@@ -141,10 +165,10 @@ def _complete_openai(question: str, hits: list[Hit], *, impact: bool, model: str
         text = body["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:
         raise AnswerError("Language model returned an unexpected response.") from exc
-    return visible_answer(text) or text.strip()
+    return visible_answer(text) or text.strip(), body
 
 
-def _complete_ollama(question: str, hits: list[Hit], *, impact: bool, model: str) -> str:
+def _complete_ollama(question: str, hits: list[Hit], *, impact: bool, model: str) -> tuple[str, dict]:
     root = OLLAMA_BASE_URL[:-3] if OLLAMA_BASE_URL.endswith("/v1") else OLLAMA_BASE_URL
     payload = ollama_payload(model, question, hits, impact=impact, num_ctx=OLLAMA_NUM_CTX)
     request = urllib.request.Request(
@@ -164,7 +188,7 @@ def _complete_ollama(question: str, hits: list[Hit], *, impact: bool, model: str
         raise AnswerError("Ollama returned an unexpected response.")
     cleaned = visible_answer(text)
     if cleaned:
-        return cleaned
+        return cleaned, body
     raise AnswerError(
         "Ollama returned no answer text. A reasoning model can spend the request on its trace. "
         "qwen2.5-coder:32b-instruct-q5_K_M is a better fit for these questions."

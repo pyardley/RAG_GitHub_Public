@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 
 from rag.answer import AnswerError, visible_answer
 from rag.config import (
@@ -21,6 +22,7 @@ from rag.config import (
 )
 from rag.follow import feature_paths
 from rag.search import asks_for_features
+from rag.usage import Meter, Stage, token_counts
 
 _MAX_QUERIES = 4
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
@@ -50,15 +52,44 @@ def question_needs_plan(question: str) -> bool:
     return retrieval_model() is not None
 
 
-def search_queries(question: str) -> list[str]:
-    if not question_needs_plan(question):
-        return [question]
+def search_queries(question: str, meter: Meter | None = None) -> list[str]:
+    started = time.perf_counter()
     model = retrieval_model()
-    try:
-        text = _complete(model or "", _PROMPT, question)
-    except (AnswerError, OSError, TimeoutError):
+    if not question_needs_plan(question):
+        _record_plan(meter, started, model=None, note="The question was searched as written.")
         return [question]
+    try:
+        text, body = _complete(model or "", _PROMPT, question)
+    except (AnswerError, OSError, TimeoutError):
+        _record_plan(
+            meter, started, model=model,
+            note="Planning failed, so the question was searched as written.",
+        )
+        return [question]
+    prompt, completion = token_counts(body)
+    _record_plan(meter, started, model=model, prompt=prompt, completion=completion)
     return parse_queries(text, question)
+
+
+def _record_plan(
+    meter: Meter | None,
+    started: float,
+    *,
+    model: str | None,
+    prompt: int | None = None,
+    completion: int | None = None,
+    note: str | None = None,
+) -> None:
+    if meter is None:
+        return
+    meter.add(Stage(
+        "Plan the question",
+        time.perf_counter() - started,
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+        model=model,
+        note=note,
+    ))
 
 
 def parse_queries(text: str, question: str) -> list[str]:
@@ -101,7 +132,7 @@ def _content_words(text: str) -> set[str]:
     return {word for word in re.findall(r"[A-Za-z0-9]+", text.lower()) if len(word) > 2}
 
 
-def _complete(model: str, system: str, user: str) -> str:
+def _complete(model: str, system: str, user: str) -> tuple[str, dict]:
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
@@ -111,7 +142,7 @@ def _complete(model: str, system: str, user: str) -> str:
     return _complete_openai(model, messages)
 
 
-def _complete_openai(model: str, messages: list[dict[str, str]]) -> str:
+def _complete_openai(model: str, messages: list[dict[str, str]]) -> tuple[str, dict]:
     import urllib.request
 
     from rag.answer import _post_json
@@ -132,10 +163,10 @@ def _complete_openai(model: str, messages: list[dict[str, str]]) -> str:
         raise AnswerError("Search planning returned an unexpected response.") from exc
     if not isinstance(text, str) or not text.strip():
         raise AnswerError("Search planning returned no text.")
-    return text
+    return text, body
 
 
-def _complete_ollama(model: str, messages: list[dict[str, str]]) -> str:
+def _complete_ollama(model: str, messages: list[dict[str, str]]) -> tuple[str, dict]:
     import urllib.request
 
     from rag.answer import _post_json
@@ -162,4 +193,4 @@ def _complete_ollama(model: str, messages: list[dict[str, str]]) -> str:
     text = message.get("content") if isinstance(message, dict) else None
     if not isinstance(text, str) or not visible_answer(text):
         raise AnswerError("Search planning returned no text.")
-    return text
+    return text, body

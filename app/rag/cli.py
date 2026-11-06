@@ -9,6 +9,7 @@ from rag.answer import AnswerError, active_model, answer, configuration_hint, la
 from rag.db import connect, list_repositories, resolve_repositories
 from rag.ingest import ingest_repository
 from rag.search import Hit, impact, retrieve
+from rag.usage import Meter
 from rag.web import serve
 
 
@@ -93,20 +94,24 @@ def _repos() -> int:
 
 
 def _query(question: str, repo: str | None, k: int, no_answer: bool, model: str | None) -> int:
+    meter = Meter()
     conn = connect()
     try:
         repositories = resolve_repositories(conn, repo)
         _print_scope(repositories)
-        hits, queries = retrieve(conn, [item["id"] for item in repositories], question, k)
+        hits, queries = retrieve(conn, [item["id"] for item in repositories], question, k, meter)
     finally:
         conn.close()
     if len(queries) > 1:
         print("Searched: " + " | ".join(queries))
     if not hits:
         print("No matching code.")
+        _print_usage(meter)
         return 0
     _print_hits(hits)
-    return _maybe_answer(question, hits, impact_mode=False, no_answer=no_answer, model=model)
+    status = _maybe_answer(question, hits, impact_mode=False, no_answer=no_answer, model=model, meter=meter)
+    _print_usage(meter)
+    return status
 
 
 def _impact(target: str, repo: str | None, no_answer: bool, model: str | None) -> int:
@@ -139,6 +144,7 @@ def _maybe_answer(
     impact_mode: bool,
     no_answer: bool,
     model: str | None,
+    meter: Meter | None = None,
 ) -> int:
     if no_answer or not hits:
         return 0
@@ -150,7 +156,7 @@ def _maybe_answer(
         return 0
     print(f"\nAsking {active_model(model)}...", flush=True)
     try:
-        written = answer(question, hits, impact=impact_mode, model=model)
+        written = answer(question, hits, impact=impact_mode, model=model, meter=meter)
     except AnswerError as exc:
         print(f"\n{exc}", file=sys.stderr)
         return 1
@@ -159,6 +165,27 @@ def _maybe_answer(
         print("------")
         print(written)
     return 0
+
+
+def _print_usage(meter: Meter) -> None:
+    usage = meter.as_dict()
+    if not usage["stages"]:
+        return
+    print("\nTiming")
+    print("------")
+    for stage in usage["stages"]:
+        tokens = ""
+        if stage["total_tokens"] is not None:
+            tokens = f"  {stage['prompt_tokens']} prompt + {stage['completion_tokens']} completion"
+            if stage["model"]:
+                tokens += f"  ({stage['model']})"
+        note = f"  {stage['note']}" if stage["note"] else ""
+        print(f"{stage['name']}: {stage['seconds']:.3f}s{tokens}{note}")
+    print(
+        f"Total: {usage['seconds']:.3f}s  "
+        f"{usage['prompt_tokens']} prompt + {usage['completion_tokens']} completion "
+        f"= {usage['total_tokens']} tokens"
+    )
 
 
 def _print_scope(repositories: list[dict]) -> None:
