@@ -22,10 +22,12 @@ from rag.search import (
     Hit,
     _feature_files,
     asks_for_features,
+    _each_path_first,
     code_literals,
     merge_hits,
     path_in_scope,
     path_scopes,
+    quoted_phrases,
     retrieve,
     topic_terms,
 )
@@ -365,6 +367,77 @@ class PlanTest(unittest.TestCase):
         embed = next(stage for stage in meter.as_dict()["stages"] if stage["name"] == "Embed the searches")
         self.assertEqual(embed["note"], "The values were matched directly, so nothing was embedded.")
         self.assertIsNone(embed["total_tokens"])
+
+    def test_a_quoted_step_is_searched_under_the_directory(self):
+        question = 'look for "I submit the form with income" under /features'
+        phrase = "I submit the form with income"
+        self.assertEqual(path_scopes(question), ["features"])
+        self.assertEqual(quoted_phrases(question), [phrase])
+        self.assertEqual(code_literals(question), [])
+        pattern = "(?i)" + identifier_regex(phrase).replace(r"\m", r"\b").replace(r"\M", r"\b")
+        step = "When(/^" + phrase + " '([^\"']*)' and monthly$/) do |num|"
+        feature = "When " + phrase + " '1000' and monthly"
+        unrelated = "When I submit the form with wages and working tax credit checked"
+        self.assertRegex(step, pattern)
+        self.assertRegex(feature, pattern)
+        self.assertNotRegex(unrelated, pattern)
+        feature_hit = Hit(
+            3,
+            "hmcts/hwf-publicapp",
+            "features/income_kind/income_kind_single.feature",
+            27,
+            31,
+            "Scenario",
+            "scenario",
+            feature,
+            1.0,
+        )
+        step_hit = Hit(
+            4,
+            "hmcts/hwf-publicapp",
+            "features/step_definitions/income_period_steps.rb",
+            5,
+            7,
+            None,
+            "file",
+            step,
+            1.0,
+        )
+        seen = {}
+
+        def fake_literal(_conn, _repos, scopes, literals, _k):
+            seen["scopes"] = scopes
+            seen["literals"] = literals
+            return [feature_hit, step_hit], 0.01
+
+        def fail_if_planned(*_args, **_kwargs):
+            raise AssertionError("planner should not run")
+
+        meter = Meter()
+        with (
+            patch("rag.search.literal_hits", side_effect=fake_literal),
+            patch("rag.plan.search_queries", side_effect=fail_if_planned),
+            patch("rag.plan.retrieval_model", return_value="gpt-4o-mini"),
+        ):
+            self.assertFalse(question_needs_plan(question))
+            hits, queries = retrieve(None, [1], question, 8, meter)
+        self.assertEqual(seen["scopes"], ["features"])
+        self.assertEqual(seen["literals"], [phrase])
+        self.assertEqual(hits, [feature_hit, step_hit])
+        self.assertEqual(queries, [question])
+        plan = next(stage for stage in meter.as_dict()["stages"] if stage["name"] == "Plan the question")
+        self.assertEqual(plan["note"], "Looked for that text under the named directory.")
+
+    def test_a_long_feature_does_not_crowd_out_the_step_file(self):
+        feature = "features/e2e.feature"
+        step = "features/step_definitions/income_period_steps.rb"
+        hits = [
+            Hit(index, "hmcts/hwf-publicapp", feature, index, index, None, "scenario", "when", 1.0)
+            for index in range(1, 9)
+        ]
+        hits.append(Hit(9, "hmcts/hwf-publicapp", step, 5, 7, None, "file", "when", 1.0))
+        spread = _each_path_first(hits)
+        self.assertEqual([hit.path for hit in spread[:2]], [feature, step])
 
     def test_usage_sums_language_model_tokens_and_keeps_retrieval_untokenised(self):
         self.assertEqual(token_counts({"usage": {"prompt_tokens": 20, "completion_tokens": 5}}), (20, 5))

@@ -21,7 +21,7 @@ from rag.config import (
     OPENAI_RETRIEVAL_MODEL,
 )
 from rag.follow import feature_paths
-from rag.search import asks_for_features, code_literals, path_scopes
+from rag.search import asks_for_features, code_literals, path_scopes, quoted_phrases
 from rag.usage import Meter, Stage, token_counts
 
 _MAX_QUERIES = 4
@@ -48,6 +48,8 @@ def question_needs_plan(question: str) -> bool:
     if not question.strip():
         return False
     if asks_for_features(question) or feature_paths(question):
+        return False
+    if quoted_phrases(question):
         return False
     if path_scopes(question) and code_literals(question):
         return False

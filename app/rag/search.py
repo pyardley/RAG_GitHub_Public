@@ -55,11 +55,22 @@ def code_literals(question: str) -> list[str]:
     """Numbers and identifiers to match exactly, ignoring the directory name."""
     found: list[str] = []
     for match in _CODE_LITERAL.finditer(question):
-        if _inside_scope(match.start(), question):
+        if _inside_scope(match.start(), question) or _inside_quotes(match.start(), question):
             continue
         word = match.group(0)
         if word not in found:
             found.append(word)
+    return found
+
+
+def quoted_phrases(question: str) -> list[str]:
+    """Multi-word text in quotes, such as a Cucumber step."""
+    found: list[str] = []
+    for match in _QUOTED_PHRASE.finditer(question):
+        phrase = " ".join(match.group(1).split())
+        if " " not in phrase or phrase in found:
+            continue
+        found.append(phrase)
     return found
 
 
@@ -90,15 +101,19 @@ def retrieve(conn, repository_ids: list[int], question: str, k: int, meter=None)
 
     scopes = path_scopes(question)
     literals = code_literals(question)
-    if scopes and literals:
-        hits, seconds = literal_hits(conn, repository_ids, scopes, literals, k)
+    phrases = quoted_phrases(question)
+    terms = literals + [phrase for phrase in phrases if phrase not in literals]
+    if terms and (scopes or phrases):
+        hits, seconds = literal_hits(conn, repository_ids, scopes, terms, k)
         if hits:
             if meter is not None:
-                meter.add(Stage(
-                    "Plan the question",
-                    0.0,
-                    note="Looked for those values under the named directory.",
-                ))
+                if phrases and scopes:
+                    note = "Looked for that text under the named directory."
+                elif phrases:
+                    note = "Looked for that text."
+                else:
+                    note = "Looked for those values under the named directory."
+                meter.add(Stage("Plan the question", 0.0, note=note))
                 meter.add_search(0.0, seconds)
                 meter.finish_retrieval(len(hits), embedded=False)
             return hits, [question]
@@ -431,15 +446,27 @@ def literal_hits(
             sql,
             {
                 "repos": repository_ids,
-                "scoped": True,
-                "scopes": [scope.lower().strip("/") for scope in scopes],
+                "scoped": bool(scopes),
+                "scopes": [scope.lower().strip("/") for scope in scopes] or [""],
                 "pattern": pattern,
             },
         )
         hits = [_hit_from_row(row) for row in cur.fetchall()]
     conn.commit()
     hits.sort(key=lambda hit: (-_literal_count(hit, literals), hit.path, hit.start_line))
+    if literals and all(" " in literal for literal in literals):
+        hits = _each_path_first(hits)
     return hits[:k], time.perf_counter() - started
+
+
+def _each_path_first(hits: list[Hit]) -> list[Hit]:
+    """Show each file before a second chunk from a file already shown."""
+    grouped: dict[str, list[Hit]] = {}
+    for hit in hits:
+        grouped.setdefault(hit.path, []).append(hit)
+    first = [group[0] for group in grouped.values()]
+    rest = [hit for group in grouped.values() for hit in group[1:]]
+    return first + rest
 
 
 def _literal_count(hit: Hit, literals: list[str]) -> int:
@@ -449,6 +476,10 @@ def _literal_count(hit: Hit, literals: list[str]) -> int:
 
 def _inside_scope(start: int, question: str) -> bool:
     return any(match.start(1) <= start < match.end(1) for match in _PATH_SCOPE.finditer(question))
+
+
+def _inside_quotes(start: int, question: str) -> bool:
+    return any(match.start(1) <= start < match.end(1) for match in _QUOTED_PHRASE.finditer(question))
 
 
 def _hit_from_row(row: tuple) -> Hit:
@@ -477,6 +508,7 @@ _PATH_SCOPE = re.compile(
 _CODE_LITERAL = re.compile(
     r"\b(?:[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]+|\d{3,}|[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+)+)\b"
 )
+_QUOTED_PHRASE = re.compile(r'[“"]([^"“”\n]+)[”"]')
 _PATH_SCOPE_SQL = """(
     %(scoped)s = FALSE
     OR EXISTS (
