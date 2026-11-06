@@ -18,7 +18,16 @@ from unittest.mock import patch
 
 from rag.plan import parse_queries, question_needs_plan
 from rag.usage import Meter, token_counts
-from rag.search import Hit, _feature_files, asks_for_features, merge_hits, topic_terms
+from rag.search import (
+    Hit,
+    _feature_files,
+    asks_for_features,
+    code_literals,
+    merge_hits,
+    path_in_scope,
+    path_scopes,
+    topic_terms,
+)
 from rag.chunker import chunk_source
 from rag.cli import main
 from rag.files import is_skipped, iter_source_files, language_for, parse_repo
@@ -287,6 +296,21 @@ class PlanTest(unittest.TestCase):
             self.assertFalse(question_needs_plan(question))
             self.assertFalse(question_needs_plan("Show features that test savings thresholds"))
             self.assertTrue(question_needs_plan("Where are savings thresholds decided?"))
+
+    def test_a_directory_lookup_keeps_the_named_values(self):
+        question = "look under /app for value 4250 or min_threshold_base or max_threshold_base"
+        self.assertEqual(path_scopes(question), ["app"])
+        self.assertEqual(
+            code_literals(question),
+            ["4250", "min_threshold_base", "max_threshold_base"],
+        )
+        self.assertTrue(path_in_scope("app/models/forms/savings_and_investment_extra.rb", ["app"]))
+        self.assertFalse(path_in_scope("spec/models/savings_spec.rb", ["app"]))
+        self.assertFalse(path_in_scope("config/settings.yml", ["app"]))
+        self.assertEqual(path_scopes("Where are savings thresholds decided?"), [])
+        self.assertEqual(code_literals("Where are savings thresholds decided?"), [])
+        with patch("rag.plan.retrieval_model", return_value="gpt-4o-mini"):
+            self.assertFalse(question_needs_plan(question))
 
     def test_usage_sums_language_model_tokens_and_keeps_retrieval_untokenised(self):
         self.assertEqual(token_counts({"usage": {"prompt_tokens": 20, "completion_tokens": 5}}), (20, 5))

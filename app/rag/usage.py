@@ -44,11 +44,15 @@ class Meter:
         self.database_seconds += database_seconds
         self.searches += 1
 
-    def finish_retrieval(self, passages: int) -> None:
+    def finish_retrieval(self, passages: int, *, embedded: bool = True) -> None:
         self.add(Stage(
             "Embed the searches",
             self.embed_seconds,
-            note="Local embedding model. This stage has no language-model token count.",
+            note=(
+                "Local embedding model. This stage has no language-model token count."
+                if embedded
+                else "The values were matched directly, so nothing was embedded."
+            ),
         ))
         self.add(Stage(
             "Search the index",

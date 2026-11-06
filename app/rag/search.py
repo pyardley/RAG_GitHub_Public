@@ -40,6 +40,40 @@ def asks_for_features(question: str) -> bool:
     return _FEATURE_LIST.search(question) is not None
 
 
+def path_scopes(question: str) -> list[str]:
+    """Directories named after under/in/from, such as 'under /app'."""
+    found: list[str] = []
+    for match in _PATH_SCOPE.finditer(question):
+        raw = match.group(1).replace("\\", "/").strip().strip("/").rstrip(".")
+        if not raw or "/" not in match.group(1) or raw in found:
+            continue
+        found.append(raw)
+    return found
+
+
+def code_literals(question: str) -> list[str]:
+    """Numbers and identifiers to match exactly, ignoring the directory name."""
+    found: list[str] = []
+    for match in _CODE_LITERAL.finditer(question):
+        if _inside_scope(match.start(), question):
+            continue
+        word = match.group(0)
+        if word not in found:
+            found.append(word)
+    return found
+
+
+def path_in_scope(path: str, scopes: list[str]) -> bool:
+    if not scopes:
+        return True
+    lowered = path.replace("\\", "/").lower()
+    for scope in scopes:
+        prefix = scope.lower().strip("/")
+        if lowered == prefix or lowered.startswith(prefix + "/"):
+            return True
+    return False
+
+
 def topic_terms(question: str) -> list[str]:
     terms: list[str] = []
     for word in re.findall(r"[A-Za-z0-9]+", question.lower()):
@@ -52,12 +86,27 @@ def topic_terms(question: str) -> list[str]:
 def retrieve(conn, repository_ids: list[int], question: str, k: int, meter=None) -> tuple[list[Hit], list[str]]:
     """Search once, or once per query when a small model splits the question."""
     from rag.plan import search_queries
+    from rag.usage import Stage
 
+    scopes = path_scopes(question)
+    literals = code_literals(question)
+    if scopes and literals:
+        hits, seconds = literal_hits(conn, repository_ids, scopes, literals, k)
+        if hits:
+            if meter is not None:
+                meter.add(Stage(
+                    "Plan the question",
+                    0.0,
+                    note="Looked for those values under the named directory.",
+                ))
+                meter.add_search(0.0, seconds)
+                meter.finish_retrieval(len(hits), embedded=False)
+            return hits, [question]
     queries = search_queries(question, meter)
     if len(queries) == 1:
-        hits = search(conn, repository_ids, queries[0], k, meter)
+        hits = search(conn, repository_ids, queries[0], k, meter, scopes)
     else:
-        groups = [search(conn, repository_ids, query, k, meter) for query in queries]
+        groups = [search(conn, repository_ids, query, k, meter, scopes) for query in queries]
         hits = merge_hits(groups, k)
     if meter is not None:
         meter.finish_retrieval(len(hits))
@@ -90,7 +139,14 @@ def merge_hits(groups: list[list[Hit]], k: int) -> list[Hit]:
     return [best[chunk_id] for chunk_id in order]
 
 
-def search(conn, repository_ids: list[int], question: str, k: int, meter=None) -> list[Hit]:
+def search(
+    conn,
+    repository_ids: list[int],
+    question: str,
+    k: int,
+    meter=None,
+    scopes: list[str] | None = None,
+) -> list[Hit]:
     from rag.embedder import Embedder
 
     if k < 1:
@@ -101,7 +157,7 @@ def search(conn, repository_ids: list[int], question: str, k: int, meter=None) -
     embedding = _vector_literal(Embedder().embed_query(question))
     embed_seconds = time.perf_counter() - embed_started
     database_started = time.perf_counter()
-    sql = """
+    sql = f"""
         WITH semantic AS (
             SELECT id, row_number() OVER (ORDER BY ord) AS rnk
             FROM (
@@ -109,6 +165,7 @@ def search(conn, repository_ids: list[int], question: str, k: int, meter=None) -
                 FROM chunks
                 WHERE repository_id = ANY(%(repos)s)
                   AND (%(features_only)s = FALSE OR right(path, 8) = '.feature')
+                  AND {_PATH_SCOPE_SQL}
                 ORDER BY ord
                 LIMIT 50
             ) nearest
@@ -127,6 +184,7 @@ def search(conn, repository_ids: list[int], question: str, k: int, meter=None) -
                 FROM chunks
                 WHERE repository_id = ANY(%(repos)s)
                   AND (%(features_only)s = FALSE OR right(path, 8) = '.feature')
+                  AND {_PATH_SCOPE_SQL}
                   AND %(lexical_mode)s <> 'none'
                   AND CASE WHEN %(lexical_mode)s = 'or'
                            THEN tsv @@ to_tsquery('simple', %(lexical)s)
@@ -157,6 +215,8 @@ def search(conn, repository_ids: list[int], question: str, k: int, meter=None) -
                 "lexical_mode": "or" if terms else "and",
                 "features_only": listing,
                 "k": max(k, 40) if listing else k,
+                "scoped": bool(scopes),
+                "scopes": [scope.lower().strip("/") for scope in (scopes or [])],
             },
         )
         hits = [_hit_from_row(row) for row in cur.fetchall()]
@@ -346,6 +406,51 @@ def _reference_order(hit: Hit) -> tuple:
     return (test, hit.repo, hit.path, hit.start_line)
 
 
+def literal_hits(
+    conn,
+    repository_ids: list[int],
+    scopes: list[str],
+    literals: list[str],
+    k: int,
+) -> tuple[list[Hit], float]:
+    """Chunks under the named directory whose text contains one of the values."""
+    started = time.perf_counter()
+    pattern = "(?:" + "|".join(identifier_regex(literal) for literal in literals) + ")"
+    sql = f"""
+        SELECT c.id, r.name, c.path, c.start_line, c.end_line, c.symbol, c.kind, c.content, 0
+        FROM chunks c
+        JOIN repositories r ON r.id = c.repository_id
+        WHERE c.repository_id = ANY(%(repos)s)
+          AND {_PATH_SCOPE_SQL.replace("path", "c.path")}
+          AND c.content ~* %(pattern)s
+        ORDER BY c.path, c.start_line
+        LIMIT 200
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            sql,
+            {
+                "repos": repository_ids,
+                "scoped": True,
+                "scopes": [scope.lower().strip("/") for scope in scopes],
+                "pattern": pattern,
+            },
+        )
+        hits = [_hit_from_row(row) for row in cur.fetchall()]
+    conn.commit()
+    hits.sort(key=lambda hit: (-_literal_count(hit, literals), hit.path, hit.start_line))
+    return hits[:k], time.perf_counter() - started
+
+
+def _literal_count(hit: Hit, literals: list[str]) -> int:
+    text = hit.content.lower()
+    return sum(literal.lower() in text for literal in literals)
+
+
+def _inside_scope(start: int, question: str) -> bool:
+    return any(match.start(1) <= start < match.end(1) for match in _PATH_SCOPE.finditer(question))
+
+
 def _hit_from_row(row: tuple) -> Hit:
     return Hit(
         chunk_id=row[0],
@@ -364,6 +469,23 @@ def _vector_literal(values: list[float]) -> str:
     return "[" + ",".join(f"{value:.7f}" for value in values) + "]"
 
 
+_PATH_SCOPE = re.compile(
+    r"\b(?:under|in|inside|within|from)\s+"
+    r"(/?[A-Za-z0-9_-]+(?:/[A-Za-z0-9_.-]*)*)",
+    re.IGNORECASE,
+)
+_CODE_LITERAL = re.compile(
+    r"\b(?:[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]+|\d{3,}|[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+)+)\b"
+)
+_PATH_SCOPE_SQL = """(
+    %(scoped)s = FALSE
+    OR EXISTS (
+        SELECT 1
+        FROM unnest(%(scopes)s::text[]) AS scope(prefix)
+        WHERE lower(path) = prefix
+           OR left(lower(path), char_length(prefix) + 1) = prefix || '/'
+    )
+)"""
 _FEATURE_LIST = re.compile(
     r"\b(?:show|list|find|which|what)\b.{0,80}\bfeatures?\b"
     r"|\bfeatures?\b.{0,40}\b(?:that|which|test|cover|exercise)\b"
