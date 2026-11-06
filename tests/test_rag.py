@@ -26,6 +26,7 @@ from rag.search import (
     merge_hits,
     path_in_scope,
     path_scopes,
+    retrieve,
     topic_terms,
 )
 from rag.chunker import chunk_source
@@ -312,6 +313,59 @@ class PlanTest(unittest.TestCase):
         with patch("rag.plan.retrieval_model", return_value="gpt-4o-mini"):
             self.assertFalse(question_needs_plan(question))
 
+    def test_the_word_in_front_of_the_number_does_not_matter(self):
+        question = "look under /app for text 4250"
+        self.assertEqual(path_scopes(question), ["app"])
+        self.assertEqual(code_literals(question), ["4250"])
+        self.assertEqual(path_scopes("inside app/models for 4250"), ["app/models"])
+        self.assertEqual(code_literals("inside app/models for 4250"), ["4250"])
+        self.assertEqual(path_scopes("under app for 4250"), [])
+        with patch("rag.plan.retrieval_model", return_value="gpt-4o-mini"):
+            self.assertFalse(question_needs_plan(question))
+            self.assertFalse(question_needs_plan("inside app/models for 4250"))
+
+    def test_a_literal_inside_the_directory_is_not_a_search_term(self):
+        question = "under app/models/forms/savings_and_investment_extra.rb for 4250"
+        self.assertEqual(
+            path_scopes(question),
+            ["app/models/forms/savings_and_investment_extra.rb"],
+        )
+        self.assertEqual(code_literals(question), ["4250"])
+        self.assertTrue(path_in_scope(
+            "app/models/forms/savings_and_investment_extra.rb",
+            ["app/models"],
+        ))
+        self.assertFalse(path_in_scope("app/models_extra/fee.rb", ["app/models"]))
+
+    def test_retrieve_stops_at_the_literal_search(self):
+        question = "look under /app for text 4250"
+        hit = Hit(
+            9,
+            "hmcts/hwf-publicapp",
+            "app/models/forms/savings_and_investment_extra.rb",
+            23,
+            27,
+            "Forms::SavingsAndInvestmentExtra#amount",
+            "method",
+            "return if amount < 4250",
+            1.0,
+        )
+        meter = Meter()
+
+        def fail_if_planned(*_args, **_kwargs):
+            raise AssertionError("planner should not run")
+
+        with (
+            patch("rag.search.literal_hits", return_value=([hit], 0.01)),
+            patch("rag.plan.search_queries", side_effect=fail_if_planned),
+        ):
+            hits, queries = retrieve(None, [1], question, 16, meter)
+        self.assertEqual(hits, [hit])
+        self.assertEqual(queries, [question])
+        embed = next(stage for stage in meter.as_dict()["stages"] if stage["name"] == "Embed the searches")
+        self.assertEqual(embed["note"], "The values were matched directly, so nothing was embedded.")
+        self.assertIsNone(embed["total_tokens"])
+
     def test_usage_sums_language_model_tokens_and_keeps_retrieval_untokenised(self):
         self.assertEqual(token_counts({"usage": {"prompt_tokens": 20, "completion_tokens": 5}}), (20, 5))
         self.assertEqual(token_counts({"prompt_eval_count": 11, "eval_count": 3}), (11, 3))
@@ -402,6 +456,8 @@ class WebTest(unittest.TestCase):
             self.assertEqual(response.status, 200)
             self.assertIn("Impact", page)
             self.assertIn("Search", page)
+            self.assertIn("Resources", page)
+            self.assertIn("renderUsage", page)
             request = urllib.request.Request(
                 f"http://127.0.0.1:{port}/api/query",
                 data=json.dumps({"question": ""}).encode("utf-8"),
@@ -412,6 +468,69 @@ class WebTest(unittest.TestCase):
                 urllib.request.urlopen(request)
             self.assertEqual(caught.exception.code, 400)
             caught.exception.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_query_response_includes_usage_stages(self):
+        hit = Hit(
+            9,
+            "hmcts/hwf-publicapp",
+            "app/models/forms/savings_and_investment_extra.rb",
+            23,
+            27,
+            "Forms::SavingsAndInvestmentExtra#amount",
+            "method",
+            "return if amount < 4250",
+            1.0,
+        )
+        repo = {
+            "id": 1,
+            "name": "hmcts/hwf-publicapp",
+            "branch": "master",
+            "commit_sha": "b1d15f83c0a9",
+        }
+
+        def fake_retrieve(_conn, _repository_ids, question, _k, meter=None):
+            if meter is not None:
+                meter.add_search(0.0, 0.01)
+                meter.finish_retrieval(1, embedded=False)
+            return [hit], [question]
+
+        class _Connection:
+            def close(self):
+                return None
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        port = server.server_address[1]
+        try:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/query",
+                data=json.dumps({
+                    "question": "look under /app for text 4250",
+                    "repo": "hmcts/hwf-publicapp",
+                }).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with (
+                patch("rag.web.connect", return_value=_Connection()),
+                patch("rag.web.resolve_repositories", return_value=[repo]),
+                patch("rag.web.retrieve", side_effect=fake_retrieve),
+                patch("rag.web.language_model_configured", return_value=True),
+                patch("rag.web.answer", return_value="The threshold is 4250."),
+            ):
+                with urllib.request.urlopen(request) as response:
+                    body = json.loads(response.read().decode("utf-8"))
+            self.assertEqual(response.status, 200)
+            self.assertEqual(body["answer"], "The threshold is 4250.")
+            self.assertTrue(body["usage"]["stages"])
+            self.assertIn(
+                "The values were matched directly, so nothing was embedded.",
+                [stage["note"] for stage in body["usage"]["stages"]],
+            )
         finally:
             server.shutdown()
             server.server_close()
