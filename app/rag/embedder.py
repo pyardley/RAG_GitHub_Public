@@ -6,6 +6,8 @@ from rag.config import EMBEDDING_DIM, EMBEDDING_MODEL, FASTEMBED_CACHE_PATH
 
 
 class Embedder:
+    _shared = None
+
     def __init__(self) -> None:
         self._model = None
 
@@ -32,17 +34,17 @@ class Embedder:
         return [vector.tolist() for vector in produced]
 
     def _load(self):
-        if self._model is None:
+        if Embedder._shared is None:
             from fastembed import TextEmbedding
 
             print(f"Loading embedding model {EMBEDDING_MODEL}", flush=True)
-            self._model = TextEmbedding(
+            Embedder._shared = TextEmbedding(
                 model_name=EMBEDDING_MODEL,
                 cache_dir=FASTEMBED_CACHE_PATH,
                 threads=4,
                 enable_cpu_mem_arena=False,
             )
-        return self._model
+        return Embedder._shared
 
     @staticmethod
     def _check_dim(vector: list[float]) -> None:

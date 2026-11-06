@@ -14,7 +14,10 @@ from rag.answer import ollama_payload, passage_limits, visible_answer
 from rag.follow import calls_in, choose_steps, contains_step, feature_paths, page_symbol, step_body, step_phrases
 from rag.gitrepo import default_branch_name
 from rag.web import Handler, _progress_view, github_blob_url, run_query, start_ingest
-from rag.search import Hit, _feature_files, asks_for_features, topic_terms
+from unittest.mock import patch
+
+from rag.plan import parse_queries, question_needs_plan
+from rag.search import Hit, _feature_files, asks_for_features, merge_hits, topic_terms
 from rag.chunker import chunk_source
 from rag.cli import main
 from rag.files import is_skipped, iter_source_files, language_for, parse_repo
@@ -260,6 +263,37 @@ class FilesTest(unittest.TestCase):
         self.assertIn("Gemfile", found)
         self.assertNotIn("vendor/hidden.rb", found)
         self.assertFalse(any(path.startswith(".env") for path in found))
+
+
+class PlanTest(unittest.TestCase):
+    def test_parse_queries_keeps_words_from_the_question_and_drops_invented_names(self):
+        question = "Where does an applicant have too much in savings to get help with fees?"
+        text = '{"queries": ["savings fees", "checkSavingsLimit", "applicant savings", "help with fees"]}'
+        self.assertEqual(
+            parse_queries(text, question),
+            [question, "savings fees", "applicant savings"],
+        )
+
+    def test_parse_queries_falls_back_when_the_model_does_not_return_json(self):
+        self.assertEqual(parse_queries("I am not sure", "where is the fee"), ["where is the fee"])
+
+    def test_a_named_feature_is_not_rewritten(self):
+        question = (
+            "Explain how features like /features/address/address_married.feature "
+            "are turned into button presses"
+        )
+        with patch("rag.plan.retrieval_model", return_value="gpt-4o-mini"):
+            self.assertFalse(question_needs_plan(question))
+            self.assertFalse(question_needs_plan("Show features that test savings thresholds"))
+            self.assertTrue(question_needs_plan("Where are savings thresholds decided?"))
+
+    def test_merge_hits_keeps_the_higher_score_for_a_repeated_chunk(self):
+        low = Hit(1, "hmcts/hwf-publicapp", "app/a.rb", 1, 2, "A", "method", "a", 0.1)
+        high = Hit(1, "hmcts/hwf-publicapp", "app/a.rb", 1, 2, "A", "method", "a", 0.8)
+        other = Hit(2, "hmcts/hwf-publicapp", "app/b.rb", 3, 4, "B", "method", "b", 0.4)
+        merged = merge_hits([[low, other], [high]], 2)
+        self.assertEqual([hit.chunk_id for hit in merged], [1, 2])
+        self.assertEqual(merged[0].score, 0.8)
 
 
 class AnswerTest(unittest.TestCase):

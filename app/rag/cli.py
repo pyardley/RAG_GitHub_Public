@@ -8,7 +8,7 @@ import sys
 from rag.answer import AnswerError, active_model, answer, configuration_hint, language_model_configured
 from rag.db import connect, list_repositories, resolve_repositories
 from rag.ingest import ingest_repository
-from rag.search import Hit, impact, search
+from rag.search import Hit, impact, retrieve
 from rag.web import serve
 
 
@@ -97,9 +97,11 @@ def _query(question: str, repo: str | None, k: int, no_answer: bool, model: str 
     try:
         repositories = resolve_repositories(conn, repo)
         _print_scope(repositories)
-        hits = search(conn, [item["id"] for item in repositories], question, k)
+        hits, queries = retrieve(conn, [item["id"] for item in repositories], question, k)
     finally:
         conn.close()
+    if len(queries) > 1:
+        print("Searched: " + " | ".join(queries))
     if not hits:
         print("No matching code.")
         return 0

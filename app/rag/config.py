@@ -14,10 +14,14 @@ OPENAI_BASE_URL = os.environ.get(
     "OPENAI_BASE_URL", "https://api.openai.com/v1"
 ).strip().rstrip("/")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini").strip()
+OPENAI_RETRIEVAL_MODEL = os.environ.get("OPENAI_RETRIEVAL_MODEL", "gpt-4o-mini").strip()
 OLLAMA_BASE_URL = os.environ.get(
     "OLLAMA_BASE_URL", "http://host.docker.internal:11434"
 ).strip().rstrip("/")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:7b").strip()
+OLLAMA_RETRIEVAL_MODEL = os.environ.get(
+    "OLLAMA_RETRIEVAL_MODEL", "qwen2.5-coder:7b"
+).strip()
 OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "8192"))
 OLLAMA_TIMEOUT = int(os.environ.get("OLLAMA_TIMEOUT", "600"))
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "").strip()

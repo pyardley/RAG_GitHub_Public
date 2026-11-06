@@ -48,6 +48,43 @@ def topic_terms(question: str) -> list[str]:
     return terms
 
 
+def retrieve(conn, repository_ids: list[int], question: str, k: int) -> tuple[list[Hit], list[str]]:
+    """Search once, or once per query when a small model splits the question."""
+    from rag.plan import search_queries
+
+    queries = search_queries(question)
+    if len(queries) == 1:
+        return search(conn, repository_ids, queries[0], k), queries
+    groups = [search(conn, repository_ids, query, k) for query in queries]
+    return merge_hits(groups, k), queries
+
+
+def merge_hits(groups: list[list[Hit]], k: int) -> list[Hit]:
+    """Take turns from each search so one broad query cannot fill the list."""
+    best: dict[int, Hit] = {}
+    order: list[int] = []
+    cursors = [0] * len(groups)
+    while len(order) < k:
+        progressed = False
+        for index, hits in enumerate(groups):
+            if cursors[index] >= len(hits):
+                continue
+            hit = hits[cursors[index]]
+            cursors[index] += 1
+            progressed = True
+            current = best.get(hit.chunk_id)
+            if current is None:
+                best[hit.chunk_id] = hit
+                order.append(hit.chunk_id)
+                if len(order) >= k:
+                    break
+            elif hit.score > current.score:
+                best[hit.chunk_id] = hit
+        if not progressed:
+            break
+    return [best[chunk_id] for chunk_id in order]
+
+
 def search(conn, repository_ids: list[int], question: str, k: int) -> list[Hit]:
     from rag.embedder import Embedder
 

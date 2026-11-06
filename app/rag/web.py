@@ -25,7 +25,8 @@ from rag.db import connect, list_repositories, resolve_repositories
 from rag.files import parse_repo
 from rag.gitrepo import default_branch
 from rag.ingest import ingest_repository
-from rag.search import Hit, impact, search
+from rag.plan import retrieval_model
+from rag.search import Hit, impact, retrieve
 
 _PAGE = Path(__file__).with_name("static") / "index.html"
 _MAX_BODY = 1_000_000
@@ -202,7 +203,7 @@ def _retrieve(body: dict, question: str, *, written: bool, impact_mode: bool) ->
         return 503, {"error": _failure_text(exc)}
     try:
         repositories = resolve_repositories(conn, repo)
-        hits = search(conn, [item["id"] for item in repositories], question, count)
+        hits, queries = retrieve(conn, [item["id"] for item in repositories], question, count)
     except SystemExit as exc:
         return 400, {"error": _failure_text(exc)}
     finally:
@@ -210,6 +211,7 @@ def _retrieve(body: dict, question: str, *, written: bool, impact_mode: bool) ->
     text, answer_error = _written_answer(question, hits, impact_mode=impact_mode, enabled=written)
     return 200, {
         "repositories": [_scope(item) for item in repositories],
+        "queries": queries,
         "hits": [_hit(item, _indexed_commits(repositories)) for item in hits],
         "answer": text,
         "answer_error": answer_error,
@@ -279,6 +281,7 @@ def _model_view() -> dict:
         "configured": configured,
         "provider": LLM_PROVIDER,
         "name": active_model() if configured else None,
+        "retrieval": retrieval_model() if configured else None,
         "hint": None if configured else configuration_hint(),
     }
 

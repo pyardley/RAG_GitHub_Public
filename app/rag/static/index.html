@@ -268,8 +268,9 @@
       }
       if ([...repoSelect.options].some((option) => option.value === previous)) repoSelect.value = previous;
       const model = body.model;
+      const retrieval = model.retrieval && model.retrieval !== model.name ? ` · search ${model.retrieval}` : "";
       document.querySelector("#model-chip").textContent = model.configured
-        ? `${model.provider} · ${model.name}`
+        ? `${model.provider} · ${model.name}${retrieval}`
         : "Retrieved code only";
       document.querySelector("#answer").disabled = !model.configured;
       if (!model.configured) document.querySelector("#answer").checked = false;
@@ -467,6 +468,12 @@
         renderGroup("References", body.references, body.reference_count);
         renderGroup("Related", body.related, (body.related || []).length);
         return;
+      }
+      if (body.queries && body.queries.length > 1) {
+        const searched = document.createElement("p");
+        searched.className = "scope";
+        searched.textContent = `Searched: ${body.queries.join(" · ")}`;
+        results.append(searched);
       }
       if (!body.hits || !body.hits.length) {
         const empty = document.createElement("p");
