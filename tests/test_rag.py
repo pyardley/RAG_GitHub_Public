@@ -10,7 +10,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 
-from rag.answer import _query_instructions, ollama_payload, passage_limits, visible_answer
+from rag.answer import (
+    _query_instructions,
+    _with_matches,
+    matching_lines,
+    ollama_payload,
+    passage_limits,
+    visible_answer,
+)
 from rag.follow import calls_in, choose_steps, contains_step, feature_paths, page_symbol, step_body, step_phrases
 from rag.gitrepo import default_branch_name
 from rag.web import Handler, _progress_view, github_blob_url, run_query, start_ingest
@@ -493,6 +500,32 @@ class AnswerTest(unittest.TestCase):
         self.assertIn("Cucumber step pattern", instructions)
         self.assertIn("no exact match", instructions)
         self.assertNotIn("If a stage is not in the passages, say so", instructions)
+
+    def test_the_written_answer_keeps_the_step_definition_line(self):
+        question = 'look for "and average" under /features'
+        feature = "\n".join([
+            "When I submit the form with income '8000' and average 'average'",
+            "| Total income £8,000 Average for the last three months Change income |",
+        ])
+        step = "\n".join([
+            "When(/^I submit the form with income '([^\"']*)' and monthly$/) do |num|",
+            "When(/^I submit the form with income '([^\"']*)' and average '([^\"']*)'$/) do |num, income_period|",
+        ])
+        hits = [
+            Hit(1, "hmcts/hwf-publicapp", "features/e2e.feature", 160, 192, None, "scenario", feature, 1.0),
+            Hit(2, "hmcts/hwf-publicapp", "features/step_definitions/income_period_steps.rb", 5, 11, None, "file", step, 1.0),
+        ]
+        lines = matching_lines(question, hits)
+        self.assertEqual(
+            [(path, line) for path, line, _text in lines],
+            [
+                ("features/e2e.feature", 160),
+                ("features/step_definitions/income_period_steps.rb", 6),
+            ],
+        )
+        written = _with_matches(question, hits, "The feature summary mentions Average at line 192.")
+        self.assertIn("features/step_definitions/income_period_steps.rb:6:", written)
+        self.assertTrue(written.startswith("Matches\n"))
 
     def test_visible_answer_drops_a_think_block(self):
         text = "<think>walk the callers</think>\nDefined in application_controller.rb:44."

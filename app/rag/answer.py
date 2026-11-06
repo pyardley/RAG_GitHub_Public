@@ -19,6 +19,7 @@ from rag.config import (
     OPENAI_MODEL,
 )
 from rag.search import Hit, asks_for_features, quoted_phrases
+from rag.text import identifier_regex
 from rag.usage import Meter, Stage, token_counts
 
 _THINK_BLOCK = re.compile(r"<think>.*?</think>\s*", re.DOTALL | re.IGNORECASE)
@@ -34,7 +35,9 @@ _PHRASE_INSTRUCTIONS = (
     "including inside a Cucumber step pattern where a capture such as ([^']*) follows "
     "the words. Cite every matching passage with its path and line numbers, and quote "
     "the matching line. Do not say the text is missing, or that there is no exact match, "
-    "when those words appear in a passage."
+    "when those words appear in a passage. Matching lines are listed under the question "
+    "and shown to the user before your reply. Explain each listed line, including a "
+    "step definition. Do not cite a different line from the same passage."
 )
 _FEATURE_LIST_INSTRUCTIONS = (
     " The question asks for feature files. List each feature file once, with its "
@@ -104,7 +107,7 @@ def answer(
         else:
             text, body = _complete_openai(question, hits, impact=impact, model=chosen)
         prompt, completion = token_counts(body)
-        return text
+        return _with_matches(question, hits, text)
     finally:
         if meter is not None:
             meter.add(Stage(
@@ -213,10 +216,41 @@ def _messages(
 ) -> list[dict[str, str]]:
     instructions = _IMPACT_INSTRUCTIONS if impact else _query_instructions(question, hits)
     passages = _format_passages(hits, max_hits=max_hits, per_passage=per_passage, total_chars=total_chars)
+    listed = format_matching_lines(question, hits)
+    found = f"Matching lines:\n{listed}\n\n" if listed else ""
     return [
         {"role": "system", "content": instructions},
-        {"role": "user", "content": f"Question:\n{question}\n\nRetrieved passages:\n{passages}"},
+        {"role": "user", "content": f"Question:\n{question}\n\n{found}Retrieved passages:\n{passages}"},
     ]
+
+
+def matching_lines(question: str, hits: list[Hit]) -> list[tuple[str, int, str]]:
+    """Lines in the retrieved passages that contain the quoted text."""
+    patterns = [_phrase_pattern(phrase) for phrase in quoted_phrases(question)]
+    if not patterns:
+        return []
+    found: list[tuple[str, int, str]] = []
+    for hit in hits:
+        for offset, line in enumerate(hit.content.splitlines()):
+            if any(pattern.search(line) for pattern in patterns):
+                found.append((hit.path, hit.start_line + offset, line.strip()))
+    return found
+
+
+def format_matching_lines(question: str, hits: list[Hit]) -> str:
+    return "\n".join(f"{path}:{line}: {text}" for path, line, text in matching_lines(question, hits))
+
+
+def _with_matches(question: str, hits: list[Hit], text: str) -> str:
+    listed = format_matching_lines(question, hits)
+    if not listed:
+        return text
+    return f"Matches\n{listed}\n\n{text}"
+
+
+def _phrase_pattern(phrase: str) -> re.Pattern[str]:
+    body = identifier_regex(phrase).replace(r"\m", r"\b").replace(r"\M", r"\b")
+    return re.compile(body, re.IGNORECASE)
 
 
 def _query_instructions(question: str, hits: list[Hit]) -> str:
