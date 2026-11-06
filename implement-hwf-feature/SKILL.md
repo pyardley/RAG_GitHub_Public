@@ -3,14 +3,16 @@ name: implement-hwf-feature
 description: >-
   Implement or amend Cucumber step definitions, SitePrism page objects, and
   support helpers for the HMCTS Help with Fees public application
-  (hmcts/hwf-publicapp) and staff application (hmcts/hwf-staffapp). Use when
-  a tester supplies a feature file under features/ (for example
-  features/address/address_married.feature or features/sign_in.feature) and
-  an environment URL and needs those steps turned into the button presses,
-  radio choices, and text fields the page actually shows. Use when the user
-  mentions implementing, writing, or fixing a feature file, step definition,
-  page object, Capybara locator, or Cucumber scenario for Help with Fees,
-  hwf-publicapp, hwf-staffapp, or files under features/step_definitions,
+  (hmcts/hwf-publicapp), the staff application (hmcts/hwf-staffapp), and the
+  C100 child arrangements application (ministryofjustice/c100-application).
+  Use when a tester supplies a feature file under features/ (for example
+  features/address/address_married.feature, features/sign_in.feature, or
+  features/applicant_details.feature) and an environment URL and needs those
+  steps turned into the button presses, radio choices, and text fields the
+  page actually shows. Use when the user mentions implementing, writing, or
+  fixing a feature file, step definition, page object, Capybara locator, or
+  Cucumber scenario for Help with Fees, hwf-publicapp, hwf-staffapp, C100,
+  c100-application, or files under features/step_definitions,
   features/support, or features/support/page_objects.
 ---
 
@@ -20,8 +22,9 @@ Work in the checkout for the suite you are changing. The feature file states the
 
 - `hmcts/hwf-publicapp`: [references/hwf-publicapp.md](references/hwf-publicapp.md). Helpers are `features/support/generic_helpers.rb` and `features/support/navigation_helper.rb`. The advance button is `continue`.
 - `hmcts/hwf-staffapp`: [references/hwf-staffapp.md](references/hwf-staffapp.md). Helpers are `features/support/helpers/generic_helpers.rb` and `features/support/helpers/navigation_helpers.rb`. The advance button is that page's `click_next`.
+- `ministryofjustice/c100-application`: [references/c100-application.md](references/c100-application.md). Helpers are `features/support/generic_helpers.rb`. The advance button is `click_continue_button` on `BasePage`.
 
-The steps below describe the public app. Where the staff file differs, follow the staff file.
+The steps below describe the public app. Where the staff file or the C100 file differs, follow that file.
 
 Leave `features/support/env.rb` alone. Cucumber loads every `features/**/*.rb` file, and that file says it is generated.
 
