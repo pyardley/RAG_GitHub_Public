@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 
-from rag.answer import ollama_payload, passage_limits, visible_answer
+from rag.answer import _query_instructions, ollama_payload, passage_limits, visible_answer
 from rag.follow import calls_in, choose_steps, contains_step, feature_paths, page_symbol, step_body, step_phrases
 from rag.gitrepo import default_branch_name
 from rag.web import Handler, _progress_view, github_blob_url, run_query, start_ingest
@@ -463,6 +463,37 @@ class PlanTest(unittest.TestCase):
 
 
 class AnswerTest(unittest.TestCase):
+    def test_a_quoted_step_pattern_counts_as_a_match(self):
+        question = 'look for "I submit the form with income" under /features'
+        hits = [
+            Hit(
+                3,
+                "hmcts/hwf-publicapp",
+                "features/income_kind/income_kind_single.feature",
+                27,
+                31,
+                "Scenario",
+                "scenario",
+                "When I submit the form with income '1000' and monthly",
+                1.0,
+            ),
+            Hit(
+                4,
+                "hmcts/hwf-publicapp",
+                "features/step_definitions/income_period_steps.rb",
+                1,
+                11,
+                None,
+                "file",
+                "When(/^I submit the form with income '([^\"']*)' and monthly$/) do |num|",
+                1.0,
+            ),
+        ]
+        instructions = _query_instructions(question, hits)
+        self.assertIn("Cucumber step pattern", instructions)
+        self.assertIn("no exact match", instructions)
+        self.assertNotIn("If a stage is not in the passages, say so", instructions)
+
     def test_visible_answer_drops_a_think_block(self):
         text = "<think>walk the callers</think>\nDefined in application_controller.rb:44."
         self.assertEqual(visible_answer(text), "Defined in application_controller.rb:44.")

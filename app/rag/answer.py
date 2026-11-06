@@ -18,7 +18,7 @@ from rag.config import (
     OPENAI_BASE_URL,
     OPENAI_MODEL,
 )
-from rag.search import Hit, asks_for_features
+from rag.search import Hit, asks_for_features, quoted_phrases
 from rag.usage import Meter, Stage, token_counts
 
 _THINK_BLOCK = re.compile(r"<think>.*?</think>\s*", re.DOTALL | re.IGNORECASE)
@@ -28,6 +28,13 @@ _QUERY_INSTRUCTIONS = (
     "code passages. Cite file paths and line numbers from the passages. If the "
     "passages do not contain the answer, say what is missing. Do not invent "
     "files, methods, or behaviour."
+)
+_PHRASE_INSTRUCTIONS = (
+    " The question quotes text to find. Words that appear in a passage are a match, "
+    "including inside a Cucumber step pattern where a capture such as ([^']*) follows "
+    "the words. Cite every matching passage with its path and line numbers, and quote "
+    "the matching line. Do not say the text is missing, or that there is no exact match, "
+    "when those words appear in a passage."
 )
 _FEATURE_LIST_INSTRUCTIONS = (
     " The question asks for feature files. List each feature file once, with its "
@@ -213,6 +220,8 @@ def _messages(
 
 
 def _query_instructions(question: str, hits: list[Hit]) -> str:
+    if quoted_phrases(question):
+        return _QUERY_INSTRUCTIONS + _PHRASE_INSTRUCTIONS
     if asks_for_features(question):
         return _QUERY_INSTRUCTIONS + _FEATURE_LIST_INSTRUCTIONS
     paths = {hit.path for hit in hits}
