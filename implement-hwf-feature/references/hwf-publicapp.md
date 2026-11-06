@@ -1,4 +1,4 @@
-# Suite patterns
+# hwf-publicapp patterns
 
 Taken from `hmcts/hwf-publicapp`. Page objects are SitePrism pages (`BasePage < SitePrism::Page`). Follow these shapes. Capybara is configured with `exact: true` and `match: :prefer_exact`, so a locator has to be the whole label, not a fragment of it.
 
@@ -21,7 +21,7 @@ Scenario: Entering address with postcode
 | `When I enter my address with postcode` | `address_steps.rb` | `address_page.submit_full_address` |
 | `Then I should be taken to contact page` | `contact_steps.rb` | `expect(contact_page).to be_displayed` |
 
-`to_address_page('married')` in `navigation_helper.rb` walks the earlier pages. Each call is a page method that answers that page and clicks Continue:
+`to_address_page('married')` in `features/support/navigation_helper.rb` walks the earlier pages. Each call is a page method that answers that page and clicks Continue:
 
 `to_fee_page` (checklist, then `checklist_continue`), `fee_page.submit_fee_yes`, `form_name_page.submit_valid_form_number`, `applying_on_behalf_page.submit_no`, `national_insurance_page.select_yes_and_enter_valid_ni`, `marital_status_page.submit_married`, `partner_national_insurance_page.submit_no_ni`, `savings_investment_page.low_amount_checked`, `benefit_page.submit_benefit_yes`, `probate_page.submit_probate_no`, `claim_page.submit_claim_no`, `dob_page.valid_partner_dob`, `personal_details_page.submit_full_names`.
 
@@ -98,7 +98,7 @@ end
 
 `have_step_info` and `have_header` are the SitePrism predicates for those elements. They fail when the text differs, which is what you want for a heading assertion. The caption is hard-coded and is not the same on every page: address says `Step 21 of 25`, apply type says `Step 20 of 22`. Copy the caption from the live page.
 
-`generic_helpers.rb` exposes the instance:
+`features/support/generic_helpers.rb` exposes the instance:
 
 ```ruby
 def address_page
@@ -110,7 +110,7 @@ def continue
 end
 ```
 
-`BasePage` defines `continue_button` as `input[type="submit"]` inside `#content`. Reuse `continue`. Do not click a second selector for the same button.
+`BasePage` defines `continue_button` as `input[type="submit"]` inside `#content`. Reuse `continue`. Do not click a second selector for the same button. The checklist uses `checklist_continue` because that button is not the submit input.
 
 ## Locators this suite actually uses
 
@@ -146,3 +146,13 @@ end
 Keep captured text in the feature (`'married'`, the error sentence). Keep data that the feature does not mention, such as `102 Petty France`, inside the page method, next to the other fixtures.
 
 Search the step files before adding a phrase. Shared phrases already live in `common_steps.rb` (`I click continue`, `I should see '<text>' error message`, `I should see '<text>' header`) and `homepage_steps.rb` (`I should see the home page`).
+
+Question URLs are `/applications/{app_id}/questions/<form_id>`. The h1 and the step caption come from `config/locales/en.yml` under `questions.<form_id>`. `page_number` is the index of that symbol in `Settings.navigation` plus one. Address lookup is stubbed with `disable_address_lookup`. On a host that really shows lookup, click **Enter address manually** before filling the fields (`AddressPage#submit_full_address_demo`).
+
+Run one scenario from the app checkout:
+
+```bash
+bundle exec cucumber features/address/address_married.feature:6
+```
+
+To drive the given environment URL, set `CAPYBARA_APP_HOST` to that URL. A host other than localhost selects Firefox. Confirm the browser host has no `:3000` suffix, because this suite sets `Capybara.always_include_port = true`.

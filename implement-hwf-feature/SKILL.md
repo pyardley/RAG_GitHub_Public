@@ -3,20 +3,25 @@ name: implement-hwf-feature
 description: >-
   Implement or amend Cucumber step definitions, SitePrism page objects, and
   support helpers for the HMCTS Help with Fees public application
-  (hmcts/hwf-publicapp). Use when a tester supplies a feature file under
-  features/ (for example features/address/address_married.feature) and an
-  environment URL (for example https://hwf-publicapp.aat.platform.hmcts.net/)
-  and needs those steps turned into the button presses, radio choices, and
-  text fields the page actually shows. Use when the user mentions
-  implementing, writing, or fixing a feature file, step definition, page
-  object, Capybara locator, or Cucumber scenario for Help with Fees,
-  hwf-publicapp, or files under features/step_definitions, features/support,
-  or features/support/page_objects.
+  (hmcts/hwf-publicapp) and staff application (hmcts/hwf-staffapp). Use when
+  a tester supplies a feature file under features/ (for example
+  features/address/address_married.feature or features/sign_in.feature) and
+  an environment URL and needs those steps turned into the button presses,
+  radio choices, and text fields the page actually shows. Use when the user
+  mentions implementing, writing, or fixing a feature file, step definition,
+  page object, Capybara locator, or Cucumber scenario for Help with Fees,
+  hwf-publicapp, hwf-staffapp, or files under features/step_definitions,
+  features/support, or features/support/page_objects.
 ---
 
 # Implement a Help with Fees feature
 
-Work in the `hmcts/hwf-publicapp` checkout. The feature file states the journey. The environment URL shows the live copy. The Ruby under `features/step_definitions`, `features/support/page_objects`, `features/support/generic_helpers.rb`, and `features/support/navigation_helper.rb` is what runs the steps.
+Work in the checkout for the suite you are changing. The feature file states the journey. The environment URL shows the live copy. Read the patterns file for that suite before adding or changing a page object:
+
+- `hmcts/hwf-publicapp`: [references/hwf-publicapp.md](references/hwf-publicapp.md). Helpers are `features/support/generic_helpers.rb` and `features/support/navigation_helper.rb`. The advance button is `continue`.
+- `hmcts/hwf-staffapp`: [references/hwf-staffapp.md](references/hwf-staffapp.md). Helpers are `features/support/helpers/generic_helpers.rb` and `features/support/helpers/navigation_helpers.rb`. The advance button is that page's `click_next`.
+
+The steps below describe the public app. Where the staff file differs, follow the staff file.
 
 Leave `features/support/env.rb` alone. Cucumber loads every `features/**/*.rb` file, and that file says it is generated.
 
@@ -26,8 +31,6 @@ Leave `features/support/env.rb` alone. Cucumber loads every `features/**/*.rb` f
 - An environment URL, such as `https://hwf-publicapp.aat.platform.hmcts.net/`
 
 Ask for whichever is missing before writing steps. The URL is evidence of the visible text. The suite still runs against the local Rails app unless the user asks to drive that host.
-
-Read [references/suite-patterns.md](references/suite-patterns.md) before adding or changing a page object. It maps the address feature onto the files that run it, and it shows the SitePrism page `features/support/page_objects/apply_type_page.rb`.
 
 ## Order of work
 
