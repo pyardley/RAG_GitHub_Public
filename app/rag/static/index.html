@@ -190,7 +190,7 @@
       <label id="prompt-label"><span id="prompt-caption">Question</span>
         <textarea id="prompt" placeholder="Where is the online application stored?"></textarea>
       </label>
-      <p class="hint" id="prompt-hint">Ask in your own words, or quote text to match it exactly. Inside quotes, [0-9]* matches any amount. under /features limits the directory.</p>
+      <p class="hint" id="prompt-hint">Ask in your own words, or quote text to match it exactly. Inside quotes, [0-9]* matches any amount. under /features limits the directory. Ignore /features/support leaves that folder out.</p>
       <div class="row">
         <label id="k-wrap">Passages
           <input id="k" type="number" min="1" max="30" value="8">
@@ -487,6 +487,12 @@
         searched.className = "scope";
         searched.textContent = `Searched: ${body.queries.join(" · ")}`;
         results.append(searched);
+      }
+      if (body.truncated) {
+        const limited = document.createElement("p");
+        limited.className = "scope";
+        limited.textContent = `More matches were found than the Passages limit of ${body.passage_limit}.`;
+        results.append(limited);
       }
       renderMatches(body.matches);
       if (!body.hits || !body.hits.length) {

@@ -44,7 +44,14 @@ class Meter:
         self.database_seconds += database_seconds
         self.searches += 1
 
-    def finish_retrieval(self, passages: int, *, embedded: bool = True, direct: str | None = None) -> None:
+    def finish_retrieval(
+        self,
+        passages: int,
+        *,
+        embedded: bool = True,
+        direct: str | None = None,
+        skipped: list[str] | None = None,
+    ) -> None:
         if embedded:
             note = "Local embedding model. This stage has no language-model token count."
         elif direct == "regular expression":
@@ -58,10 +65,13 @@ class Meter:
             self.embed_seconds,
             note=note,
         ))
+        kept = f"{self.searches} searches, {passages} passages kept."
+        if skipped:
+            kept += " Left out " + " and ".join(skipped) + "."
         self.add(Stage(
             "Search the index",
             self.database_seconds,
-            note=f"{self.searches} searches, {passages} passages kept.",
+            note=kept,
         ))
 
     def as_dict(self) -> dict:

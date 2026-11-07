@@ -99,11 +99,13 @@ def _query(question: str, repo: str | None, k: int, no_answer: bool, model: str 
     try:
         repositories = resolve_repositories(conn, repo)
         _print_scope(repositories)
-        hits, queries = retrieve(conn, [item["id"] for item in repositories], question, k, meter)
+        hits, queries, truncated = retrieve(conn, [item["id"] for item in repositories], question, k, meter)
     finally:
         conn.close()
     if len(queries) > 1:
         print("Searched: " + " | ".join(queries))
+    if truncated:
+        print(f"More matches were found than the Passages limit of {k}.")
     if not hits:
         print("No matching code.")
         _print_usage(meter)

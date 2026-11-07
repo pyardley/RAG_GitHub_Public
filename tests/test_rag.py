@@ -44,10 +44,14 @@ from rag.search import (
     merge_hits,
     postgres_pattern,
     term_pattern,
+    _drop_excluded,
+    path_excluded,
+    path_exclusions,
     path_in_scope,
     path_scopes,
     quoted_phrases,
     retrieve,
+    search,
     topic_terms,
 )
 from rag.chunker import chunk_source
@@ -359,6 +363,99 @@ class PlanTest(unittest.TestCase):
             self.assertFalse(question_needs_plan(question))
             self.assertFalse(question_needs_plan("inside app/models for 4250"))
 
+    def test_ignored_folders_are_left_out_of_the_directory(self):
+        question = (
+            "look under /features for birth date. "
+            "Ignore files in folders /features/support and /features/step_definitions"
+        )
+        excluded = ["features/support", "features/step_definitions"]
+        self.assertEqual(path_scopes(question), ["features"])
+        self.assertEqual(code_literals(question), [])
+        self.assertEqual(path_exclusions(question), excluded)
+        self.assertFalse(path_excluded("features/applicant/birth.feature", excluded))
+        self.assertTrue(path_excluded("features/support/page_objects/dob_page.rb", excluded))
+        self.assertTrue(path_excluded("features/step_definitions/birth_steps.rb", excluded))
+        kept = Hit(1, "hmcts/hwf-publicapp", "features/applicant/birth.feature", 1, 4, None, "scenario", "birth date", 1)
+        support = Hit(2, "hmcts/hwf-publicapp", "features/support/page_objects/dob_page.rb", 1, 4, None, "file", "birth date", 1)
+        self.assertEqual(_drop_excluded([kept, support], excluded), [kept])
+        self.assertEqual(path_exclusions("look under /features not under /features/support"), ["features/support"])
+
+        seen = {}
+
+        def fake_search(_conn, _repos, query, _k, _meter, scopes, skipped):
+            seen["query"] = query
+            seen["scopes"] = scopes
+            seen["skipped"] = skipped
+            return [kept], False
+
+        meter = Meter()
+        with (
+            patch("rag.search.search", side_effect=fake_search),
+            patch("rag.plan.search_queries", return_value=[question]),
+        ):
+            hits, queries, truncated = retrieve(None, [1], question, 8, meter)
+        self.assertEqual(hits, [kept])
+        self.assertEqual(queries, [question])
+        self.assertFalse(truncated)
+        self.assertEqual(seen["scopes"], ["features"])
+        self.assertEqual(seen["skipped"], excluded)
+        search_stage = next(stage for stage in meter.as_dict()["stages"] if stage["name"] == "Search the index")
+        self.assertIn("Left out features/support and features/step_definitions.", search_stage["note"])
+
+    def test_a_directory_filter_is_not_searched_again(self):
+        from rag.search import _without_scope_queries
+
+        question = (
+            "look under /features for birth date. "
+            "Ignore files in folders /features/support and /features/step_definitions"
+        )
+        queries = _without_scope_queries([question, "/features"], ["features"])
+        self.assertEqual(queries, [question])
+
+    def test_results_are_sorted_by_relevance_across_repositories(self):
+        public = Hit(
+            1, "hmcts/hwf-publicapp", "features/dob/dob_single.feature",
+            7, 12, None, "scenario", "Date of birth", 0.75,
+        )
+        staff_close = Hit(
+            2, "hmcts/hwf-staffapp", "features/personal_details.feature",
+            17, 19, None, "scenario", "Date of birth blank", 0.76,
+        )
+        staff_far = Hit(
+            3, "hmcts/hwf-staffapp", "features/approve.feature",
+            1, 1, None, "scenario", "Ask a manager page", 0.69,
+        )
+
+        def fake(_conn, repos, _question, _k, _embedding, _scopes, _excluded):
+            if repos == [1]:
+                return [public], False
+            return [staff_far, staff_close], False
+
+        class Embedder:
+            def embed_query(self, _question):
+                return [0.0, 0.0, 0.0]
+
+        with (
+            patch("rag.embedder.Embedder", return_value=Embedder()),
+            patch("rag.search._search_with_embedding", side_effect=fake),
+        ):
+            hits, truncated = search(None, [1, 2], "birth date", 2, None, ["features"], [])
+        self.assertEqual([hit.path for hit in hits], [staff_close.path, public.path])
+        self.assertTrue(truncated)
+
+    def test_a_question_without_a_feature_file_does_not_follow_the_top_hit(self):
+        from rag.search import _feature_chain
+
+        question = (
+            "look under /features for birth date. "
+            "Ignore files in folders /features/support and /features/step_definitions"
+        )
+        top = Hit(
+            3, "hmcts/hwf-staffapp", "features/approve.feature",
+            1, 1, "Ask a manager page", "scenario", "Feature: Ask a manager page", 0.69,
+        )
+        self.assertEqual(_feature_chain(None, [2], question, [top]), [])
+
     def test_a_literal_inside_the_directory_is_not_a_search_term(self):
         question = "under app/models/forms/savings_and_investment_extra.rb for 4250"
         self.assertEqual(
@@ -394,12 +491,28 @@ class PlanTest(unittest.TestCase):
             patch("rag.search.literal_hits", return_value=([hit], 0.01)),
             patch("rag.plan.search_queries", side_effect=fail_if_planned),
         ):
-            hits, queries = retrieve(None, [1], question, 16, meter)
+            hits, queries, truncated = retrieve(None, [1], question, 16, meter)
         self.assertEqual(hits, [hit])
         self.assertEqual(queries, [question])
+        self.assertFalse(truncated)
         embed = next(stage for stage in meter.as_dict()["stages"] if stage["name"] == "Embed the searches")
         self.assertEqual(embed["note"], "The values were matched directly, so nothing was embedded.")
         self.assertIsNone(embed["total_tokens"])
+
+    def test_a_literal_search_reports_when_more_matches_were_cut_off(self):
+        question = "look under /features for text 4250"
+        matches = [
+            Hit(index, "hmcts/hwf-publicapp", f"features/fee_{index}.feature", 1, 2, None, "scenario", "4250", 1.0)
+            for index in (1, 2, 3)
+        ]
+
+        def fake_literal(*_args, **_kwargs):
+            return matches[:2], 0.01, True
+
+        with patch("rag.search.literal_hits", side_effect=fake_literal):
+            found, _queries, truncated = retrieve(None, [1], question, 2, Meter())
+        self.assertTrue(truncated)
+        self.assertEqual(len(found), 2)
 
     def test_a_quoted_step_is_searched_under_the_directory(self):
         question = 'look for "I submit the form with income" under /features'
@@ -438,7 +551,7 @@ class PlanTest(unittest.TestCase):
         )
         seen = {}
 
-        def fake_literal(_conn, _repos, scopes, literals, _k):
+        def fake_literal(_conn, _repos, scopes, literals, _k, _excluded=None):
             seen["scopes"] = scopes
             seen["literals"] = literals
             return [feature_hit, step_hit], 0.01
@@ -454,7 +567,8 @@ class PlanTest(unittest.TestCase):
             patch("rag.plan.retrieval_model", return_value="gpt-4o-mini"),
         ):
             self.assertFalse(question_needs_plan(question))
-            hits, queries = retrieve(None, [1], question, 8, meter)
+            hits, queries, truncated = retrieve(None, [1], question, 8, meter)
+        self.assertFalse(truncated)
         self.assertEqual(seen["scopes"], ["features"])
         self.assertEqual(seen["literals"], [phrase])
         self.assertEqual(hits, [feature_hit, step_hit])
@@ -485,9 +599,10 @@ class PlanTest(unittest.TestCase):
             patch("rag.search.literal_hits", side_effect=empty),
             patch("rag.plan.search_queries", side_effect=fail_if_planned),
         ):
-            hits, queries = retrieve(None, [1], question, 8, meter)
+            hits, queries, truncated = retrieve(None, [1], question, 8, meter)
         self.assertEqual(hits, [])
         self.assertEqual(queries, [question])
+        self.assertFalse(truncated)
         plan = next(stage for stage in meter.as_dict()["stages"] if stage["name"] == "Plan the question")
         self.assertEqual(plan["note"], "Looked for that regular expression under the named directory.")
         embed = next(stage for stage in meter.as_dict()["stages"] if stage["name"] == "Embed the searches")
@@ -565,7 +680,8 @@ class PlanTest(unittest.TestCase):
             patch("rag.follow.follow_matched_steps", side_effect=fake_follow),
             patch("rag.plan.search_queries", side_effect=fail_if_planned),
         ):
-            hits, _queries = retrieve(None, [1], question, 8, Meter())
+            hits, _queries, truncated = retrieve(None, [1], question, 8, Meter())
+        self.assertFalse(truncated)
         self.assertEqual([hit.path for hit in hits], [feature.path, step.path])
 
     def test_a_long_feature_does_not_crowd_out_the_step_file(self):
@@ -600,6 +716,10 @@ class PlanTest(unittest.TestCase):
         merged = merge_hits([[low, other], [high]], 2)
         self.assertEqual([hit.chunk_id for hit in merged], [1, 2])
         self.assertEqual(merged[0].score, 0.8)
+        weaker_first = Hit(3, "hmcts/hwf-staffapp", "features/approve.feature", 1, 1, None, "scenario", "Ask a manager page", 0.2)
+        stronger_second = Hit(4, "hmcts/hwf-publicapp", "features/dob/dob_single.feature", 7, 9, None, "scenario", "Date of birth", 0.9)
+        ordered = merge_hits([[weaker_first], [stronger_second]], 2)
+        self.assertEqual([hit.chunk_id for hit in ordered], [4, 3])
 
 
 class AnswerTest(unittest.TestCase):
@@ -751,6 +871,7 @@ class WebTest(unittest.TestCase):
             self.assertIn("[0-9]* matches any amount", page)
             self.assertIn("with income '[0-9]*' and average", page)
             self.assertIn('heading.textContent = "Matches"', page)
+            self.assertIn("More matches were found than the Passages limit of ", page)
             request = urllib.request.Request(
                 f"http://127.0.0.1:{port}/api/query",
                 data=json.dumps({"question": ""}).encode("utf-8"),
@@ -822,7 +943,7 @@ class WebTest(unittest.TestCase):
             if meter is not None:
                 meter.add_search(0.0, 0.01)
                 meter.finish_retrieval(1, embedded=False)
-            return [hit], [question]
+            return [hit], [question], False
 
         class _Connection:
             def close(self):
@@ -854,6 +975,8 @@ class WebTest(unittest.TestCase):
             self.assertEqual(response.status, 200)
             self.assertEqual(body["answer"], "The threshold is 4250.")
             self.assertEqual(body["matches"], [])
+            self.assertFalse(body["truncated"])
+            self.assertEqual(body["passage_limit"], 8)
             self.assertTrue(body["usage"]["stages"])
             self.assertIn(
                 "The values were matched directly, so nothing was embedded.",

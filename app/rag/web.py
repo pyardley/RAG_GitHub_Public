@@ -209,7 +209,7 @@ def _retrieve(body: dict, question: str, *, written: bool, impact_mode: bool) ->
         return 503, {"error": _failure_text(exc)}
     try:
         repositories = resolve_repositories(conn, repo)
-        hits, queries = retrieve(conn, [item["id"] for item in repositories], question, count, meter)
+        hits, queries, truncated = retrieve(conn, [item["id"] for item in repositories], question, count, meter)
     except SystemExit as exc:
         return 400, {"error": _failure_text(exc)}
     finally:
@@ -220,6 +220,8 @@ def _retrieve(body: dict, question: str, *, written: bool, impact_mode: bool) ->
     return 200, {
         "repositories": [_scope(item) for item in repositories],
         "queries": queries,
+        "truncated": truncated,
+        "passage_limit": count,
         "hits": [_hit(item, _indexed_commits(repositories)) for item in hits],
         "matches": [
             {"path": path, "line": line, "text": text}
