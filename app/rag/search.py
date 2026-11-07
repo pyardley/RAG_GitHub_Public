@@ -430,7 +430,7 @@ def literal_hits(
 ) -> tuple[list[Hit], float]:
     """Chunks under the named directory whose text contains one of the values."""
     started = time.perf_counter()
-    pattern = "(?:" + "|".join(identifier_regex(literal) for literal in literals) + ")"
+    pattern = "(?:" + "|".join(term_pattern(literal) for literal in literals) + ")"
     sql = f"""
         SELECT c.id, r.name, c.path, c.start_line, c.end_line, c.symbol, c.kind, c.content, 0
         FROM chunks c
@@ -467,6 +467,22 @@ def _each_path_first(hits: list[Hit]) -> list[Hit]:
     first = [group[0] for group in grouped.values()]
     rest = [hit for group in grouped.values() for hit in group[1:]]
     return first + rest
+
+
+def term_pattern(term: str) -> str:
+    """Postgres pattern for one search term.
+
+    A quoted phrase that contains regex syntax, such as [0-9]*, is used as
+    written. Any other term is matched as a whole word or phrase.
+    """
+    if _REGEX_METACHAR.search(term):
+        try:
+            re.compile(term)
+        except re.error:
+            pass
+        else:
+            return term
+    return identifier_regex(term)
 
 
 def _literal_count(hit: Hit, literals: list[str]) -> int:
@@ -509,6 +525,7 @@ _CODE_LITERAL = re.compile(
     r"\b(?:[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]+|\d{3,}|[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+)+)\b"
 )
 _QUOTED_PHRASE = re.compile(r'[“"]([^"“”\n]+)[”"]')
+_REGEX_METACHAR = re.compile(r"[.\\+*?^${}()\[\]|]")
 _PATH_SCOPE_SQL = """(
     %(scoped)s = FALSE
     OR EXISTS (

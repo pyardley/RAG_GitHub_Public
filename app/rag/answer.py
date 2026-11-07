@@ -18,8 +18,7 @@ from rag.config import (
     OPENAI_BASE_URL,
     OPENAI_MODEL,
 )
-from rag.search import Hit, asks_for_features, quoted_phrases
-from rag.text import identifier_regex
+from rag.search import Hit, asks_for_features, quoted_phrases, term_pattern
 from rag.usage import Meter, Stage, token_counts
 
 _THINK_BLOCK = re.compile(r"<think>.*?</think>\s*", re.DOTALL | re.IGNORECASE)
@@ -249,7 +248,7 @@ def _with_matches(question: str, hits: list[Hit], text: str) -> str:
 
 
 def _phrase_pattern(phrase: str) -> re.Pattern[str]:
-    body = identifier_regex(phrase).replace(r"\m", r"\b").replace(r"\M", r"\b")
+    body = term_pattern(phrase).replace(r"\m", r"\b").replace(r"\M", r"\b")
     return re.compile(body, re.IGNORECASE)
 
 

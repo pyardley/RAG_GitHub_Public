@@ -32,6 +32,7 @@ from rag.search import (
     _each_path_first,
     code_literals,
     merge_hits,
+    term_pattern,
     path_in_scope,
     path_scopes,
     quoted_phrases,
@@ -526,6 +527,24 @@ class AnswerTest(unittest.TestCase):
         written = _with_matches(question, hits, "The feature summary mentions Average at line 192.")
         self.assertIn("features/step_definitions/income_period_steps.rb:6:", written)
         self.assertTrue(written.startswith("Matches\n"))
+
+    def test_a_quoted_regex_matches_any_amount(self):
+        question = '''look for "with income '[0-9]*' and average" under /features'''
+        phrase = "with income '[0-9]*' and average"
+        self.assertEqual(quoted_phrases(question), [phrase])
+        self.assertIn("[0-9]*", term_pattern(phrase))
+        self.assertNotIn(r"\[0-9\]", term_pattern(phrase))
+        feature = "When I submit the form with income '8000' and average 'average'"
+        step = "When(/^I submit the form with income '([^\"']*)' and average '([^\"']*)'$/) do |num, income_period|"
+        summary = "| Total income £8,000 Average for the last three months Change income |"
+        hits = [
+            Hit(1, "hmcts/hwf-publicapp", "features/e2e.feature", 218, 244, None, "scenario", "\n".join([feature, summary]), 1.0),
+            Hit(2, "hmcts/hwf-publicapp", "features/step_definitions/income_period_steps.rb", 9, 11, None, "file", step, 1.0),
+        ]
+        self.assertEqual(
+            [(path, line) for path, line, _text in matching_lines(question, hits)],
+            [("features/e2e.feature", 218)],
+        )
 
     def test_visible_answer_drops_a_think_block(self):
         text = "<think>walk the callers</think>\nDefined in application_controller.rb:44."
