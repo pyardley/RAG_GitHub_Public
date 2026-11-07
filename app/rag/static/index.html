@@ -42,6 +42,7 @@
     }
     h1 { font-size: 1.8rem; font-weight: 650; letter-spacing: -0.03em; margin: 0; }
     .eyebrow { margin: 0 0 0.2rem; color: var(--muted); font-size: 0.78rem; letter-spacing: 0.14em; text-transform: uppercase; }
+    .process, .hint { margin: 0.35rem 0 0; color: var(--muted); font-size: 0.85rem; }
     .chip {
       border: 1px solid var(--line);
       background: var(--paper);
@@ -143,6 +144,7 @@
       <div>
         <p class="eyebrow">Code RAG</p>
         <h1>Ask a repository</h1>
+        <p class="process" id="process"></p>
       </div>
       <div class="chip" id="model-chip">Checking the language model…</div>
     </header>
@@ -184,6 +186,7 @@
       <label id="prompt-label"><span id="prompt-caption">Question</span>
         <textarea id="prompt" placeholder="Where is the online application stored?"></textarea>
       </label>
+      <p class="hint" id="prompt-hint">Ask in your own words, or quote text to match it exactly. Inside quotes, [0-9]* matches any amount. under /features limits the directory.</p>
       <div class="row">
         <label id="k-wrap">Passages
           <input id="k" type="number" min="1" max="30" value="8">
@@ -198,7 +201,7 @@
   </main>
   <script>
     const modes = {
-      query: { label: "Question", placeholder: "Where is the online application stored?", button: "Ask", answer: true, k: true },
+      query: { label: "Question", placeholder: "look under /features for \"with income '[0-9]*' and average\"", button: "Ask", answer: true, k: true },
       impact: { label: "Class, method, or file", placeholder: "ApplicationController#online_application", button: "Analyse", answer: true, k: false },
       search: { label: "Search", placeholder: "calculation_scheme", button: "Search", answer: false, k: true }
     };
@@ -242,6 +245,7 @@
       prompt.style.minHeight = next === "query" ? "7rem" : "3.2rem";
       document.querySelector("#go").textContent = spec.button;
       document.querySelector("#k-wrap").hidden = !spec.k;
+      document.querySelector("#prompt-hint").hidden = next !== "query";
       document.querySelector("#answer-wrap").hidden = !spec.answer;
       document.querySelectorAll(".modes button").forEach((button) => {
         button.setAttribute("aria-pressed", String(button.dataset.mode === next));
@@ -277,6 +281,8 @@
         : "Retrieved code only";
       document.querySelector("#answer").disabled = !model.configured;
       if (!model.configured) document.querySelector("#answer").checked = false;
+      const started = document.querySelector("#process");
+      started.textContent = body.started ? `This process started ${body.started}` : "";
       showIngest(body.ingest);
       return body;
     }

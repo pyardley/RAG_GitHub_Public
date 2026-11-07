@@ -1,0 +1,20 @@
+---
+description: Restart the local RAG app after code changes so it can be tested before commit
+alwaysApply: true
+---
+
+# Restart the local app after updates
+
+After changing anything the running app loads (`app/`, the Docker image, or compose config), restart it on this machine before the user tests and before any commit.
+
+From the repo root:
+
+```powershell
+docker compose restart rag
+```
+
+`docker compose up -d` does not reload Python in an already-running container. The page HTML is read on each request. Python modules are imported at startup, so a `.py` change is invisible until this restart.
+
+Before restarting, check `http://127.0.0.1:8080/api/status`. If `ingest.running` is true, do not restart. Never run `docker compose down -v`. That deletes the pgvector index.
+
+After the restart, confirm the app is up. Leave committing until the user asks.

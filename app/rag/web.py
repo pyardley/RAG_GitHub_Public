@@ -7,7 +7,7 @@ import io
 import json
 import re
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -31,6 +31,8 @@ from rag.usage import Meter
 
 _PAGE = Path(__file__).with_name("static") / "index.html"
 _MAX_BODY = 1_000_000
+_STARTED_AT = datetime.now(timezone.utc).replace(microsecond=0)
+_STARTED_LABEL = _STARTED_AT.strftime("%Y-%m-%d %H:%M UTC")
 
 _ingest_lock = threading.Lock()
 _ingest_state: dict[str, Any] = {
@@ -129,11 +131,12 @@ def public_status() -> tuple[int, dict]:
     try:
         repositories = _repository_rows()
     except (OSError, SystemExit, RuntimeError) as exc:
-        return 503, {"error": _failure_text(exc), "ingest": _ingest_view()}
+        return 503, {"error": _failure_text(exc), "ingest": _ingest_view(), "started": _STARTED_LABEL}
     return 200, {
         "repositories": repositories,
         "model": _model_view(),
         "ingest": _ingest_view(),
+        "started": _STARTED_LABEL,
     }
 
 

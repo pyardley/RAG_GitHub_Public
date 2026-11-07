@@ -20,7 +20,7 @@ from rag.answer import (
 )
 from rag.follow import calls_in, choose_steps, contains_step, feature_paths, page_symbol, step_body, step_phrases
 from rag.gitrepo import default_branch_name
-from rag.web import Handler, _progress_view, github_blob_url, run_query, start_ingest
+from rag.web import Handler, _progress_view, github_blob_url, public_status, run_query, start_ingest
 from unittest.mock import patch
 
 from rag.plan import parse_queries, question_needs_plan
@@ -32,6 +32,7 @@ from rag.search import (
     _each_path_first,
     code_literals,
     merge_hits,
+    postgres_pattern,
     term_pattern,
     path_in_scope,
     path_scopes,
@@ -436,6 +437,37 @@ class PlanTest(unittest.TestCase):
         plan = next(stage for stage in meter.as_dict()["stages"] if stage["name"] == "Plan the question")
         self.assertEqual(plan["note"], "Looked for that text under the named directory.")
 
+    def test_a_quoted_regex_is_the_postgres_pattern_and_does_not_fall_back(self):
+        question = '''look under /features for "with income '[0-9]*' and average"'''
+        phrase = "with income '[0-9]*' and average"
+        pattern = postgres_pattern([phrase])
+        self.assertEqual(pattern, "(?:with income '[0-9]*' and average)")
+        feature = "When I submit the form with income '8000' and average 'average'"
+        step = "When(/^I submit the form with income '([^\"']*)' and average '([^\"']*)'$/) do |num, income_period|"
+        monthly = "When I submit the form with income '1000' and monthly"
+        self.assertRegex(feature, "(?i)" + pattern)
+        self.assertNotRegex(step, "(?i)" + pattern)
+        self.assertNotRegex(monthly, "(?i)" + pattern)
+
+        def empty(*_args, **_kwargs):
+            return [], 0.02
+
+        def fail_if_planned(*_args, **_kwargs):
+            raise AssertionError("general search should not run")
+
+        meter = Meter()
+        with (
+            patch("rag.search.literal_hits", side_effect=empty),
+            patch("rag.plan.search_queries", side_effect=fail_if_planned),
+        ):
+            hits, queries = retrieve(None, [1], question, 8, meter)
+        self.assertEqual(hits, [])
+        self.assertEqual(queries, [question])
+        plan = next(stage for stage in meter.as_dict()["stages"] if stage["name"] == "Plan the question")
+        self.assertEqual(plan["note"], "Looked for that regular expression under the named directory.")
+        embed = next(stage for stage in meter.as_dict()["stages"] if stage["name"] == "Embed the searches")
+        self.assertEqual(embed["note"], "The values were matched directly, so nothing was embedded.")
+
     def test_a_long_feature_does_not_crowd_out_the_step_file(self):
         feature = "features/e2e.feature"
         step = "features/step_definitions/income_period_steps.rb"
@@ -614,6 +646,10 @@ class WebTest(unittest.TestCase):
             self.assertIn("Search", page)
             self.assertIn("Resources", page)
             self.assertIn("renderUsage", page)
+            self.assertIn('id="process"', page)
+            self.assertIn("This process started", page)
+            self.assertIn("[0-9]* matches any amount", page)
+            self.assertIn("with income '[0-9]*' and average", page)
             request = urllib.request.Request(
                 f"http://127.0.0.1:{port}/api/query",
                 data=json.dumps({"question": ""}).encode("utf-8"),
@@ -627,6 +663,12 @@ class WebTest(unittest.TestCase):
         finally:
             server.shutdown()
             server.server_close()
+
+    def test_status_names_when_the_process_started(self):
+        with patch("rag.web._repository_rows", return_value=[]):
+            status, body = public_status()
+        self.assertEqual(status, 200)
+        self.assertRegex(body["started"], r"\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC")
 
     def test_query_response_includes_usage_stages(self):
         hit = Hit(

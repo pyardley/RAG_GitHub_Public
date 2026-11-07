@@ -105,15 +105,9 @@ def retrieve(conn, repository_ids: list[int], question: str, k: int, meter=None)
     terms = literals + [phrase for phrase in phrases if phrase not in literals]
     if terms and (scopes or phrases):
         hits, seconds = literal_hits(conn, repository_ids, scopes, terms, k)
-        if hits:
+        if hits or phrases:
             if meter is not None:
-                if phrases and scopes:
-                    note = "Looked for that text under the named directory."
-                elif phrases:
-                    note = "Looked for that text."
-                else:
-                    note = "Looked for those values under the named directory."
-                meter.add(Stage("Plan the question", 0.0, note=note))
+                meter.add(Stage("Plan the question", 0.0, note=_lookup_note(terms, phrases, scopes)))
                 meter.add_search(0.0, seconds)
                 meter.finish_retrieval(len(hits), embedded=False)
             return hits, [question]
@@ -430,7 +424,7 @@ def literal_hits(
 ) -> tuple[list[Hit], float]:
     """Chunks under the named directory whose text contains one of the values."""
     started = time.perf_counter()
-    pattern = "(?:" + "|".join(term_pattern(literal) for literal in literals) + ")"
+    pattern = postgres_pattern(literals)
     sql = f"""
         SELECT c.id, r.name, c.path, c.start_line, c.end_line, c.symbol, c.kind, c.content, 0
         FROM chunks c
@@ -469,20 +463,40 @@ def _each_path_first(hits: list[Hit]) -> list[Hit]:
     return first + rest
 
 
+def is_regex_term(term: str) -> bool:
+    """A quoted phrase that contains regex syntax, such as [0-9]*."""
+    if not _REGEX_METACHAR.search(term):
+        return False
+    try:
+        re.compile(term)
+    except re.error:
+        return False
+    return True
+
+
 def term_pattern(term: str) -> str:
     """Postgres pattern for one search term.
 
-    A quoted phrase that contains regex syntax, such as [0-9]*, is used as
-    written. Any other term is matched as a whole word or phrase.
+    A regular expression is used as written. Any other term is matched as a
+    whole word or phrase.
     """
-    if _REGEX_METACHAR.search(term):
-        try:
-            re.compile(term)
-        except re.error:
-            pass
-        else:
-            return term
+    if is_regex_term(term):
+        return term
     return identifier_regex(term)
+
+
+def postgres_pattern(terms: list[str]) -> str:
+    """Pattern passed to Postgres ``~*`` for a direct text search."""
+    return "(?:" + "|".join(term_pattern(term) for term in terms) + ")"
+
+
+def _lookup_note(terms: list[str], phrases: list[str], scopes: list[str]) -> str:
+    if not phrases:
+        return "Looked for those values under the named directory."
+    kind = "that regular expression" if any(is_regex_term(term) for term in terms) else "that text"
+    if scopes:
+        return f"Looked for {kind} under the named directory."
+    return f"Looked for {kind}."
 
 
 def _literal_count(hit: Hit, literals: list[str]) -> int:
