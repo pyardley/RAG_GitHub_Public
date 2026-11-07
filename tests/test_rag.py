@@ -18,7 +18,17 @@ from rag.answer import (
     passage_limits,
     visible_answer,
 )
-from rag.follow import calls_in, choose_steps, contains_step, feature_paths, page_symbol, step_body, step_phrases
+from rag.follow import (
+    calls_in,
+    choose_steps,
+    contains_step,
+    definition_matches,
+    feature_paths,
+    page_symbol,
+    step_body,
+    step_needles,
+    step_phrases,
+)
 from rag.gitrepo import default_branch_name
 from rag.web import Handler, _progress_view, github_blob_url, public_status, run_query, start_ingest
 from unittest.mock import patch
@@ -82,6 +92,20 @@ class ChunkerTest(unittest.TestCase):
         )
         self.assertEqual(calls_in(body), [("address_page", "submit_full_address")])
         self.assertEqual(page_symbol("address_page", "submit_full_address"), "AddressPage#submit_full_address")
+        feature_step = "I submit the form with income '8000' and average 'average'"
+        definition = (
+            "When(/^I submit the form with income '([^\"']*)' and average '([^\"']*)'$/) do |num, period|\n"
+            "  income_period_page.submit_income(num, period)\n"
+            "end"
+        )
+        monthly = "When(/^I submit the form with income '([^\"']*)' and monthly$/) do |num|"
+        self.assertEqual(
+            step_needles(feature_step),
+            ["I submit the form with income", "and average"],
+        )
+        self.assertTrue(definition_matches(definition, feature_step))
+        self.assertFalse(definition_matches(monthly, feature_step))
+        self.assertFalse(definition_matches(definition, "I submit the form with income '1000' and monthly"))
         self.assertTrue(asks_for_features("Show features that test savings thresholds"))
         self.assertEqual(topic_terms("Show features that test savings thresholds"), ["savings", "thresholds"])
         self.assertFalse(
@@ -425,6 +449,7 @@ class PlanTest(unittest.TestCase):
         meter = Meter()
         with (
             patch("rag.search.literal_hits", side_effect=fake_literal),
+            patch("rag.follow.follow_matched_steps", return_value=[]),
             patch("rag.plan.search_queries", side_effect=fail_if_planned),
             patch("rag.plan.retrieval_model", return_value="gpt-4o-mini"),
         ):
@@ -466,7 +491,82 @@ class PlanTest(unittest.TestCase):
         plan = next(stage for stage in meter.as_dict()["stages"] if stage["name"] == "Plan the question")
         self.assertEqual(plan["note"], "Looked for that regular expression under the named directory.")
         embed = next(stage for stage in meter.as_dict()["stages"] if stage["name"] == "Embed the searches")
-        self.assertEqual(embed["note"], "The values were matched directly, so nothing was embedded.")
+        self.assertEqual(
+            embed["note"],
+            "The regular expression was matched directly, so nothing was embedded.",
+        )
+
+    def test_postgres_rejects_a_regular_expression_as_a_message(self):
+        import psycopg
+
+        from rag.search import literal_hits
+
+        class Cursor:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def execute(self, *_args, **_kwargs):
+                raise psycopg.errors.InvalidRegularExpression("invalid")
+
+        class Connection:
+            def cursor(self):
+                return Cursor()
+
+            def rollback(self):
+                self.rolled_back = True
+
+        connection = Connection()
+        with self.assertRaises(ValueError) as caught:
+            literal_hits(connection, [1], ["features"], ["with income '(?P<n>[0-9]+)'"], 8)
+        self.assertEqual(str(caught.exception), "That regular expression is not valid in the index.")
+        self.assertTrue(connection.rolled_back)
+
+    def test_a_quoted_search_keeps_the_step_that_runs_the_feature_line(self):
+        question = '''look under /features for "with income '[0-9]*' and average"'''
+        feature = Hit(
+            1,
+            "hmcts/hwf-publicapp",
+            "features/e2e.feature",
+            160,
+            161,
+            None,
+            "scenario",
+            "When I submit the form with income '8000' and average 'average'",
+            1.0,
+        )
+        step = Hit(
+            2,
+            "hmcts/hwf-publicapp",
+            "features/step_definitions/income_period_steps.rb",
+            9,
+            11,
+            None,
+            "file",
+            "When(/^I submit the form with income '([^\"']*)' and average '([^\"']*)'$/)",
+            1.0,
+        )
+
+        def fake_literal(*_args, **_kwargs):
+            return [feature], 0.01
+
+        def fake_follow(_conn, _repos, asked, hits):
+            self.assertEqual(asked, question)
+            self.assertEqual(hits, [feature])
+            return [step]
+
+        def fail_if_planned(*_args, **_kwargs):
+            raise AssertionError("general search should not run")
+
+        with (
+            patch("rag.search.literal_hits", side_effect=fake_literal),
+            patch("rag.follow.follow_matched_steps", side_effect=fake_follow),
+            patch("rag.plan.search_queries", side_effect=fail_if_planned),
+        ):
+            hits, _queries = retrieve(None, [1], question, 8, Meter())
+        self.assertEqual([hit.path for hit in hits], [feature.path, step.path])
 
     def test_a_long_feature_does_not_crowd_out_the_step_file(self):
         feature = "features/e2e.feature"
@@ -650,6 +750,7 @@ class WebTest(unittest.TestCase):
             self.assertIn("This process started", page)
             self.assertIn("[0-9]* matches any amount", page)
             self.assertIn("with income '[0-9]*' and average", page)
+            self.assertIn('heading.textContent = "Matches"', page)
             request = urllib.request.Request(
                 f"http://127.0.0.1:{port}/api/query",
                 data=json.dumps({"question": ""}).encode("utf-8"),
@@ -660,6 +761,34 @@ class WebTest(unittest.TestCase):
                 urllib.request.urlopen(request)
             self.assertEqual(caught.exception.code, 400)
             caught.exception.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_an_invalid_pattern_is_a_message(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        port = server.server_address[1]
+        message = "That regular expression is not valid in the index."
+
+        def reject(*_args, **_kwargs):
+            raise ValueError(message)
+
+        try:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/search",
+                data=json.dumps({"question": "look for \"with income '(?P<n>[0-9]+)'\""}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with patch("rag.web.retrieve", side_effect=reject):
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    urllib.request.urlopen(request)
+            self.assertEqual(caught.exception.code, 400)
+            body = json.loads(caught.exception.read().decode("utf-8"))
+            caught.exception.close()
+            self.assertEqual(body["error"], message)
         finally:
             server.shutdown()
             server.server_close()
@@ -724,6 +853,7 @@ class WebTest(unittest.TestCase):
                     body = json.loads(response.read().decode("utf-8"))
             self.assertEqual(response.status, 200)
             self.assertEqual(body["answer"], "The threshold is 4250.")
+            self.assertEqual(body["matches"], [])
             self.assertTrue(body["usage"]["stages"])
             self.assertIn(
                 "The values were matched directly, so nothing was embedded.",

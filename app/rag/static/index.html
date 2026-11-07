@@ -108,6 +108,10 @@
     #status { min-height: 1.5rem; margin: 0.8rem 0; color: var(--muted); }
     #status.error { color: var(--warn); }
     .scope { color: var(--muted); margin: 0 0 0.8rem; }
+    .matches { margin: 0 0 1rem; }
+    .matches h2 { font-size: 1rem; margin: 0; }
+    .matches ul { margin: 0.4rem 0 0; padding-left: 1.2rem; }
+    .matches li { font: 0.86rem/1.45 ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace; }
     .usage { color: var(--muted); margin: 1.4rem 0 0; padding-top: 0.9rem; border-top: 1px solid var(--line); font-size: 0.92rem; }
     .usage h2 { font-size: 1rem; margin: 0; color: var(--ink); }
     .usage ul { margin: 0.4rem 0 0; padding-left: 1.2rem; }
@@ -484,6 +488,7 @@
         searched.textContent = `Searched: ${body.queries.join(" · ")}`;
         results.append(searched);
       }
+      renderMatches(body.matches);
       if (!body.hits || !body.hits.length) {
         const empty = document.createElement("p");
         empty.className = "empty";
@@ -496,6 +501,22 @@
         results.append(group);
       }
       renderUsage(body.usage);
+    }
+
+    function renderMatches(matches) {
+      if (!matches || !matches.length) return;
+      const box = document.createElement("div");
+      box.className = "matches";
+      const heading = document.createElement("h2");
+      heading.textContent = "Matches";
+      const list = document.createElement("ul");
+      for (const match of matches) {
+        const item = document.createElement("li");
+        item.textContent = `${match.path}:${match.line}: ${match.text}`;
+        list.append(item);
+      }
+      box.append(heading, list);
+      results.append(box);
     }
 
     function renderUsage(usage) {

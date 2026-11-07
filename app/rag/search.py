@@ -104,12 +104,17 @@ def retrieve(conn, repository_ids: list[int], question: str, k: int, meter=None)
     phrases = quoted_phrases(question)
     terms = literals + [phrase for phrase in phrases if phrase not in literals]
     if terms and (scopes or phrases):
-        hits, seconds = literal_hits(conn, repository_ids, scopes, terms, k)
+        started = time.perf_counter()
+        hits, _seconds = literal_hits(conn, repository_ids, scopes, terms, k)
+        if hits and phrases:
+            from rag.follow import follow_matched_steps
+
+            hits = _with_follow(hits, follow_matched_steps(conn, repository_ids, question, hits), k)
         if hits or phrases:
             if meter is not None:
                 meter.add(Stage("Plan the question", 0.0, note=_lookup_note(terms, phrases, scopes)))
-                meter.add_search(0.0, seconds)
-                meter.finish_retrieval(len(hits), embedded=False)
+                meter.add_search(0.0, time.perf_counter() - started)
+                meter.finish_retrieval(len(hits), embedded=False, direct=_direct_kind(terms, phrases))
             return hits, [question]
     queries = search_queries(question, meter)
     if len(queries) == 1:
@@ -352,6 +357,23 @@ def _feature_chain(conn, repository_ids: list[int], question: str, hits: list[Hi
     return follow_features(conn, repository_ids, paths)
 
 
+def _with_follow(hits: list[Hit], chain: list[Hit], k: int) -> list[Hit]:
+    """Keep the matched passages, then the step definition and page objects."""
+    if not chain:
+        return hits
+    merged: list[Hit] = []
+    seen: set[int] = set()
+    limit = min(16, max(k, len(hits)))
+    for hit in hits + chain:
+        if hit.chunk_id in seen:
+            continue
+        seen.add(hit.chunk_id)
+        merged.append(hit)
+        if len(merged) >= limit:
+            break
+    return merged
+
+
 def _with_chain(chain: list[Hit], hits: list[Hit], k: int) -> list[Hit]:
     if not chain:
         return hits
@@ -435,17 +457,21 @@ def literal_hits(
         ORDER BY c.path, c.start_line
         LIMIT 200
     """
-    with conn.cursor() as cur:
-        cur.execute(
-            sql,
-            {
-                "repos": repository_ids,
-                "scoped": bool(scopes),
-                "scopes": [scope.lower().strip("/") for scope in scopes] or [""],
-                "pattern": pattern,
-            },
-        )
-        hits = [_hit_from_row(row) for row in cur.fetchall()]
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                sql,
+                {
+                    "repos": repository_ids,
+                    "scoped": bool(scopes),
+                    "scopes": [scope.lower().strip("/") for scope in scopes] or [""],
+                    "pattern": pattern,
+                },
+            )
+            hits = [_hit_from_row(row) for row in cur.fetchall()]
+    except psycopg.errors.InvalidRegularExpression:
+        conn.rollback()
+        raise ValueError("That regular expression is not valid in the index.")
     conn.commit()
     hits.sort(key=lambda hit: (-_literal_count(hit, literals), hit.path, hit.start_line))
     if literals and all(" " in literal for literal in literals):
@@ -490,10 +516,18 @@ def postgres_pattern(terms: list[str]) -> str:
     return "(?:" + "|".join(term_pattern(term) for term in terms) + ")"
 
 
+def _direct_kind(terms: list[str], phrases: list[str]) -> str:
+    if phrases and any(is_regex_term(term) for term in terms):
+        return "regular expression"
+    if phrases:
+        return "text"
+    return "values"
+
+
 def _lookup_note(terms: list[str], phrases: list[str], scopes: list[str]) -> str:
     if not phrases:
         return "Looked for those values under the named directory."
-    kind = "that regular expression" if any(is_regex_term(term) for term in terms) else "that text"
+    kind = "that regular expression" if _direct_kind(terms, phrases) == "regular expression" else "that text"
     if scopes:
         return f"Looked for {kind} under the named directory."
     return f"Looked for {kind}."

@@ -19,6 +19,7 @@ from rag.answer import (
     answer,
     configuration_hint,
     language_model_configured,
+    matching_lines,
 )
 from rag.config import LLM_PROVIDER
 from rag.db import connect, list_repositories, resolve_repositories
@@ -220,6 +221,10 @@ def _retrieve(body: dict, question: str, *, written: bool, impact_mode: bool) ->
         "repositories": [_scope(item) for item in repositories],
         "queries": queries,
         "hits": [_hit(item, _indexed_commits(repositories)) for item in hits],
+        "matches": [
+            {"path": path, "line": line, "text": text}
+            for path, line, text in matching_lines(question, hits)
+        ],
         "answer": text,
         "answer_error": answer_error,
         "usage": meter.as_dict(),

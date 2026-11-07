@@ -112,6 +112,85 @@ def page_symbol(receiver: str, method: str) -> str:
     return f"{class_name}#{method}"
 
 
+def definition_matches(content: str, phrase: str) -> bool:
+    """A Cucumber step regexp in content matches the feature step text."""
+    for line in content.splitlines():
+        found = _DEFINITION.search(line)
+        if found is None:
+            continue
+        flags = re.IGNORECASE if "i" in found.group(2) else 0
+        try:
+            pattern = re.compile(found.group(1), flags)
+        except re.error:
+            continue
+        if pattern.search(phrase):
+            return True
+    return mentions_step(content, phrase)
+
+
+def step_needles(phrase: str) -> list[str]:
+    """Literal pieces of a feature step, outside quoted amounts and captures."""
+    needles: list[str] = []
+    for part in re.split(r"'[^']*'|\"[^\"]*\"|\d+", phrase):
+        text = " ".join(part.split()).strip(" .,")
+        if len(text) < 8 or text.lower() in {item.lower() for item in needles}:
+            continue
+        needles.append(text)
+        if len(needles) == 3:
+            break
+    return needles
+
+
+def follow_matched_steps(conn, repository_ids: list[int], question: str, hits: list) -> list:
+    """Step definitions and page objects for feature lines a quoted search found."""
+    from rag.answer import matching_lines
+    from rag.search import _hit_from_row
+
+    phrases: list[str] = []
+    for path, _line, text in matching_lines(question, hits):
+        if not path.endswith(".feature"):
+            continue
+        phrase = _bare_step(text)
+        if phrase and phrase not in phrases:
+            phrases.append(phrase)
+    found: list = []
+    seen: set[int] = set()
+    for phrase in phrases[:4]:
+        needles = step_needles(phrase)
+        if not needles:
+            continue
+        params = {"repos": repository_ids}
+        params.update({f"n{index}": f"%{_like(needle)}%" for index, needle in enumerate(needles)})
+        for row in _rows(conn, _step_needles_sql(len(needles)), params):
+            if not definition_matches(row[7], phrase):
+                continue
+            step = _hit_from_row(row)
+            if _add(found, seen, step):
+                anchor = needles[-1]
+                _follow_calls(
+                    conn, repository_ids, step_body(step.content, anchor), found, seen, depth=2
+                )
+            break
+    return found
+
+
+def _bare_step(text: str) -> str:
+    return re.sub(r"^(?:Given|When|Then|And|But)\s+", "", text.strip(), count=1, flags=re.IGNORECASE)
+
+
+def _step_needles_sql(count: int) -> str:
+    clauses = " OR ".join(
+        f"c.content ILIKE %(n{index})s ESCAPE '\\'" for index in range(count)
+    )
+    return _SELECTED + f"""
+        WHERE c.repository_id = ANY(%(repos)s)
+          AND c.path LIKE '%%step_definitions%%'
+          AND ({clauses})
+        ORDER BY c.path, c.start_line
+        LIMIT 12
+    """
+
+
 def follow_features(conn, repository_ids: list[int], paths: list[str]) -> list:
     from rag.search import _hit_from_row
 
@@ -182,6 +261,11 @@ def _like(value: str) -> str:
 def _same_step(left: str, right: str) -> bool:
     left, right = left.lower(), right.lower()
     return left == right or left.startswith(right + " ") or right.startswith(left + " ")
+
+
+_DEFINITION = re.compile(
+    r"""(?m)^[ \t]*(?:Given|When|Then|And|But)\s*\(\s*/(.*)/([a-z]*)\s*\)"""
+)
 
 
 def _looks_like_action(phrase: str) -> bool:
