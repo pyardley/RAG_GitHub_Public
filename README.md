@@ -153,7 +153,7 @@ The embedding model is fixed when the database is first created. Changing `EMBED
 
 ## Tests
 
-The unit tests cover chunking and file selection. They do not need Docker:
+The unit tests cover chunking and file selection. They do not need Docker. When the local index is running, one test also checks that a search for `limit` still returns a passage about a threshold, and skips that check when the index is stopped:
 
 ```powershell
 python -m unittest discover -s tests -v

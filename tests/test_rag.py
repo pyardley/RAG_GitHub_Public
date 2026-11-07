@@ -1,4 +1,5 @@
 import json
+import subprocess
 import sys
 import tempfile
 import threading
@@ -985,6 +986,68 @@ class WebTest(unittest.TestCase):
         finally:
             server.shutdown()
             server.server_close()
+
+
+class IndexedRetrievalTest(unittest.TestCase):
+    def test_a_search_for_limit_includes_a_threshold(self):
+        """Looking for limit stays close to the savings threshold passages."""
+        repo = Path(__file__).resolve().parents[1]
+        script = """
+import json
+from rag.db import connect
+from rag.search import search
+
+question = "look for limit."
+conn = connect()
+try:
+    with conn.cursor() as cur:
+        cur.execute("SELECT id FROM repositories ORDER BY id")
+        repositories = [row[0] for row in cur.fetchall()]
+    if not repositories:
+        raise SystemExit("no repositories")
+    hits, _truncated = search(conn, repositories, question, 8)
+finally:
+    conn.close()
+print("HITS")
+print(json.dumps([
+    {"path": hit.path, "symbol": hit.symbol or "", "content": hit.content}
+    for hit in hits
+]))
+"""
+        try:
+            container = subprocess.run(
+                ["docker", "compose", "ps", "-q", "rag"],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=True,
+            ).stdout.split()
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            self.skipTest("The local index is not running")
+        if not container:
+            self.skipTest("The local index is not running")
+        try:
+            result = subprocess.run(
+                ["docker", "exec", "-i", "-w", "/app", "-e", "PYTHONPATH=/app", container[0], "python", "-"],
+                input=script,
+                capture_output=True,
+                text=True,
+                timeout=90,
+            )
+        except subprocess.TimeoutExpired:
+            self.fail("The search for limit did not finish")
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        marker = "HITS\n"
+        self.assertIn(marker, result.stdout, result.stdout)
+        hits = json.loads(result.stdout.split(marker, 1)[1])
+        text = "\n".join(f"{hit['symbol']}\n{hit['content']}" for hit in hits).lower()
+        self.assertIn(
+            "threshold",
+            text,
+            "A search for limit should keep a passage that mentions a threshold. Got: "
+            + ", ".join(hit["path"] for hit in hits),
+        )
 
 
 class CliTest(unittest.TestCase):
