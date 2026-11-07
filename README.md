@@ -10,6 +10,7 @@ The first repository to index is [hmcts/hwf-publicapp](https://github.com/hmcts/
 - [Start](#start)
 - [Web](#web)
 - [Ask questions](#ask-questions)
+- [Logs](#logs)
 - [Index another repository](#index-another-repository)
 - [Written answers](#written-answers)
   - [Search model and answer model](#search-model-and-answer-model)
@@ -68,6 +69,26 @@ docker compose run --rm -T rag repos
 `query` retrieves the code passages most relevant to a question. A question that names a directory and a value, such as `look under /app for 4250 or min_threshold_base`, searches that directory for those values and leaves the rest of the repository out. `Ignore files in folders /features/support and /features/step_definitions` leaves those folders out, including a step definition or page object reached from a feature file. Quote the text to match it exactly: `look under /features for "with income '8000' and average"` finds that step and leaves other income files out. Inside the quotes, a regular expression is used as written. `look under /features for "with income '[0-9]*' and average"` matches any amount in that step. Use `[0-9]` for a digit. When the quoted text is not in the index, the result is empty. The page shows when this process started. When more matches exist than the Passages limit, the page says so. A question that asks to show or list features returns feature files only. When a question names a `.feature` file and asks how that step runs, retrieval follows it into its step definition and the page-object methods that fill fields and click buttons. `impact` looks up a class, method, or file and groups the result into definitions, references, and related code. References include specs and feature tests when those files mention the name.
 
 Search covers every indexed repository. Each repository is searched on its own, then the passages are sorted by how close they are to the question, so a weaker match sinks below a closer one. Pass `--repo hmcts/hwf-publicapp` when more than one is loaded and you want only one.
+
+## Logs
+
+A query, a search, and an impact lookup write a trace to the process output. Times are UTC. The API key is not written. For the web app:
+
+```powershell
+docker compose logs rag
+```
+
+`docker compose run` prints the same lines in the command output.
+
+One `retrieval` line records the question and how it was searched. `path` is `semantic` for an ordinary question, or `values`, `text`, or `regular expression` when the question was matched directly. `k` is the Passages limit. `repos` lists the repositories that were searched. `scopes` and `excluded` are the directories kept and left out. `truncated` is `true` when more matches existed than `k`. `queries` are the searches that ran, and `dropped` appears when a planned search was left out because it only repeated a directory. Each `hit` line is one passage that was shown: its score, repository, path, lines, symbol, and the first line of the chunk. A higher score is a closer match.
+
+```text
+2026-11-07 12:23:09 INFO retrieval path=semantic k=2 repos=hmcts/hwf-publicapp|hmcts/hwf-staffapp scopes=- excluded=- truncated=true passages=2 queries=look for limit. question='look for limit.'
+2026-11-07 12:23:09 INFO hit 0.6997 hmcts/hwf-staffapp app/models/query/last_updated_applications.rb:7-12 Query::LastUpdatedApplications#find | def find(limit: nil)
+2026-11-07 12:23:09 INFO hit 0.6739 hmcts/hwf-publicapp spec/models/views/summary_spec.rb:113-120 Views::Summary / #savings / when the maximum threshold has been exceeded | context 'when the maximum threshold has been exceeded' do
+```
+
+An `impact` line records the name and how many definitions, references, and related passages were found. A warning is written when a request is rejected, planning fails and the question is searched as written, the answer model fails, or an ingest fails.
 
 ## Index another repository
 

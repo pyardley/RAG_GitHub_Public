@@ -8,6 +8,7 @@ import sys
 from rag.answer import AnswerError, active_model, answer, configuration_hint, language_model_configured
 from rag.db import connect, list_repositories, resolve_repositories
 from rag.ingest import ingest_repository
+from rag.log import configure_logging, logger
 from rag.search import Hit, impact, retrieve
 from rag.usage import Meter
 from rag.web import serve
@@ -56,6 +57,7 @@ def main(argv: list[str] | None = None) -> int:
     serve_parser.add_argument("--port", type=int, default=8080, help="Port to listen on")
 
     args = parser.parse_args(argv)
+    configure_logging()
     try:
         if args.command == "ingest":
             return ingest_repository(args.repo, args.branch, args.force)
@@ -69,6 +71,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "impact":
             return _impact(args.target, args.repo, args.no_answer, args.model)
     except (ValueError, RuntimeError) as exc:
+        logger.warning("%s failed: %s", args.command, exc)
         print(str(exc), file=sys.stderr)
         return 1
     return 1

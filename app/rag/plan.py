@@ -22,6 +22,7 @@ from rag.config import (
 )
 from rag.follow import feature_paths
 from rag.search import asks_for_features, code_literals, path_scopes, quoted_phrases
+from rag.log import logger
 from rag.usage import Meter, Stage, token_counts
 
 _MAX_QUERIES = 4
@@ -64,7 +65,8 @@ def search_queries(question: str, meter: Meter | None = None) -> list[str]:
         return [question]
     try:
         text, body = _complete(model or "", _PROMPT, question)
-    except (AnswerError, OSError, TimeoutError):
+    except (AnswerError, OSError, TimeoutError) as exc:
+        logger.warning("planning failed (%s); searching the question as written", str(exc)[:300])
         _record_plan(
             meter, started, model=model,
             note="Planning failed, so the question was searched as written.",

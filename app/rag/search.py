@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 
 import psycopg
 
+from rag.log import log_retrieval, logger
 from rag.text import (
     has_declaration,
     identifier_regex,
@@ -154,8 +155,13 @@ def retrieve(conn, repository_ids: list[int], question: str, k: int, meter=None)
                 meter.finish_retrieval(
                     len(hits), embedded=False, direct=_direct_kind(terms, phrases), skipped=excluded,
                 )
-            return hits, [question], truncated
-    queries = _without_scope_queries(search_queries(question, meter), scopes)
+            return _logged(
+                question, conn, repository_ids, k, _direct_kind(terms, phrases),
+                [question], [], scopes, excluded, truncated, hits,
+            )
+    planned = search_queries(question, meter)
+    queries = _without_scope_queries(planned, scopes)
+    dropped = [query for query in planned if query not in queries]
     groups: list[list[Hit]] = []
     truncated = False
     for query in queries:
@@ -167,7 +173,42 @@ def retrieve(conn, repository_ids: list[int], question: str, k: int, meter=None)
     truncated = truncated or any(hit.chunk_id not in shown for group in groups for hit in group)
     if meter is not None:
         meter.finish_retrieval(len(hits), skipped=excluded)
+    return _logged(
+        question, conn, repository_ids, k, "semantic",
+        queries, dropped, scopes, excluded, truncated, hits,
+    )
+
+
+def _logged(question, conn, repository_ids, k, path, queries, dropped, scopes, excluded, truncated, hits):
+    log_retrieval(
+        question=question,
+        repos=_repo_names(conn, repository_ids, hits),
+        k=k,
+        path=path,
+        queries=queries,
+        scopes=scopes,
+        excluded=excluded,
+        dropped=dropped,
+        truncated=truncated,
+        hits=hits,
+    )
     return hits, queries, truncated
+
+
+def _repo_names(conn, repository_ids: list[int], hits: list[Hit]) -> list[str]:
+    if conn is not None:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT name FROM repositories WHERE id = ANY(%s) ORDER BY name",
+                    (repository_ids,),
+                )
+                names = [row[0] for row in cur.fetchall()]
+        except psycopg.Error:
+            names = []
+        if names:
+            return names
+    return sorted({hit.repo for hit in hits})
 
 
 def merge_hits(groups: list[list[Hit]], k: int) -> list[Hit]:
@@ -362,6 +403,14 @@ def impact(conn, repository_ids: list[int], target: str) -> dict[str, list[Hit]]
         for hit in search(conn, repository_ids, target, k=8)[0]
         if hit.chunk_id not in seen
     ]
+    logger.info(
+        "impact target=%r definitions=%s references=%s related=%s truncated=%s",
+        target,
+        len(definitions),
+        len(references),
+        len(related),
+        str(truncated).lower(),
+    )
     return {
         "definitions": definitions[:40],
         "references": references[:40],

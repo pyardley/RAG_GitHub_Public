@@ -515,6 +515,49 @@ class PlanTest(unittest.TestCase):
         self.assertTrue(truncated)
         self.assertEqual(len(found), 2)
 
+    def test_a_lookup_logs_the_passages_it_kept(self):
+        question = "look under /app for text 4250"
+        hit = Hit(
+            9,
+            "hmcts/hwf-publicapp",
+            "app/models/forms/savings_and_investment_extra.rb",
+            23,
+            27,
+            "Forms::SavingsAndInvestmentExtra#amount",
+            "method",
+            "return if amount < 4250",
+            1.0,
+        )
+        with (
+            patch("rag.search.literal_hits", return_value=([hit], 0.01)),
+            self.assertLogs("rag", level="INFO") as caught,
+        ):
+            retrieve(None, [1], question, 8, Meter())
+        text = "\n".join(caught.output)
+        self.assertIn("path=values", text)
+        self.assertIn("scopes=app", text)
+        self.assertIn(question, text)
+        self.assertIn("savings_and_investment_extra.rb:23-27", text)
+        self.assertIn("return if amount < 4250", text)
+
+    def test_a_semantic_search_logs_a_dropped_directory_query(self):
+        question = "look under /features for birth date"
+        hit = Hit(
+            1, "hmcts/hwf-publicapp", "features/dob/dob_single.feature",
+            7, 9, "Date of birth", "scenario", "Date of birth", 0.75,
+        )
+        with (
+            patch("rag.plan.search_queries", return_value=[question, "/features"]),
+            patch("rag.search.search", return_value=([hit], False)),
+            self.assertLogs("rag", level="INFO") as caught,
+        ):
+            retrieve(None, [1], question, 8, Meter())
+        text = "\n".join(caught.output)
+        self.assertIn("path=semantic", text)
+        self.assertIn("dropped=/features", text)
+        self.assertIn("dob_single.feature:7-9", text)
+        self.assertNotIn("queries=/features|", text)
+
     def test_a_quoted_step_is_searched_under_the_directory(self):
         question = 'look for "I submit the form with income" under /features'
         phrase = "I submit the form with income"

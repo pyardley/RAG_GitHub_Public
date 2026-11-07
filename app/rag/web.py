@@ -26,6 +26,7 @@ from rag.db import connect, list_repositories, resolve_repositories
 from rag.files import parse_repo
 from rag.gitrepo import default_branch
 from rag.ingest import ingest_repository
+from rag.log import logger
 from rag.plan import retrieval_model
 from rag.search import Hit, impact, retrieve
 from rag.usage import Meter
@@ -70,6 +71,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             body = _read_json(self)
         except ValueError as exc:
+            logger.warning("POST %s rejected: %s", path, exc)
             self._json({"error": str(exc)}, 400)
             return
         routes = {
@@ -85,6 +87,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             status, payload = route(body)
         except ValueError as exc:
+            logger.warning("POST %s rejected: %s", path, exc)
             self._json({"error": str(exc)}, 400)
             return
         self._json(payload, status)
@@ -247,6 +250,7 @@ def _written_answer(
     try:
         return answer(question, hits, impact=impact_mode, meter=meter), None
     except AnswerError as exc:
+        logger.warning("answer failed: %s", str(exc)[:300])
         return None, str(exc)
 
 
@@ -263,6 +267,8 @@ def _run_ingest(repo: str, branch: str | None, force: bool) -> None:
     except Exception as exc:
         error = str(exc) or exc.__class__.__name__
     finally:
+        if error:
+            logger.warning("ingest failed for %s: %s", repo, error)
         with _ingest_lock:
             _ingest_state["running"] = False
             _ingest_state["log"] = buffer.getvalue()[-20000:]
