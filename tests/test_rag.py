@@ -468,6 +468,40 @@ end
         self.assertEqual([hit.symbol for hit in found["definitions"]], ["factory :claim"])
         self.assertEqual(found["references"], [caller])
         self.assertEqual(found["callers_omitted"], 0)
+        self.assertEqual(
+            found["diagram"]["edges"],
+            [{"from": "builds a claim", "to": "factory :claim"}],
+        )
+
+    def test_a_call_path_becomes_a_diagram(self):
+        from rag.search import relationship_diagram
+
+        definition = Hit(1, "repo", "app/models/fee.rb", 1, 4, "Fee#save", "method", "def save\nend\n", 0)
+        step = Hit(
+            2, "repo", "features/step_definitions/fee_steps.rb", 3, 5,
+            "I save the fee", "step", "save", 0, via="I save the fee → Fee#save",
+        )
+        feature = Hit(
+            3, "repo", "features/fee.feature", 8, 10,
+            "Fee / saves", "scenario", "When I save the fee", 0,
+            via="Fee / saves → I save the fee → Fee#save",
+        )
+        mention = Hit(4, "repo", "README.md", 1, 2, None, "file", "save", 0)
+        diagram = relationship_diagram([definition], [step, feature, mention])
+        self.assertEqual(
+            diagram["edges"],
+            [
+                {"from": "I save the fee", "to": "Fee#save"},
+                {"from": "Fee / saves", "to": "I save the fee"},
+            ],
+        )
+        depths = {node["label"]: node["depth"] for node in diagram["nodes"]}
+        kinds = {node["label"]: node["kind"] for node in diagram["nodes"]}
+        self.assertEqual(depths["Fee#save"], 0)
+        self.assertEqual(depths["I save the fee"], 1)
+        self.assertEqual(depths["Fee / saves"], 2)
+        self.assertEqual(kinds["Fee#save"], "definition")
+        self.assertNotIn("README.md", depths)
 
     def test_a_factory_symbol_is_not_the_method_of_the_same_name(self):
         from rag.search import _defines_target
@@ -1254,6 +1288,9 @@ class WebTest(unittest.TestCase):
             self.assertIn('heading.textContent = "Matches"', page)
             self.assertIn("More matches were found than the Passages limit of ", page)
             self.assertIn("more callers were left out of References.", page)
+            self.assertIn("Relationships", page)
+            self.assertIn("Call relationships", page)
+            self.assertIn("Arrows point from a caller toward the definition.", page)
             self.assertIn("Remove this index", page)
             self.assertIn("This deletes that index and its checkout.", page)
             self.assertIn("remove-confirm", page)

@@ -148,6 +148,22 @@
       padding: 0.8rem;
     }
     .empty { color: var(--muted); }
+    .diagram-frame {
+      overflow: auto;
+      max-height: 36rem;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+    .diagram-frame svg { display: block; width: 100%; height: auto; }
+    .diagram-edge { fill: none; stroke: var(--muted); stroke-width: 1.4; }
+    .diagram-node { cursor: pointer; }
+    .diagram-node rect { fill: var(--paper); stroke: var(--line); }
+    .diagram-node text { font: 12px/1.25 "Segoe UI", "Helvetica Neue", sans-serif; fill: var(--ink); }
+    .diagram-node.definition rect { fill: var(--accent); stroke: var(--accent); }
+    .diagram-node.definition text { fill: var(--accent-ink); }
+    .diagram-node:focus { outline: none; }
+    .diagram-node:focus rect { stroke: var(--ink); stroke-width: 2; }
   </style>
 </head>
 <body>
@@ -546,6 +562,7 @@
           note.textContent = "This name appears in more chunks than are shown here.";
           results.append(note);
         }
+        renderDiagram(body.diagram);
         renderGroup("Definitions", body.definitions, body.definition_count);
         renderGroup("References", body.references, body.reference_count);
         const callersLeftOut = callerNote(body);
@@ -623,6 +640,185 @@
       }
       box.append(heading, total, list);
       results.append(box);
+    }
+
+    function renderDiagram(diagram) {
+      if (!diagram || !diagram.edges || !diagram.edges.length) return;
+      const section = document.createElement("section");
+      section.className = "group";
+      const heading = document.createElement("h2");
+      heading.textContent = "Relationships";
+      const caption = document.createElement("p");
+      caption.className = "hint";
+      caption.textContent = "Arrows point from a caller toward the definition. Choose a box to show that passage.";
+      const frame = document.createElement("div");
+      frame.className = "diagram-frame";
+      frame.append(drawDiagram(diagram));
+      section.append(heading, caption, frame);
+      results.append(section);
+    }
+
+    function drawDiagram(diagram) {
+      const svgNs = "http://www.w3.org/2000/svg";
+      const nodeWidth = 220;
+      const lineHeight = 15;
+      const padY = 8;
+      const margin = 24;
+      const columnGap = 78;
+      const rowGap = 16;
+      const nodes = diagram.nodes.map((node) => {
+        const lines = wrapLabel(node.label, 28);
+        return {
+          ...node,
+          lines,
+          height: lines.length * lineHeight + padY * 2,
+          depth: node.depth || 0
+        };
+      });
+      const maxDepth = Math.max(...nodes.map((node) => node.depth));
+      const columns = new Map();
+      for (const node of nodes) {
+        node.column = maxDepth - node.depth;
+        const column = columns.get(node.column) || [];
+        column.push(node);
+        columns.set(node.column, column);
+      }
+      let tallest = 0;
+      for (const column of columns.values()) {
+        let y = 0;
+        for (const node of column) {
+          node.localY = y;
+          y += node.height + rowGap;
+        }
+        tallest = Math.max(tallest, y - rowGap);
+      }
+      for (const column of columns.values()) {
+        const used = column.reduce((sum, node) => sum + node.height, 0) + rowGap * Math.max(column.length - 1, 0);
+        const offset = (tallest - used) / 2;
+        for (const node of column) {
+          node.x = margin + node.column * (nodeWidth + columnGap);
+          node.y = margin + offset + node.localY;
+        }
+      }
+      const width = margin * 2 + (maxDepth + 1) * nodeWidth + maxDepth * columnGap;
+      const height = margin * 2 + tallest;
+      const svg = document.createElementNS(svgNs, "svg");
+      svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+      svg.setAttribute("width", "100%");
+      svg.setAttribute("preserveAspectRatio", "xMinYMin meet");
+      svg.setAttribute("role", "img");
+      svg.setAttribute("aria-label", "Call relationships");
+      const defs = document.createElementNS(svgNs, "defs");
+      const marker = document.createElementNS(svgNs, "marker");
+      marker.setAttribute("id", "diagram-arrow");
+      marker.setAttribute("viewBox", "0 0 10 10");
+      marker.setAttribute("refX", "9");
+      marker.setAttribute("refY", "5");
+      marker.setAttribute("markerWidth", "7");
+      marker.setAttribute("markerHeight", "7");
+      marker.setAttribute("orient", "auto");
+      const head = document.createElementNS(svgNs, "path");
+      head.setAttribute("d", "M 0 0 L 10 5 L 0 10 z");
+      head.setAttribute("fill", "#5e574c");
+      marker.append(head);
+      defs.append(marker);
+      svg.append(defs);
+      const byId = new Map(nodes.map((node) => [node.id, node]));
+      for (const edge of diagram.edges) {
+        const from = byId.get(edge.from);
+        const to = byId.get(edge.to);
+        if (!from || !to) continue;
+        const x1 = from.x + nodeWidth;
+        const y1 = from.y + from.height / 2;
+        const x2 = to.x;
+        const y2 = to.y + to.height / 2;
+        const bend = Math.max(24, (x2 - x1) / 2);
+        const path = document.createElementNS(svgNs, "path");
+        path.setAttribute("class", "diagram-edge");
+        path.setAttribute("d", `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`);
+        path.setAttribute("marker-end", "url(#diagram-arrow)");
+        svg.append(path);
+      }
+      for (const node of nodes) svg.append(diagramNode(svgNs, node, nodeWidth, lineHeight, padY));
+      return svg;
+    }
+
+    function diagramNode(svgNs, node, nodeWidth, lineHeight, padY) {
+      const group = document.createElementNS(svgNs, "g");
+      group.setAttribute("class", node.kind === "definition" ? "diagram-node definition" : "diagram-node");
+      group.setAttribute("tabindex", "0");
+      group.setAttribute("role", "button");
+      group.setAttribute("aria-label", node.label);
+      const title = document.createElementNS(svgNs, "title");
+      title.textContent = node.label;
+      const rect = document.createElementNS(svgNs, "rect");
+      rect.setAttribute("x", String(node.x));
+      rect.setAttribute("y", String(node.y));
+      rect.setAttribute("width", String(nodeWidth));
+      rect.setAttribute("height", String(node.height));
+      rect.setAttribute("rx", "8");
+      group.append(title, rect);
+      node.lines.forEach((line, index) => {
+        const text = document.createElementNS(svgNs, "text");
+        text.setAttribute("x", String(node.x + 10));
+        text.setAttribute("y", String(node.y + padY + 12 + index * lineHeight));
+        text.textContent = line;
+        group.append(text);
+      });
+      const open = () => openPassage(node.label);
+      group.addEventListener("click", open);
+      group.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        open();
+      });
+      return group;
+    }
+
+    function wrapLabel(label, maxChars) {
+      const pieces = [];
+      for (const word of String(label || "").split(/\s+/).filter(Boolean)) {
+        if (word.length <= maxChars) {
+          pieces.push(word);
+          continue;
+        }
+        for (const part of word.split(/(?=[/#])/)) {
+          if (part.length <= maxChars) pieces.push(part);
+          else {
+            for (let index = 0; index < part.length; index += maxChars) {
+              pieces.push(part.slice(index, index + maxChars));
+            }
+          }
+        }
+      }
+      const lines = [];
+      let line = "";
+      for (const piece of pieces.length ? pieces : [""]) {
+        const attached = (piece.startsWith("/") || piece.startsWith("#")) && piece.length > 1;
+        const next = line ? `${line}${attached ? "" : " "}${piece}` : piece;
+        if (next.length > maxChars && line) {
+          lines.push(line);
+          line = piece;
+        } else {
+          line = next;
+        }
+      }
+      if (line) lines.push(line);
+      if (lines.length > 4) {
+        lines.length = 4;
+        lines[3] = lines[3].replace(/…?$/, "…");
+      }
+      return lines.length ? lines : [""];
+    }
+
+    function openPassage(label) {
+      for (const article of results.querySelectorAll("article")) {
+        const symbol = article.querySelector(".symbol");
+        if (symbol && symbol.textContent === label) {
+          article.scrollIntoView({ block: "nearest" });
+          return;
+        }
+      }
     }
 
     function callerNote(body) {

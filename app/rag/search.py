@@ -411,6 +411,7 @@ def impact(conn, repository_ids: list[int], target: str) -> dict[str, list[Hit]]
         merged.append(hit)
     references = merged
     references.sort(key=_reference_order)
+    shown_definitions = definitions[:_IMPACT_LIST_LIMIT]
     shown_references = references[:_IMPACT_LIST_LIMIT]
     related = [
         hit
@@ -432,7 +433,7 @@ def impact(conn, repository_ids: list[int], target: str) -> dict[str, list[Hit]]
         str(truncated).lower(),
     )
     return {
-        "definitions": definitions[:_IMPACT_LIST_LIMIT],
+        "definitions": shown_definitions,
         "references": shown_references,
         "related": related,
         "gaps": gaps[:12],
@@ -441,7 +442,65 @@ def impact(conn, repository_ids: list[int], target: str) -> dict[str, list[Hit]]
         "truncated": truncated,
         "callers_omitted": callers_omitted,
         "callers_capped": callers_capped,
+        "diagram": relationship_diagram(shown_definitions, shown_references),
     }
+
+
+def relationship_diagram(definitions: list[Hit], references: list[Hit]) -> dict:
+    """Nodes and edges for the call paths shown with an impact result.
+
+    A via line is `caller → … → definition`. Arrows point toward the definition.
+    A reference with no path is a mention, so it is left off the diagram.
+    """
+    nodes: dict[str, dict] = {}
+    for hit in definitions:
+        label = hit.symbol or hit.path
+        nodes[label] = {"id": label, "label": label, "kind": "definition", "depth": 0}
+    edges: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for hit in references:
+        parts = [part.strip() for part in (hit.via or "").split("→") if part.strip()]
+        if len(parts) < 2:
+            continue
+        for index, label in enumerate(parts):
+            if label not in nodes:
+                nodes[label] = {
+                    "id": label,
+                    "label": label,
+                    "kind": "definition" if index == len(parts) - 1 else "caller",
+                    "depth": 0,
+                }
+            elif index == len(parts) - 1:
+                nodes[label]["kind"] = "definition"
+        for left, right in zip(parts, parts[1:]):
+            if (left, right) in seen:
+                continue
+            seen.add((left, right))
+            edges.append({"from": left, "to": right})
+    _assign_diagram_depths(nodes, edges)
+    ordered = sorted(nodes.values(), key=lambda node: (node["depth"], node["label"]))
+    return {"nodes": ordered, "edges": edges}
+
+
+def _assign_diagram_depths(nodes: dict[str, dict], edges: list[dict[str, str]]) -> None:
+    outgoing: dict[str, list[str]] = {}
+    for edge in edges:
+        outgoing.setdefault(edge["from"], []).append(edge["to"])
+    for _ in range(max(len(nodes), 1)):
+        changed = False
+        for src, targets in outgoing.items():
+            if src not in nodes or nodes[src]["kind"] == "definition":
+                continue
+            known = [nodes[item]["depth"] for item in targets if item in nodes]
+            if not known:
+                continue
+            depth = max(known) + 1
+            if depth > len(nodes) or depth <= nodes[src]["depth"]:
+                continue
+            nodes[src]["depth"] = depth
+            changed = True
+        if not changed:
+            break
 
 
 def _impact_params(repository_ids: list[int], target: str) -> dict:

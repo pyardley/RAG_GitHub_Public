@@ -131,7 +131,7 @@ Naming a feature file and asking how it runs follows one step into its step defi
 ApplicationController#online_application
 ```
 
-The qualified name selects that method. The result is grouped into definitions, references, and related passages.
+The qualified name selects that method. The result is grouped into definitions, references, and related passages. The page draws the call paths, with each arrow pointing from a caller toward the definition.
 
 ```text
 factory :online_application
