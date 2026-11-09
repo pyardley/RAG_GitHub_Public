@@ -96,9 +96,10 @@ An `impact` line records the name and how many definitions, references, and rela
 docker compose run --rm -T rag ingest https://github.com/owner/name
 docker compose run --rm -T rag ingest owner/name --branch main
 docker compose run --rm -T rag ingest owner/name --force
+docker compose run --rm -T rag remove owner/name
 ```
 
-`--force` rebuilds the index even when that commit is already stored. Use it after the chunking code changes.
+`--force` rebuilds the index even when that commit is already stored. Use it after the chunking code changes. `remove` deletes that repository's index and its checkout. The other repositories stay. On the page, choose the repository and use Remove this index. Index it again to store a different branch.
 
 For a private repository, set `GITHUB_TOKEN` in a `.env` file next to `docker-compose.yml`. Compose reads that file when it starts the container. `.env.example` shows the variables. Do not commit `.env`.
 
@@ -154,7 +155,9 @@ OPENAI_MODEL=gpt-4o
 
 ## How the index is built
 
-Each source file is split on declarations (`class`, `module`, `def`, Java methods, RSpec groups, Cucumber scenarios). A chunk keeps the qualified name, for example `Application#submit` or `FeeService.calculate`. Files without declarations are split into overlapping windows.
+Each source file is split on declarations (`class`, `module`, `def`, Java methods, Cucumber scenarios). Ruby files also split on the declarations these repositories are built from: an RSpec `describe`, `context`, or quoted `it`; a SitePrism `section`; and a FactoryBot `factory` or `trait`. A chunk keeps the qualified name, for example `Application#submit`, `IncomePeriodPage section :content`, or `factory :online_application trait :savings_more_than_threshold`. Files without declarations are split into overlapping windows.
+
+A page object, factory, spec, feature, or step definition is labelled with that role on the text that is embedded and on the keyword text. A question about a SitePrism page or a FactoryBot trait can then line up with that file. An index built before this split keeps the old chunks until you ingest that repository again with `--force`.
 
 Those chunks are embedded locally with `BAAI/bge-small-en-v1.5` (384 dimensions, so no model API is required) and stored in Postgres with [pgvector](https://github.com/pgvector/pgvector). This model is small enough to index a repository on a laptop-sized Docker virtual machine. Keyword search uses the Postgres `simple` dictionary, which does not stem tokens, after CamelCase and snake_case have been split. A question uses both searches together.
 
@@ -162,7 +165,7 @@ Those chunks are embedded locally with `BAAI/bge-small-en-v1.5` (384 dimensions,
 
 To use the larger code model instead, set `EMBEDDING_MODEL=jinaai/jina-embeddings-v2-base-code` and `EMBEDDING_DIM=768`, then remove the database volume and ingest again. That model needs several extra gigabytes of memory during indexing.
 
-Vendor directories, lockfiles, `node_modules`, and secret-shaped files (`.env`, private keys, `credentials.yml.enc`) are not indexed. `.env.example` files are.
+Vendor directories, lockfiles, `node_modules`, VCR cassettes, and secret-shaped files (`.env`, private keys, `credentials.yml.enc`) are not indexed. `.env.example` files are.
 
 ## Data
 

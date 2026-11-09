@@ -25,7 +25,7 @@ from rag.config import LLM_PROVIDER
 from rag.db import connect, list_repositories, resolve_repositories
 from rag.files import parse_repo
 from rag.gitrepo import default_branch
-from rag.ingest import ingest_repository
+from rag.ingest import delete_repository, ingest_repository
 from rag.log import logger
 from rag.plan import retrieval_model
 from rag.search import Hit, impact, retrieve
@@ -79,6 +79,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/search": run_search,
             "/api/impact": run_impact,
             "/api/ingest": start_ingest,
+            "/api/remove": remove_index,
         }
         route = routes.get(path)
         if route is None:
@@ -195,11 +196,37 @@ def start_ingest(body: dict) -> tuple[int, dict]:
         branch = branch.strip() or None
     force = bool(body.get("force"))
     with _ingest_lock:
-        if _ingest_state["running"]:
-            return 409, {"error": "An ingest is already running", "ingest": _ingest_view()}
-        _ingest_state.update(running=True, repo=repo.strip(), log="", error=None, progress=None)
+        busy = _ingest_state["running"]
+        if not busy:
+            _ingest_state.update(running=True, repo=repo.strip(), log="", error=None, progress=None)
+    if busy:
+        return 409, {"error": "An ingest is already running", "ingest": _ingest_view()}
     threading.Thread(target=_run_ingest, args=(repo.strip(), branch, force), daemon=True).start()
     return 202, {"ingest": _ingest_view()}
+
+
+def remove_index(body: dict) -> tuple[int, dict]:
+    repo = _required_text(body, "repo", "Choose a repository")
+    with _ingest_lock:
+        busy = _ingest_state["running"]
+    if busy:
+        return 409, {"error": "An ingest is already running", "ingest": _ingest_view()}
+    try:
+        removed = delete_repository(repo)
+    except SystemExit as exc:
+        return 503, {"error": _failure_text(exc)}
+    ingested = removed["ingested_at"]
+    return 200, {
+        "removed": {
+            "name": removed["name"],
+            "branch": removed["branch"],
+            "commit_sha": str(removed["commit_sha"])[:12],
+            "ingested_at": ingested.isoformat() if isinstance(ingested, datetime) else str(ingested),
+            "files": removed["files"],
+            "chunks": removed["chunks"],
+        },
+        "repositories": _repository_rows(),
+    }
 
 
 def _retrieve(body: dict, question: str, *, written: bool, impact_mode: bool) -> tuple[int, dict]:

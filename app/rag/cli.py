@@ -7,7 +7,7 @@ import sys
 
 from rag.answer import AnswerError, active_model, answer, configuration_hint, language_model_configured
 from rag.db import connect, list_repositories, resolve_repositories
-from rag.ingest import ingest_repository
+from rag.ingest import delete_repository, ingest_repository
 from rag.log import configure_logging, logger
 from rag.search import Hit, impact, retrieve
 from rag.usage import Meter
@@ -52,6 +52,9 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("repos", help="List indexed repositories")
 
+    remove_parser = sub.add_parser("remove", help="Delete one repository index")
+    remove_parser.add_argument("repo", help="owner/name or GitHub URL")
+
     serve_parser = sub.add_parser("serve", help="Run the web interface")
     serve_parser.add_argument("--host", default="127.0.0.1", help="Address to listen on")
     serve_parser.add_argument("--port", type=int, default=8080, help="Port to listen on")
@@ -63,6 +66,8 @@ def main(argv: list[str] | None = None) -> int:
             return ingest_repository(args.repo, args.branch, args.force)
         if args.command == "repos":
             return _repos()
+        if args.command == "remove":
+            return _remove(args.repo)
         if args.command == "serve":
             serve(args.host, args.port)
             return 0
@@ -75,6 +80,16 @@ def main(argv: list[str] | None = None) -> int:
         print(str(exc), file=sys.stderr)
         return 1
     return 1
+
+
+def _remove(repo: str) -> int:
+    removed = delete_repository(repo)
+    sha = str(removed["commit_sha"])[:12]
+    print(
+        f"Removed {removed['name']} {removed['branch']} {sha} "
+        f"({removed['files']} files, {removed['chunks']} chunks)."
+    )
+    return 0
 
 
 def _repos() -> int:

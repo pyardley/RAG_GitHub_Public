@@ -55,7 +55,7 @@ from rag.search import (
     search,
     topic_terms,
 )
-from rag.chunker import chunk_source
+from rag.chunker import chunk_source, embed_text
 from rag.cli import main
 from rag.files import is_skipped, iter_source_files, language_for, parse_repo
 from rag.text import (
@@ -190,6 +190,119 @@ end
         symbols = {chunk.symbol for chunk in chunk_source("ruby", source)}
         self.assertEqual(symbols, {"Foo", "Foo / #bar"})
 
+    def test_rspec_examples_keep_their_group(self):
+        source = """RSpec.describe "Summary" do
+  context "when the maximum threshold has been exceeded" do
+    let(:application) { build(:online_application) }
+    it { is_expected.to be true }
+
+    it "returns the correct text" do
+      expect(page).to have_content("more than")
+    end
+  end
+end
+"""
+        by_symbol = {chunk.symbol: chunk for chunk in chunk_source("ruby", source) if chunk.symbol}
+        group = "Summary / when the maximum threshold has been exceeded"
+        example = group + " / returns the correct text"
+        self.assertEqual(set(by_symbol), {"Summary", group, example})
+        self.assertIn("let(:application)", by_symbol[group].content)
+        self.assertIn("is_expected", by_symbol[group].content)
+        self.assertIn("have_content", by_symbol[example].content)
+        self.assertNotIn("let(:application)", by_symbol[example].content)
+
+    def test_shared_examples_keep_their_name(self):
+        source = """RSpec.shared_examples "a page" do
+  it "shows the heading" do
+    expect(page).to have_heading
+  end
+end
+"""
+        symbols = {chunk.symbol for chunk in chunk_source("ruby", source)}
+        self.assertEqual(
+            symbols,
+            {"shared examples a page", "shared examples a page / shows the heading"},
+        )
+
+    def test_siteprism_sections_keep_their_elements(self):
+        source = """class IncomePeriodPage < BasePage
+  set_url '/income'
+
+  section :content, '#content' do
+    element :income_amount, '#income_period_amount'
+  end
+
+  def submit_income(num)
+    content.income_amount.set(num)
+  end
+end
+"""
+        by_symbol = {chunk.symbol: chunk for chunk in chunk_source("ruby", source) if chunk.symbol}
+        self.assertEqual(
+            set(by_symbol),
+            {
+                "IncomePeriodPage",
+                "IncomePeriodPage section :content",
+                "IncomePeriodPage#submit_income",
+            },
+        )
+        section = by_symbol["IncomePeriodPage section :content"]
+        self.assertIn("element :income_amount", section.content)
+        self.assertNotIn("def submit_income", section.content)
+        self.assertIn("set_url", by_symbol["IncomePeriodPage"].content)
+        self.assertNotIn("element :income_amount", by_symbol["IncomePeriodPage"].content)
+        self.assertIn("content.income_amount.set", by_symbol["IncomePeriodPage#submit_income"].content)
+        self.assertNotIn("element :income_amount", by_symbol["IncomePeriodPage#submit_income"].content)
+
+    def test_factory_bot_traits_are_separate_symbols(self):
+        source = """FactoryBot.define do
+  factory :online_application do
+    married { false }
+
+    trait :savings_more_than_threshold do
+      max_threshold_exceeded { true }
+    end
+
+    trait :refund do
+      refund { true }
+    end
+  end
+end
+"""
+        by_symbol = {chunk.symbol: chunk for chunk in chunk_source("ruby", source) if chunk.symbol}
+        factory = "factory :online_application"
+        threshold = "factory :online_application trait :savings_more_than_threshold"
+        refund = "factory :online_application trait :refund"
+        self.assertEqual(set(by_symbol), {factory, threshold, refund})
+        self.assertIn("married", by_symbol[factory].content)
+        self.assertNotIn("max_threshold_exceeded", by_symbol[factory].content)
+        self.assertIn("max_threshold_exceeded", by_symbol[threshold].content)
+        self.assertNotIn("refund { true }", by_symbol[threshold].content)
+        self.assertIn("refund { true }", by_symbol[refund].content)
+
+    def test_ruby_roles_are_embedded_with_the_chunk(self):
+        page = embed_text(
+            "features/support/page_objects/income_period_page.rb",
+            "ruby",
+            "IncomePeriodPage",
+            "class IncomePeriodPage < BasePage\nend\n",
+        )
+        factory = embed_text(
+            "spec/factories/online_applications.rb",
+            "ruby",
+            "factory :online_application",
+            "factory :online_application do\nend\n",
+        )
+        spec = embed_text(
+            "spec/services/fee_spec.rb",
+            "ruby",
+            "Fee",
+            "RSpec.describe Fee do\nend\n",
+        )
+        self.assertIn("role: SitePrism page", page)
+        self.assertIn("role: FactoryBot factory", factory)
+        self.assertIn("role: RSpec", spec)
+
     def test_java_methods(self):
         source = """public class FeeService {
     public FeeService(Clock clock) {
@@ -267,6 +380,10 @@ class TextTest(unittest.TestCase):
         self.assertFalse(has_declaration("result = calculate(1)", "calculate"))
         self.assertTrue(has_declaration("  def calculate(x)\n  end", "calculate"))
         self.assertTrue(has_declaration("    public int calculate(int fee) {", "calculate"))
+        self.assertTrue(has_declaration("  factory :online_application do", "online_application"))
+        self.assertTrue(
+            has_declaration("    trait :savings_more_than_threshold do", "savings_more_than_threshold")
+        )
 
 
 class FilesTest(unittest.TestCase):
@@ -294,6 +411,7 @@ class FilesTest(unittest.TestCase):
         self.assertTrue(is_skipped(Path(".env.test")))
         self.assertTrue(is_skipped(Path("Gemfile.lock")))
         self.assertTrue(is_skipped(Path("public/assets/application.js")))
+        self.assertTrue(is_skipped(Path("spec/fixtures/vcr_cassettes/lookup.yml")))
         self.assertFalse(is_skipped(Path("app/models/fee.rb")))
         self.assertFalse(is_skipped(Path(".env.example")))
         self.assertEqual(language_for(Path("app/models/fee.rb")), "ruby")
@@ -916,6 +1034,7 @@ class WebTest(unittest.TestCase):
             self.assertIn("with income '[0-9]*' and average", page)
             self.assertIn('heading.textContent = "Matches"', page)
             self.assertIn("More matches were found than the Passages limit of ", page)
+            self.assertIn("Remove this index", page)
             request = urllib.request.Request(
                 f"http://127.0.0.1:{port}/api/query",
                 data=json.dumps({"question": ""}).encode("utf-8"),
@@ -1093,7 +1212,93 @@ print(json.dumps([
         )
 
 
+class RemoveIndexTest(unittest.TestCase):
+    def test_forgetting_a_repository_deletes_only_that_index(self):
+        from rag.ingest import forget_repository
+
+        calls = []
+
+        class Cursor:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def execute(self, sql, params):
+                calls.append((" ".join(sql.split()), params))
+
+            def fetchone(self):
+                return (4, 12)
+
+        class Connection:
+            def cursor(self):
+                return Cursor()
+
+            def commit(self):
+                self.committed = True
+
+        connection = Connection()
+        stored = {
+            "id": 7,
+            "name": "hmcts/hwf-publicapp",
+            "url": "https://github.com/hmcts/hwf-publicapp.git",
+            "branch": "master",
+            "commit_sha": "b1d15f83c0a9",
+            "ingested_at": None,
+        }
+        with patch("rag.ingest.get_repository", return_value=stored):
+            removed = forget_repository(connection, "hmcts/hwf-publicapp")
+        deleted = next(call for call in calls if call[0].startswith("DELETE"))
+        self.assertEqual(deleted, ("DELETE FROM repositories WHERE id = %s", (7,)))
+        self.assertEqual(removed["files"], 4)
+        self.assertEqual(removed["chunks"], 12)
+        self.assertTrue(connection.committed)
+
+    def test_an_unknown_repository_is_not_deleted(self):
+        from rag.ingest import forget_repository
+
+        class Connection:
+            def cursor(self):
+                raise AssertionError("no delete")
+
+        with patch("rag.ingest.get_repository", return_value=None):
+            with self.assertRaises(ValueError) as caught:
+                forget_repository(Connection(), "hmcts/missing")
+        self.assertEqual(str(caught.exception), "hmcts/missing is not indexed")
+
+    def test_removing_a_checkout_stays_inside_the_repos_directory(self):
+        from rag.gitrepo import remove_checkout
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            checkout = root / "hmcts" / "hwf-publicapp"
+            checkout.mkdir(parents=True)
+            (checkout / "README.md").write_text("indexed", encoding="utf-8")
+            with patch("rag.gitrepo.REPOS_DIR", root):
+                self.assertTrue(remove_checkout("hmcts/hwf-publicapp"))
+            self.assertFalse(checkout.exists())
+            self.assertFalse((root / "hmcts").exists())
+
+    def test_remove_refuses_while_an_ingest_is_running(self):
+        from rag import web
+
+        web._ingest_state["running"] = True
+        try:
+            status, body = web.remove_index({"repo": "hmcts/hwf-publicapp"})
+        finally:
+            web._ingest_state["running"] = False
+            web._ingest_state["repo"] = None
+        self.assertEqual(status, 409)
+        self.assertEqual(body["error"], "An ingest is already running")
+
+
 class CliTest(unittest.TestCase):
+    def test_remove_help_does_not_need_a_database(self):
+        with self.assertRaises(SystemExit) as caught:
+            main(["remove", "--help"])
+        self.assertEqual(caught.exception.code, 0)
+
     def test_help_does_not_need_a_database(self):
         with self.assertRaises(SystemExit) as caught:
             main(["--help"])

@@ -158,6 +158,7 @@
         <select id="repo"></select>
       </label>
       <button class="secondary" type="button" id="index-toggle">Index a repository</button>
+      <button class="secondary" type="button" id="remove-index" disabled>Remove this index</button>
     </section>
 
     <form class="index-form" id="index-form" hidden>
@@ -212,6 +213,7 @@
     const prompts = { query: "", impact: "", search: "" };
     let mode = "query";
     let poll = null;
+    let currentIngest = null;
     let branchTimer = null;
     let branchLookup = 0;
 
@@ -225,6 +227,8 @@
     });
     document.querySelector("#ask").addEventListener("submit", onAsk);
     document.querySelector("#index-form").addEventListener("submit", onIndex);
+    document.querySelector("#remove-index").addEventListener("click", onRemove);
+    repoSelect.addEventListener("change", syncRemove);
     document.querySelector("#index-repo").addEventListener("input", () => {
       clearTimeout(branchTimer);
       branchTimer = setTimeout(refreshDefaultBranch, 400);
@@ -292,6 +296,7 @@
     }
 
     function showIngest(ingest) {
+      currentIngest = ingest;
       const log = document.querySelector("#index-log");
       const meter = document.querySelector("#index-meter");
       const button = document.querySelector("#index-go");
@@ -301,6 +306,7 @@
       if (!active) {
         meter.hidden = true;
         log.hidden = true;
+        syncRemove();
         return;
       }
       document.querySelector("#index-form").hidden = false;
@@ -318,6 +324,32 @@
         clearInterval(poll);
         poll = null;
       }
+      syncRemove();
+    }
+
+    function syncRemove() {
+      const button = document.querySelector("#remove-index");
+      button.disabled = Boolean(currentIngest && currentIngest.running) || !repoSelect.value;
+    }
+
+    async function onRemove() {
+      const name = repoSelect.value;
+      if (!name) return;
+      const label = repoSelect.selectedOptions[0].textContent;
+      if (!window.confirm(`Remove the index for ${label}?`)) return;
+      setStatus("Removing the index…");
+      const response = await fetch("/api/remove", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ repo: name })
+      });
+      const body = await response.json();
+      if (!response.ok) {
+        setStatus(body.error || "Could not remove the index", true);
+        return;
+      }
+      await refresh();
+      setStatus(`Removed ${name}`);
     }
 
     function paintMeter(ingest) {

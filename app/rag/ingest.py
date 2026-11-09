@@ -7,11 +7,12 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from rag.chunker import Chunk, chunk_source, embed_text
+from rag.chunker import Chunk, chunk_source, embed_text, source_role
 from rag.db import connect, get_repository
 from rag.embedder import Embedder
 from rag.files import iter_source_files, parse_repo, read_text
-from rag.gitrepo import checkout, remote_commit
+from rag.gitrepo import checkout, remote_commit, remove_checkout
+from rag.log import logger
 from rag.text import search_text
 
 _LOCK_KEY = 814263591
@@ -24,6 +25,58 @@ class _PendingFile:
     language: str
     content_hash: str
     chunks: list[Chunk]
+
+
+def delete_repository(repo: str) -> dict:
+    """Delete one repository index and its checkout. Other repositories stay."""
+    name, _url = parse_repo(repo)
+    conn = connect()
+    try:
+        acquired = conn.execute("SELECT pg_try_advisory_lock(%s)", (_LOCK_KEY,)).fetchone()[0]
+        conn.commit()
+        if not acquired:
+            raise ValueError("An ingest is already running")
+        try:
+            removed = forget_repository(conn, name)
+        finally:
+            conn.rollback()
+            conn.execute("SELECT pg_advisory_unlock(%s)", (_LOCK_KEY,))
+            conn.commit()
+    finally:
+        conn.close()
+    try:
+        remove_checkout(name)
+    except OSError as exc:
+        logger.warning("could not remove the checkout for %s: %s", name, exc)
+    logger.info(
+        "removed index %s %s %s (%s files, %s chunks)",
+        removed["name"],
+        removed["branch"],
+        str(removed["commit_sha"])[:12],
+        removed["files"],
+        removed["chunks"],
+    )
+    return removed
+
+
+def forget_repository(conn, name: str) -> dict:
+    """Delete one repository row. Chunks and documents follow it."""
+    found = get_repository(conn, name)
+    if found is None:
+        raise ValueError(f"{name} is not indexed")
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+                (SELECT count(*) FROM documents WHERE repository_id = %s),
+                (SELECT count(*) FROM chunks WHERE repository_id = %s)
+            """,
+            (found["id"], found["id"]),
+        )
+        files, chunks = cur.fetchone()
+        cur.execute("DELETE FROM repositories WHERE id = %s", (found["id"],))
+    conn.commit()
+    return {**found, "files": files, "chunks": chunks}
 
 
 def ingest_repository(
@@ -243,7 +296,7 @@ def _flush(conn, embedder: Embedder, repository_id: int, pending: list[_PendingF
                         chunk.symbol,
                         chunk.kind,
                         chunk.content,
-                        search_text(item.path, chunk.symbol, chunk.content),
+                        search_text(item.path, chunk.symbol, source_role(item.path, chunk.content), chunk.content),
                         _vector_literal(vectors[vector_index]),
                     ),
                 )

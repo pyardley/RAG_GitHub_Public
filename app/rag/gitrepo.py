@@ -65,6 +65,19 @@ def default_branch_name(output: str) -> str | None:
     return None
 
 
+def remove_checkout(name: str) -> bool:
+    """Delete the local checkout for one repository. Missing checkouts are fine."""
+    destination = _destination(name)
+    existed = destination.exists()
+    if existed:
+        shutil.rmtree(destination)
+    parent = destination.parent
+    root = REPOS_DIR.resolve()
+    if parent != root and parent.is_dir() and not any(parent.iterdir()):
+        parent.rmdir()
+    return existed
+
+
 def _destination(name: str) -> Path:
     root = REPOS_DIR.resolve()
     destination = (root / name).resolve()

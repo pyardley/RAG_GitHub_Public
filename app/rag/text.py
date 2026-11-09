@@ -81,6 +81,7 @@ def has_declaration(content: str, term: str) -> bool:
         rf"(?:(?:public|protected|private|internal|static|final|abstract|async|export|default|open|data|sealed|override|synchronized)\s+)*"
         rf"(?:class|module|interface|enum|trait|object|record|function|fun|def|type)\s+(?:self\.)?{ident}\b"
         rf"|^[ \t]*(?:(?:public|protected|private|internal|static|final|synchronized)\s+)+[\w.<>,\[\]?]+\s+{ident}\s*\("
+        rf"|^[ \t]*(?:factory|trait)\s+:{ident}\b"
     )
     return pattern.search(content) is not None
 

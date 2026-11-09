@@ -19,6 +19,7 @@ SKIP_PARTS = {
     "tmp",
     "log",
     "coverage",
+    "vcr_cassettes",
     "storage",
     "dist",
     "build",
