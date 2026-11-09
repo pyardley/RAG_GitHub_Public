@@ -10,6 +10,7 @@ The first repository to index is [hmcts/hwf-publicapp](https://github.com/hmcts/
 - [Start](#start)
 - [Web](#web)
 - [Ask questions](#ask-questions)
+- [Examples](#examples)
 - [Logs](#logs)
 - [Index another repository](#index-another-repository)
 - [Written answers](#written-answers)
@@ -69,6 +70,86 @@ docker compose run --rm -T rag repos
 `query` retrieves the code passages most relevant to a question. A question that names a directory and a value, such as `look under /app for 4250 or min_threshold_base`, searches that directory for those values and leaves the rest of the repository out. `Ignore files in folders /features/support and /features/step_definitions` leaves those folders out, including a step definition or page object reached from a feature file. Quote the text to match it exactly: `look under /features for "with income '8000' and average"` finds that step and leaves other income files out. Inside the quotes, a regular expression is used as written. `look under /features for "with income '[0-9]*' and average"` matches any amount in that step. Use `[0-9]` for a digit. When the quoted text is not in the index, the result is empty. The page shows when this process started. When more matches exist than the Passages limit, the page says so. A question that asks to show or list features returns feature files only. When a question names a `.feature` file and asks how that step runs, retrieval follows it into its step definition and the page-object methods that fill fields and click buttons. `impact` looks up a class, method, or file and groups the result into definitions, references, and related code. References include specs and feature tests when those files mention the name.
 
 Search covers every indexed repository. Each repository is searched on its own, then the passages are sorted by how close they are to the question, so a weaker match sinks below a closer one. Pass `--repo hmcts/hwf-publicapp` when more than one is loaded and you want only one.
+
+## Examples
+
+Paste a query into Query on the page, or pass the same text to `query`. Paste an impact target into Impact, or pass it to `impact`. These are written for [hmcts/hwf-publicapp](https://github.com/hmcts/hwf-publicapp). On the command line, add `--repo hmcts/hwf-publicapp` when both repositories are indexed and the request should stay in one of them.
+
+### Queries
+
+```text
+where is the application submitted
+```
+
+An ordinary question. The passages are the closest code, sorted by that closeness.
+
+```text
+look for limit
+```
+
+A semantic question. A passage about a threshold can rank above one that only contains the word limit. With both repositories indexed, this also reaches the staff app.
+
+```text
+look under /app for 4250 or min_threshold_base
+```
+
+The named directory is the only place searched, and the search is for those values.
+
+```text
+look under /features for birth date. Ignore files in folders /features/support and /features/step_definitions
+```
+
+Date-of-birth scenarios under `features`. The ignored folders stay out of the result.
+
+```text
+look under /features for "with income '8000' and average"
+```
+
+The quoted words have to appear. Other income files stay out.
+
+```text
+look under /features for "with income '[0-9]*' and average"
+```
+
+Inside the quotes this is a regular expression. `[0-9]*` matches any amount. The page says when more matches exist than the Passages limit.
+
+```text
+which features cover date of birth
+```
+
+A request to list features returns feature files only.
+
+```text
+how does features/dob/dob_single.feature enter the date of birth
+```
+
+Naming a feature file and asking how it runs follows one step into its step definition and the page-object method. For this file that step is `I enter a valid date of birth`, which calls `DobPage#valid_dob`.
+
+### Impact
+
+```text
+ApplicationController#online_application
+```
+
+The qualified name selects that method. The result is grouped into definitions, references, and related passages.
+
+```text
+factory :online_application
+```
+
+Specs that call `build` or `create` for that factory. A trait passed as a symbol is its own passage, for example `factory :online_application trait :savings_more_than_threshold`. `build` and `create` are the same reference to the factory.
+
+```text
+IncomePeriodPage#submit_income
+```
+
+The page method, the step definition that calls `income_period_page.submit_income`, and the feature scenarios that match that step. Each of those passages shows the path back to the method. Features and the page are listed before specs.
+
+```text
+NullifyBlank
+```
+
+The concern is listed, and its `define_method` and `public_send` calls appear under Unresolved. Those calls have no guessed target.
 
 ## Logs
 
