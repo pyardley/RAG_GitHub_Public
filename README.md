@@ -73,7 +73,7 @@ Search covers every indexed repository. Each repository is searched on its own, 
 
 ## Examples
 
-Paste a query into Query on the page, or pass the same text to `query`. Paste an impact target into Impact, or pass it to `impact`. These are written for [hmcts/hwf-publicapp](https://github.com/hmcts/hwf-publicapp). On the command line, add `--repo hmcts/hwf-publicapp` when both repositories are indexed and the request should stay in one of them.
+Paste a query into Query on the page, or pass the same text to `query`. Paste an impact target into Impact, or pass it to `impact`. These are written for [hmcts/hwf-publicapp](https://github.com/hmcts/hwf-publicapp), except the claim factory, which is run against [hmcts/et-full-system](https://github.com/hmcts/et-full-system). On the command line, add `--repo hmcts/hwf-publicapp` when both Help with Fees repositories are indexed and the request should stay in one of them.
 
 ### Queries
 
@@ -150,6 +150,18 @@ NullifyBlank
 ```
 
 The concern is listed, and its `define_method` and `public_send` calls appear under Unresolved. Those calls have no guessed target.
+
+```text
+FactoryBot.create(:claim)
+```
+
+Run this against `hmcts/et-full-system`. On the page, choose that repository before Impact. On the command line:
+
+```powershell
+docker compose run --rm -T rag impact "FactoryBot.create(:claim)" --repo hmcts/et-full-system
+```
+
+The references are the passages that contain that call. The factory definition in the index is `factory :claim`. `build(:claim)` is stored as the same kind of reference to that factory.
 
 ## Logs
 
