@@ -9,6 +9,7 @@ The first repository to index is [hmcts/hwf-publicapp](https://github.com/hmcts/
 - [What you need](#what-you-need)
 - [Start](#start)
 - [Web](#web)
+- [MCP](#mcp)
 - [Ask questions](#ask-questions)
 - [Examples](#examples)
 - [Logs](#logs)
@@ -47,6 +48,18 @@ docker compose up -d
 Open http://localhost:8080. Switch between Query, Impact, and Search, choose an indexed repository, and run it. Each passage links to those lines in the indexed commit on GitHub. Index another GitHub repository from the same page. A first index takes several minutes and the page shows its progress.
 
 `docker compose run` still runs one command, so the wrappers keep working while the web app is up.
+
+## MCP
+
+A Model Context Protocol server lets another language model call the running app. It speaks JSON-RPC on standard input and uses the web API, so start the app first with `docker compose up -d`. The server needs only Python on the host. It does not open the database itself.
+
+```powershell
+python mcp/server.py
+```
+
+Cursor loads that command from `.cursor/mcp.json` under the name `code-rag`. `CODE_RAG_URL` defaults to `http://127.0.0.1:8080`.
+
+The tools are `repositories`, `query`, `search`, `impact`, `default_branch`, `ingest`, and `remove_index`. `query` returns the passages and leaves the app's own written answer off, so the calling model reads the code. Set `answer` to true when you also want that reply. `impact` returns the definitions, the callers, and the diagram. `FactoryBot.create(:claim)` is a valid impact target. `remove_index` deletes one index only when `confirm` is true. Passage text is shortened in the tool result. The page still shows the full chunk.
 
 On macOS or Linux the same commands work. `rag.ps1` and `rag.sh` are thin wrappers:
 
