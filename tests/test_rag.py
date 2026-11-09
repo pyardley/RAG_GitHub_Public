@@ -1152,6 +1152,8 @@ class WebTest(unittest.TestCase):
             self.assertIn('heading.textContent = "Matches"', page)
             self.assertIn("More matches were found than the Passages limit of ", page)
             self.assertIn("Remove this index", page)
+            self.assertIn("This deletes that index and its checkout.", page)
+            self.assertIn("remove-confirm", page)
             request = urllib.request.Request(
                 f"http://127.0.0.1:{port}/api/query",
                 data=json.dumps({"question": ""}).encode("utf-8"),

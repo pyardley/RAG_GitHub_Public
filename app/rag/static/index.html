@@ -105,6 +105,14 @@
       to { transform: translateX(280%); }
     }
     #index-meter-label { margin: 0.4rem 0 0; color: var(--muted); font-size: 0.9rem; }
+    .confirm {
+      margin-top: 0.75rem;
+      padding: 0.9rem 1rem;
+      background: #f8efe6;
+      border: 1px solid #e2c7b4;
+      border-radius: 12px;
+    }
+    .confirm p { margin: 0; }
     #status { min-height: 1.5rem; margin: 0.8rem 0; color: var(--muted); }
     #status.error { color: var(--warn); }
     .scope { color: var(--muted); margin: 0 0 0.8rem; }
@@ -160,6 +168,14 @@
       <button class="secondary" type="button" id="index-toggle">Index a repository</button>
       <button class="secondary" type="button" id="remove-index" disabled>Remove this index</button>
     </section>
+
+    <div class="confirm" id="remove-confirm" hidden>
+      <p id="remove-confirm-text"></p>
+      <div class="row">
+        <button type="button" id="remove-confirm-yes">Remove index</button>
+        <button class="secondary" type="button" id="remove-confirm-no">Cancel</button>
+      </div>
+    </div>
 
     <form class="index-form" id="index-form" hidden>
       <label>GitHub repository
@@ -228,7 +244,12 @@
     document.querySelector("#ask").addEventListener("submit", onAsk);
     document.querySelector("#index-form").addEventListener("submit", onIndex);
     document.querySelector("#remove-index").addEventListener("click", onRemove);
-    repoSelect.addEventListener("change", syncRemove);
+    document.querySelector("#remove-confirm-yes").addEventListener("click", confirmRemove);
+    document.querySelector("#remove-confirm-no").addEventListener("click", hideRemoveConfirm);
+    repoSelect.addEventListener("change", () => {
+      hideRemoveConfirm();
+      syncRemove();
+    });
     document.querySelector("#index-repo").addEventListener("input", () => {
       clearTimeout(branchTimer);
       branchTimer = setTimeout(refreshDefaultBranch, 400);
@@ -330,13 +351,29 @@
     function syncRemove() {
       const button = document.querySelector("#remove-index");
       button.disabled = Boolean(currentIngest && currentIngest.running) || !repoSelect.value;
+      if (button.disabled) hideRemoveConfirm();
     }
 
-    async function onRemove() {
+    function hideRemoveConfirm() {
+      document.querySelector("#remove-confirm").hidden = true;
+    }
+
+    function onRemove() {
       const name = repoSelect.value;
       if (!name) return;
       const label = repoSelect.selectedOptions[0].textContent;
-      if (!window.confirm(`Remove the index for ${label}?`)) return;
+      document.querySelector("#remove-confirm-text").textContent =
+        `Remove the index for ${label}? This deletes that index and its checkout. The other repositories stay.`;
+      document.querySelector("#remove-confirm").hidden = false;
+    }
+
+    async function confirmRemove() {
+      const name = repoSelect.value;
+      if (!name) {
+        hideRemoveConfirm();
+        return;
+      }
+      hideRemoveConfirm();
       setStatus("Removing the index…");
       const response = await fetch("/api/remove", {
         method: "POST",
@@ -511,7 +548,7 @@
         }
         renderGroup("Definitions", body.definitions, body.definition_count);
         renderGroup("References", body.references, body.reference_count);
-        if (body.gaps || []).length) renderGroup("Unresolved", body.gaps, body.gaps.length);
+        if ((body.gaps || []).length) renderGroup("Unresolved", body.gaps, body.gaps.length);
         renderGroup("Related", body.related, (body.related || []).length);
         return;
       }
