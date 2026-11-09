@@ -548,6 +548,13 @@
         }
         renderGroup("Definitions", body.definitions, body.definition_count);
         renderGroup("References", body.references, body.reference_count);
+        const callersLeftOut = callerNote(body);
+        if (callersLeftOut) {
+          const note = document.createElement("p");
+          note.className = "scope";
+          note.textContent = callersLeftOut;
+          results.append(note);
+        }
         if ((body.gaps || []).length) renderGroup("Unresolved", body.gaps, body.gaps.length);
         renderGroup("Related", body.related, (body.related || []).length);
         return;
@@ -616,6 +623,17 @@
       }
       box.append(heading, total, list);
       results.append(box);
+    }
+
+    function callerNote(body) {
+      if (body.callers_omitted && body.callers_capped) {
+        return `At least ${body.callers_omitted} more callers were left out of References.`;
+      }
+      if (body.callers_omitted) {
+        return `${body.callers_omitted} more callers were left out of References.`;
+      }
+      if (body.callers_capped) return "More callers were left out of References.";
+      return "";
     }
 
     function renderGroup(title, hits, total) {

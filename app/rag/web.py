@@ -195,6 +195,8 @@ def run_impact(body: dict) -> tuple[int, dict]:
         "definition_count": found["definition_count"],
         "reference_count": found["reference_count"],
         "truncated": found["truncated"],
+        "callers_omitted": found.get("callers_omitted", 0),
+        "callers_capped": found.get("callers_capped", False),
         "answer": written,
         "answer_error": answer_error,
         "model": _model_view(),

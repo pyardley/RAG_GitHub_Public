@@ -15,10 +15,18 @@ from dataclasses import dataclass
 from rag.follow import definition_matches, page_symbol, step_needles, step_phrases
 from rag.log import logger
 
-_FACTORY_CALL = re.compile(
-    r"\b(?:build|create|build_stubbed|attributes_for)\s*\(\s*:([A-Za-z_]\w*)"
-    r"((?:\s*,\s*:[A-Za-z_]\w*)*)"
+_FACTORY_VERBS = r"build_list|create_list|build_stubbed|attributes_for|build|create"
+_FACTORY_ARGS = (
+    r":(?P<name>[A-Za-z_]\w*)"
+    r"(?:\s*,\s*\d+)?"
+    r"(?P<traits>(?:\s*,\s*:[A-Za-z_]\w*)*)"
 )
+_FACTORY_CALL = re.compile(rf"\b(?:{_FACTORY_VERBS})\s*\(\s*{_FACTORY_ARGS}")
+_FACTORY_TARGET = re.compile(
+    rf"^(?:FactoryBot\s*(?:\.|::)\s*)?(?:{_FACTORY_VERBS})\s*\(\s*{_FACTORY_ARGS}(?P<rest>.*)\)\s*$"
+)
+# Bump when edge extraction changes so the next startup rebuilds stored edges.
+_EDGE_VERSION = "2"
 _ALIAS_METHOD = re.compile(
     r"alias_method\s+:([A-Za-z_]\w*[?!]?)\s*,\s*:([A-Za-z_]\w*[?!]?)"
 )
@@ -66,6 +74,22 @@ class IndexedChunk:
     content: str
 
 
+def factory_symbols(target: str) -> list[str]:
+    """Factory symbols named by an impact target written as a FactoryBot call.
+
+    FactoryBot.create(:claim), create(:claim), and create_list(:claim, 3) all
+    name factory :claim. A symbol argument is a trait. A list count is not.
+    """
+    match = _FACTORY_TARGET.match(target.strip())
+    if not match:
+        return []
+    name = match.group("name")
+    symbols = [f"factory :{name}"]
+    for trait in re.findall(r":([A-Za-z_]\w*)", match.group("traits") or ""):
+        symbols.append(f"factory :{name} trait :{trait}")
+    return symbols
+
+
 def extract_edges(path: str, chunks: list) -> list[tuple[int, CallEdge]]:
     """Edges inside one file. The index is the chunk's position in `chunks`."""
     if not path.endswith(".rb"):
@@ -87,9 +111,10 @@ def extract_edges(path: str, chunks: list) -> list[tuple[int, CallEdge]]:
         owner = _owner_name(chunk.symbol)
         for match in _DYNAMIC.finditer(chunk.content):
             add(index, CallEdge(None, None, "gap", "none", " ".join(match.group("line").split())[:160]))
-        for name, traits in _FACTORY_CALL.findall(chunk.content):
+        for match in _FACTORY_CALL.finditer(chunk.content):
+            name = match.group("name")
             add(index, CallEdge(f"factory :{name}", None, "factory", "high", f"factory :{name}"))
-            for trait in re.findall(r":([A-Za-z_]\w*)", traits):
+            for trait in re.findall(r":([A-Za-z_]\w*)", match.group("traits") or ""):
                 symbol = f"factory :{name} trait :{trait}"
                 add(index, CallEdge(symbol, None, "factory", "high", symbol))
         for _new_name, old_name in _ALIAS_METHOD.findall(chunk.content) + _ALIAS.findall(chunk.content):
@@ -157,18 +182,20 @@ def walk_callers(
     labels: dict[int, str],
     *,
     max_depth: int = 4,
-    limit: int = 24,
-) -> list[tuple[int, str]]:
+    limit: int = 80,
+) -> tuple[list[tuple[int, str]], int]:
     """Callers of the start chunks, then callers of those, out to `max_depth`.
 
     Each result is the caller chunk and the path from that caller back to the
-    start, using the chunk symbols. A cycle is not followed again.
+    start, using the chunk symbols. A cycle is not followed again. The second
+    value is how many further callers were left out of the list.
     """
     visited = set(start_ids)
     frontier = [(chunk_id, labels.get(chunk_id, "")) for chunk_id in start_ids]
     found: list[tuple[int, str]] = []
+    omitted = 0
     depth = 0
-    while frontier and depth < max_depth and len(found) < limit:
+    while frontier and depth < max_depth:
         nxt: list[tuple[int, str]] = []
         for node, path in frontier:
             for src, _detail in incoming.get(node, []):
@@ -177,15 +204,14 @@ def walk_callers(
                 visited.add(src)
                 label = labels.get(src) or "caller"
                 via = f"{label} → {path}" if path else label
-                found.append((src, via))
+                if len(found) < limit:
+                    found.append((src, via))
+                else:
+                    omitted += 1
                 nxt.append((src, via))
-                if len(found) >= limit:
-                    break
-            if len(found) >= limit:
-                break
         frontier = nxt
         depth += 1
-    return found
+    return found, omitted
 
 
 def rebuild_edges(conn, repository_id: int) -> int:
@@ -246,7 +272,7 @@ def rebuild_edges(conn, repository_id: int) -> int:
             INSERT INTO settings (key, value) VALUES (%s, %s)
             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
             """,
-            (f"call_edges:{repository_id}", str(chunk_count)),
+            (f"call_edges:{repository_id}", f"{chunk_count}:{_EDGE_VERSION}"),
         )
     conn.commit()
     logger.info("call edges repository=%s edges=%s chunks=%s", repository_id, len(pending), chunk_count)
@@ -274,7 +300,7 @@ def prepare_call_edges(conn, repository_ids: list[int] | None = None) -> None:
     for repository_id, name, chunk_count in repos:
         if chunk_count == 0:
             continue
-        if ready.get(f"call_edges:{repository_id}") == str(chunk_count):
+        if ready.get(f"call_edges:{repository_id}") == f"{chunk_count}:{_EDGE_VERSION}":
             continue
         logger.info("building call edges for %s", name)
         rebuild_edges(conn, repository_id)

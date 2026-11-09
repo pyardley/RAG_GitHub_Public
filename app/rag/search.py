@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 
 import psycopg
 
+from rag.edges import factory_symbols
 from rag.log import log_retrieval, logger
 from rag.text import (
     has_declaration,
@@ -17,6 +18,12 @@ from rag.text import (
     path_matches,
     symbol_matches,
 )
+
+
+_IMPACT_LIST_LIMIT = 80
+_CALLER_WALK_LIMIT = 80
+_EDGE_HOP_LIMIT = 400
+_KNOWN_CALLER_LIMIT = 400
 
 
 @dataclass(frozen=True)
@@ -373,32 +380,26 @@ def _search_with_embedding(
 
 
 def impact(conn, repository_ids: list[int], target: str) -> dict[str, list[Hit]]:
-    leaf = last_identifier(target).lower()
-    params = {
-        "repos": repository_ids,
-        "exact": target.strip().lower(),
-        "leaf": leaf,
-        "path_term": target.strip().replace("\\", "/").lower(),
-        "regex": identifier_regex(target),
-    }
-    rows, truncated = _impact_rows(conn, params)
+    looked_up = factory_symbols(target) or [target]
     definitions: list[Hit] = []
     references: list[Hit] = []
     seen: set[int] = set()
-    for row in rows:
-        hit = _hit_from_row((*row, 0.0))
-        if hit.chunk_id in seen:
-            continue
-        seen.add(hit.chunk_id)
-        if (
-            symbol_matches(hit.symbol, target)
-            or path_matches(hit.path, target)
-            or has_declaration(hit.content, target)
-        ):
-            definitions.append(hit)
-        else:
-            references.append(hit)
-    callers, gaps = _callers_and_gaps(conn, repository_ids, definitions, seen)
+    truncated = False
+    for item in looked_up:
+        rows, extra = _impact_rows(conn, _impact_params(repository_ids, item))
+        truncated = truncated or extra
+        for row in rows:
+            hit = _hit_from_row((*row, 0.0))
+            if hit.chunk_id in seen:
+                continue
+            seen.add(hit.chunk_id)
+            if _defines_target(hit, item):
+                definitions.append(hit)
+            else:
+                references.append(hit)
+    callers, gaps, callers_omitted, callers_capped = _callers_and_gaps(
+        conn, repository_ids, definitions, seen,
+    )
     merged: list[Hit] = []
     for hit in references:
         walked = callers.pop(hit.chunk_id, None)
@@ -410,30 +411,59 @@ def impact(conn, repository_ids: list[int], target: str) -> dict[str, list[Hit]]
         merged.append(hit)
     references = merged
     references.sort(key=_reference_order)
+    shown_references = references[:_IMPACT_LIST_LIMIT]
     related = [
         hit
         for hit in search(conn, repository_ids, target, k=8)[0]
         if hit.chunk_id not in seen
     ]
     logger.info(
-        "impact target=%r definitions=%s references=%s callers=%s gaps=%s related=%s truncated=%s",
+        "impact target=%r looked_up=%s definitions=%s references=%s callers=%s "
+        "callers_omitted=%s callers_capped=%s gaps=%s related=%s truncated=%s",
         target,
+        looked_up,
         len(definitions),
-        len(references),
-        sum(1 for hit in references if hit.via),
+        len(shown_references),
+        sum(1 for hit in shown_references if hit.via),
+        callers_omitted,
+        str(callers_capped).lower(),
         len(gaps),
         len(related),
         str(truncated).lower(),
     )
     return {
-        "definitions": definitions[:40],
-        "references": references[:40],
+        "definitions": definitions[:_IMPACT_LIST_LIMIT],
+        "references": shown_references,
         "related": related,
         "gaps": gaps[:12],
         "definition_count": len(definitions),
-        "reference_count": len(references),
+        "reference_count": len(references) + callers_omitted,
         "truncated": truncated,
+        "callers_omitted": callers_omitted,
+        "callers_capped": callers_capped,
     }
+
+
+def _impact_params(repository_ids: list[int], target: str) -> dict:
+    return {
+        "repos": repository_ids,
+        "exact": target.strip().lower(),
+        "leaf": last_identifier(target).lower(),
+        "path_term": target.strip().replace("\\", "/").lower(),
+        "regex": identifier_regex(target),
+        "factory": target.strip().lower().startswith("factory :"),
+    }
+
+
+def _defines_target(hit: Hit, target: str) -> bool:
+    """A factory symbol matches that factory chunk, not a method of the same leaf name."""
+    if target.strip().lower().startswith("factory :"):
+        return (hit.symbol or "").lower() == target.strip().lower()
+    return (
+        symbol_matches(hit.symbol, target)
+        or path_matches(hit.path, target)
+        or has_declaration(hit.content, target)
+    )
 
 
 def _impact_rows(conn, params: dict) -> tuple[list[tuple], bool]:
@@ -448,14 +478,17 @@ def _impact_rows(conn, params: dict) -> tuple[list[tuple], bool]:
     """
     exact = params["exact"]
     qualified = "#" in exact or "::" in exact or ("." in exact and not looks_like_path(exact))
-    symbol_match = """
-        lower(coalesce(c.symbol, '')) = %(exact)s
-        OR right(lower(coalesce(c.symbol, '')), char_length(%(leaf)s) + 1) = '#' || %(leaf)s
-        OR right(lower(coalesce(c.symbol, '')), char_length(%(leaf)s) + 1) = '.' || %(leaf)s
-        OR right(lower(coalesce(c.symbol, '')), char_length(%(leaf)s) + 2) = '::' || %(leaf)s
-    """
-    if not qualified:
-        symbol_match += f" OR {file_clause}"
+    if params.get("factory"):
+        symbol_match = "lower(coalesce(c.symbol, '')) = %(exact)s"
+    else:
+        symbol_match = """
+            lower(coalesce(c.symbol, '')) = %(exact)s
+            OR right(lower(coalesce(c.symbol, '')), char_length(%(leaf)s) + 1) = '#' || %(leaf)s
+            OR right(lower(coalesce(c.symbol, '')), char_length(%(leaf)s) + 1) = '.' || %(leaf)s
+            OR right(lower(coalesce(c.symbol, '')), char_length(%(leaf)s) + 2) = '::' || %(leaf)s
+        """
+        if not qualified:
+            symbol_match += f" OR {file_clause}"
     if looks_like_path(exact):
         located = f"""
             {selected}
@@ -603,30 +636,40 @@ def _callers_and_gaps(
     repository_ids: list[int],
     definitions: list[Hit],
     seen: set[int],
-) -> tuple[dict[int, Hit], list[Hit]]:
-    """Walk stored call edges out from the definitions. Name search still stands."""
+) -> tuple[dict[int, Hit], list[Hit], int, bool]:
+    """Walk stored call edges out from the definitions. Name search still stands.
+
+    The third value is how many callers were left out of the returned list.
+    The fourth is true when a hop stopped before every caller was loaded.
+    """
     from rag.edges import prepare_call_edges, walk_callers
 
     if not definitions:
-        return {}, []
+        return {}, [], 0, False
     prepare_call_edges(conn, repository_ids)
     start = {hit.chunk_id for hit in definitions}
     labels = {hit.chunk_id: hit.symbol or hit.path for hit in definitions}
     incoming: dict[int, list[tuple[int, str]]] = {}
     frontier = set(start)
     known = set(start)
+    capped = False
     for _depth in range(4):
-        if not frontier or len(known) > 80:
+        if not frontier:
+            break
+        if len(known) > _KNOWN_CALLER_LIMIT:
+            capped = True
             break
         added: set[int] = set()
-        for src_id, dst_id, detail, symbol, path in _edge_rows(conn, repository_ids, frontier):
+        rows, hop_capped = _edge_rows(conn, repository_ids, frontier)
+        capped = capped or hop_capped
+        for src_id, dst_id, detail, symbol, path in rows:
             incoming.setdefault(dst_id, []).append((src_id, detail))
             labels.setdefault(src_id, symbol or path)
             if src_id not in known:
                 added.add(src_id)
         known.update(added)
         frontier = added
-    reached = walk_callers(start, incoming, labels)
+    reached, omitted = walk_callers(start, incoming, labels, limit=_CALLER_WALK_LIMIT)
     missing = [chunk_id for chunk_id, _via in reached if chunk_id not in seen]
     loaded = {hit.chunk_id: hit for hit in _chunks_by_id(conn, missing)}
     callers = {
@@ -636,12 +679,12 @@ def _callers_and_gaps(
     }
     gap_ids = set(start) | set(callers)
     gaps = _gap_hits(conn, repository_ids, gap_ids)
-    return callers, gaps
+    return callers, gaps, omitted, capped
 
 
-def _edge_rows(conn, repository_ids: list[int], destinations: set[int]) -> list[tuple]:
+def _edge_rows(conn, repository_ids: list[int], destinations: set[int]) -> tuple[list[tuple], bool]:
     if not destinations:
-        return []
+        return [], False
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -652,11 +695,12 @@ def _edge_rows(conn, repository_ids: list[int], destinations: set[int]) -> list[
               AND e.confidence = 'high'
               AND e.dst_chunk_id = ANY(%s)
             ORDER BY c.path, c.start_line
-            LIMIT 200
+            LIMIT %s
             """,
-            (repository_ids, list(destinations)),
+            (repository_ids, list(destinations), _EDGE_HOP_LIMIT),
         )
-        return list(cur.fetchall())
+        rows = list(cur.fetchall())
+    return rows, len(rows) == _EDGE_HOP_LIMIT
 
 
 def _chunks_by_id(conn, chunk_ids: list[int]) -> list[Hit]:

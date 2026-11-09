@@ -152,6 +152,7 @@ def _impact(target: str, repo: str | None, no_answer: bool, model: str | None) -
         print("This name appears in more chunks than are shown here.\n")
     _print_section("Definitions", definitions, found["definition_count"])
     _print_section("References", references, found["reference_count"])
+    _print_caller_note(found.get("callers_omitted", 0), found.get("callers_capped", False))
     if found.get("gaps"):
         _print_section("Unresolved", found["gaps"], len(found["gaps"]))
     _print_section("Related", related, len(related))
@@ -218,6 +219,15 @@ def _print_scope(repositories: list[dict]) -> None:
         names = ", ".join(repo["name"] for repo in repositories)
         print(f"Searching {len(repositories)} repositories: {names}")
     print()
+
+
+def _print_caller_note(omitted: int, capped: bool) -> None:
+    if omitted and capped:
+        print(f"At least {omitted} more callers were left out of References.\n")
+    elif omitted:
+        print(f"{omitted} more callers were left out of References.\n")
+    elif capped:
+        print("More callers were left out of References.\n")
 
 
 def _print_section(title: str, hits: list[Hit], total: int) -> None:

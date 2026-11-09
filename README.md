@@ -137,7 +137,7 @@ The qualified name selects that method. The result is grouped into definitions, 
 factory :online_application
 ```
 
-Specs that call `build` or `create` for that factory. A trait passed as a symbol is its own passage, for example `factory :online_application trait :savings_more_than_threshold`. `build` and `create` are the same reference to the factory.
+Specs that call `build` or `create` for that factory. A trait passed as a symbol is its own passage, for example `factory :online_application trait :savings_more_than_threshold`. `build`, `create`, `build_list`, and `create_list` are the same reference to the factory.
 
 ```text
 IncomePeriodPage#submit_income
@@ -161,7 +161,7 @@ Run this against `hmcts/et-full-system`. On the page, choose that repository bef
 docker compose run --rm -T rag impact "FactoryBot.create(:claim)" --repo hmcts/et-full-system
 ```
 
-The references are the passages that contain that call. The factory definition in the index is `factory :claim`. `build(:claim)` is stored as the same kind of reference to that factory.
+The factory `factory :claim` is listed under Definitions. Specs that build or create a claim are references, including `build(:claim)` and `create_list(:claim, …)`. Each reference shows the path back to the factory.
 
 ## Logs
 

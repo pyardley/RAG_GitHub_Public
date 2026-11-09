@@ -394,6 +394,98 @@ end
         self.assertIn("factory :online_application", destinations)
         self.assertIn("factory :online_application trait :savings_more_than_threshold", destinations)
 
+    def test_a_list_factory_call_points_at_the_factory(self):
+        from rag.edges import extract_edges
+
+        source = """RSpec.describe "Claims" do
+  it "builds several" do
+    create_list(:claim, 3, :ready)
+    build_list(:claim, 2)
+  end
+end
+"""
+        chunks = chunk_source("ruby", source)
+        edges = extract_edges("spec/models/claim_spec.rb", chunks)
+        destinations = {edge.dst_symbol for _index, edge in edges}
+        self.assertIn("factory :claim", destinations)
+        self.assertIn("factory :claim trait :ready", destinations)
+
+    def test_a_factory_bot_call_names_the_factory_and_ignores_a_list_count(self):
+        from rag.edges import factory_symbols
+
+        self.assertEqual(factory_symbols("FactoryBot.create(:claim)"), ["factory :claim"])
+        self.assertEqual(factory_symbols("create(:claim)"), ["factory :claim"])
+        self.assertEqual(
+            factory_symbols("build(:claim, :ready)"),
+            ["factory :claim", "factory :claim trait :ready"],
+        )
+        self.assertEqual(
+            factory_symbols("create_list(:claim, 3, :ready)"),
+            ["factory :claim", "factory :claim trait :ready"],
+        )
+        self.assertEqual(factory_symbols("online_application"), [])
+
+    def test_impact_of_a_factory_bot_call_starts_at_the_factory(self):
+        from rag.search import impact
+
+        caller = Hit(
+            2,
+            "hmcts/et-full-system",
+            "spec/models/claim_spec.rb",
+            8,
+            10,
+            "builds a claim",
+            "example",
+            "build(:claim)",
+            0.0,
+            via="builds a claim → factory :claim",
+        )
+
+        def rows(_conn, params):
+            self.assertEqual(params["exact"], "factory :claim")
+            self.assertEqual(params["leaf"], "claim")
+            return [(
+                1,
+                "hmcts/et-full-system",
+                "spec/factories/claims.rb",
+                1,
+                4,
+                "factory :claim",
+                "factory",
+                "factory :claim do\nend\n",
+            )], False
+
+        def callers(_conn, _repos, definitions, _seen):
+            self.assertEqual([hit.symbol for hit in definitions], ["factory :claim"])
+            return {caller.chunk_id: caller}, [], 0, False
+
+        with (
+            patch("rag.search._impact_rows", side_effect=rows),
+            patch("rag.search._callers_and_gaps", side_effect=callers),
+            patch("rag.search.search", return_value=([], False)),
+        ):
+            found = impact(None, [1], "FactoryBot.create(:claim)")
+        self.assertEqual([hit.symbol for hit in found["definitions"]], ["factory :claim"])
+        self.assertEqual(found["references"], [caller])
+        self.assertEqual(found["callers_omitted"], 0)
+
+    def test_a_factory_symbol_is_not_the_method_of_the_same_name(self):
+        from rag.search import _defines_target
+
+        method = Hit(
+            1, "hmcts/hwf-publicapp", "app/controllers/application_controller.rb",
+            44, 46, "ApplicationController#online_application", "method",
+            "def online_application\nend\n", 0.0,
+        )
+        factory = Hit(
+            2, "hmcts/hwf-publicapp", "spec/factories/online_applications.rb",
+            2, 4, "factory :online_application", "factory",
+            "factory :online_application do\nend\n", 0.0,
+        )
+        self.assertFalse(_defines_target(method, "factory :online_application"))
+        self.assertTrue(_defines_target(factory, "factory :online_application"))
+        self.assertTrue(_defines_target(method, "ApplicationController#online_application"))
+
     def test_a_dynamic_call_has_no_target(self):
         from rag.edges import extract_edges
 
@@ -452,7 +544,7 @@ end
 
         incoming = {1: [(2, "call")], 2: [(3, "step")], 3: [(2, "back")]}
         labels = {1: "Page#submit", 2: "enter the income", 3: "Income / enters the amount"}
-        found = walk_callers({1}, incoming, labels)
+        found, omitted = walk_callers({1}, incoming, labels)
         self.assertEqual(
             found,
             [
@@ -460,6 +552,16 @@ end
                 (3, "Income / enters the amount → enter the income → Page#submit"),
             ],
         )
+        self.assertEqual(omitted, 0)
+
+    def test_the_walk_reports_callers_past_the_limit(self):
+        from rag.edges import walk_callers
+
+        incoming = {1: [(2, "a"), (3, "b")], 2: [(4, "c")]}
+        labels = {1: "factory :claim", 2: "one", 3: "two", 4: "three"}
+        found, omitted = walk_callers({1}, incoming, labels, limit=1)
+        self.assertEqual(found, [(2, "one → factory :claim")])
+        self.assertEqual(omitted, 2)
 
     def test_user_facing_files_sort_ahead_of_specs(self):
         from rag.search import _surface_rank
@@ -1151,6 +1253,7 @@ class WebTest(unittest.TestCase):
             self.assertIn("with income '[0-9]*' and average", page)
             self.assertIn('heading.textContent = "Matches"', page)
             self.assertIn("More matches were found than the Passages limit of ", page)
+            self.assertIn("more callers were left out of References.", page)
             self.assertIn("Remove this index", page)
             self.assertIn("This deletes that index and its checkout.", page)
             self.assertIn("remove-confirm", page)
