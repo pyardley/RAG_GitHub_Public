@@ -23,6 +23,7 @@ from rag.answer import (
 )
 from rag.config import LLM_PROVIDER
 from rag.db import connect, list_repositories, resolve_repositories
+from rag.edges import prepare_call_edges
 from rag.files import parse_repo
 from rag.gitrepo import default_branch
 from rag.ingest import delete_repository, ingest_repository
@@ -111,6 +112,14 @@ class Handler(BaseHTTPRequestHandler):
 def serve(host: str, port: int) -> None:
     if not _PAGE.is_file():
         raise SystemExit(f"Web page is missing: {_PAGE}")
+    try:
+        conn = connect()
+        try:
+            prepare_call_edges(conn)
+        finally:
+            conn.close()
+    except (OSError, SystemExit, RuntimeError) as exc:
+        logger.warning("call edges were not built: %s", exc)
     httpd = ThreadingHTTPServer((host, port), Handler)
     print(f"Code RAG is at http://{host}:{port}", flush=True)
     try:
@@ -169,7 +178,12 @@ def run_impact(body: dict) -> tuple[int, dict]:
         return 400, {"error": _failure_text(exc)}
     finally:
         conn.close()
-    evidence = found["definitions"][:8] + found["references"][:8] + found["related"][:4]
+    evidence = (
+        found["definitions"][:8]
+        + found["references"][:8]
+        + found.get("gaps", [])[:4]
+        + found["related"][:4]
+    )
     written, answer_error = _written_answer(target, evidence, impact_mode=True, enabled=_wants_answer(body))
     commits = _indexed_commits(repositories)
     return 200, {
@@ -177,6 +191,7 @@ def run_impact(body: dict) -> tuple[int, dict]:
         "definitions": [_hit(item, commits) for item in found["definitions"]],
         "references": [_hit(item, commits) for item in found["references"]],
         "related": [_hit(item, commits) for item in found["related"]],
+        "gaps": [_hit(item, commits) for item in found.get("gaps", [])],
         "definition_count": found["definition_count"],
         "reference_count": found["reference_count"],
         "truncated": found["truncated"],
@@ -379,6 +394,8 @@ def _hit(hit: Hit, commits: dict[str, str]) -> dict:
         "content": hit.content,
         "score": round(hit.score, 4),
     }
+    if hit.via:
+        payload["via"] = hit.via
     url = github_blob_url(hit.repo, commits.get(hit.repo, ""), hit.path, hit.start_line, hit.end_line)
     if url:
         payload["url"] = url

@@ -357,6 +357,123 @@ function format(value) {
         self.assertEqual(chunk_source("ruby", "\n\n"), [])
 
 
+class CallEdgeTest(unittest.TestCase):
+    def test_a_page_call_points_at_the_section_that_declares_the_element(self):
+        from rag.edges import extract_edges
+
+        source = """class IncomePeriodPage < BasePage
+  set_url '/income'
+
+  section :content, '#content' do
+    element :income_amount, '#income_period_amount'
+  end
+
+  def submit_income(num)
+    content.income_amount.set(num)
+  end
+end
+"""
+        chunks = chunk_source("ruby", source)
+        edges = extract_edges("features/support/page_objects/income_period_page.rb", chunks)
+        destinations = {edge.dst_symbol for _index, edge in edges}
+        self.assertIn("IncomePeriodPage section :content", destinations)
+        self.assertTrue(all(edge.confidence == "high" for _index, edge in edges))
+
+    def test_a_factory_call_points_at_the_factory_and_trait(self):
+        from rag.edges import extract_edges
+
+        source = """RSpec.describe "Summary" do
+  it "returns the correct text" do
+    build(:online_application, :savings_more_than_threshold)
+  end
+end
+"""
+        chunks = chunk_source("ruby", source)
+        edges = extract_edges("spec/views/summary_spec.rb", chunks)
+        destinations = {edge.dst_symbol for _index, edge in edges}
+        self.assertIn("factory :online_application", destinations)
+        self.assertIn("factory :online_application trait :savings_more_than_threshold", destinations)
+
+    def test_a_dynamic_call_has_no_target(self):
+        from rag.edges import extract_edges
+
+        source = """class Fee
+  def save
+    send(:store)
+  end
+end
+"""
+        chunks = chunk_source("ruby", source)
+        edges = [edge for _index, edge in extract_edges("app/models/fee.rb", chunks)]
+        gaps = [edge for edge in edges if edge.confidence == "none"]
+        self.assertEqual(len(gaps), 1)
+        self.assertIsNone(gaps[0].dst_symbol)
+        self.assertNotIn("store", {edge.dst_symbol for edge in edges})
+
+    def test_an_alias_points_at_the_old_method(self):
+        from rag.edges import extract_edges
+
+        source = """class Fee
+  alias_method :store, :save
+
+  def save
+  end
+end
+"""
+        chunks = chunk_source("ruby", source)
+        edges = extract_edges("app/models/fee.rb", chunks)
+        self.assertIn("Fee#save", {edge.dst_symbol for _index, edge in edges})
+
+    def test_a_feature_step_points_at_its_step_definition(self):
+        from rag.edges import IndexedChunk, link_steps
+
+        feature = IndexedChunk(
+            1,
+            "features/income.feature",
+            "Income / enters the amount",
+            "scenario",
+            "Feature: Income\n  Scenario: enters the amount\n    When I enter the income\n",
+        )
+        step = IndexedChunk(
+            2,
+            "features/step_definitions/income_steps.rb",
+            "I enter the income",
+            "method",
+            "When(/^I enter the income$/) do\n  income_period_page.submit_income(1)\nend\n",
+        )
+        edges = link_steps([feature, step])
+        self.assertEqual(len(edges), 1)
+        self.assertEqual(edges[0][0], 1)
+        self.assertEqual(edges[0][1].dst_chunk_id, 2)
+        self.assertEqual(edges[0][1].confidence, "high")
+
+    def test_the_walk_follows_callers_and_stops_at_a_cycle(self):
+        from rag.edges import walk_callers
+
+        incoming = {1: [(2, "call")], 2: [(3, "step")], 3: [(2, "back")]}
+        labels = {1: "Page#submit", 2: "enter the income", 3: "Income / enters the amount"}
+        found = walk_callers({1}, incoming, labels)
+        self.assertEqual(
+            found,
+            [
+                (2, "enter the income → Page#submit"),
+                (3, "Income / enters the amount → enter the income → Page#submit"),
+            ],
+        )
+
+    def test_user_facing_files_sort_ahead_of_specs(self):
+        from rag.search import _surface_rank
+
+        self.assertLess(
+            _surface_rank("features/income.feature"),
+            _surface_rank("features/support/page_objects/income_period_page.rb"),
+        )
+        self.assertLess(
+            _surface_rank("app/controllers/applications_controller.rb"),
+            _surface_rank("spec/models/fee_spec.rb"),
+        )
+
+
 class TextTest(unittest.TestCase):
     def test_search_text_splits_identifiers(self):
         text = search_text("app/services/FeeCalculator.rb", "fee_calculator")

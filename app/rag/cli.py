@@ -152,8 +152,10 @@ def _impact(target: str, repo: str | None, no_answer: bool, model: str | None) -
         print("This name appears in more chunks than are shown here.\n")
     _print_section("Definitions", definitions, found["definition_count"])
     _print_section("References", references, found["reference_count"])
+    if found.get("gaps"):
+        _print_section("Unresolved", found["gaps"], len(found["gaps"]))
     _print_section("Related", related, len(related))
-    evidence = definitions[:8] + references[:8] + related[:4]
+    evidence = definitions[:8] + references[:8] + found.get("gaps", [])[:4] + related[:4]
     return _maybe_answer(target, evidence, impact_mode=True, no_answer=no_answer, model=model)
 
 
@@ -237,6 +239,8 @@ def _print_hits(hits: list[Hit], show_score: bool = True) -> None:
         symbol = f"  {hit.symbol}" if hit.symbol else ""
         score = f"  score {hit.score:.4f}" if show_score else ""
         print(f"{hit.repo}  {hit.path}:{hit.start_line}-{hit.end_line}{symbol}{score}")
+        if hit.via:
+            print(f"  via {hit.via}")
         print(_clip(hit.content))
         print()
 

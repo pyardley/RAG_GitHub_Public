@@ -60,6 +60,20 @@ SCHEMA_STATEMENTS = [
     CREATE INDEX IF NOT EXISTS chunks_embedding_idx
         ON chunks USING hnsw (embedding vector_cosine_ops)
     """,
+    """
+    CREATE TABLE IF NOT EXISTS edges (
+        id BIGSERIAL PRIMARY KEY,
+        repository_id BIGINT NOT NULL REFERENCES repositories (id) ON DELETE CASCADE,
+        src_chunk_id BIGINT NOT NULL REFERENCES chunks (id) ON DELETE CASCADE,
+        dst_chunk_id BIGINT REFERENCES chunks (id) ON DELETE CASCADE,
+        dst_symbol TEXT,
+        edge_type TEXT NOT NULL,
+        confidence TEXT NOT NULL,
+        detail TEXT NOT NULL DEFAULT ''
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS edges_dst_chunk_idx ON edges (dst_chunk_id)",
+    "CREATE INDEX IF NOT EXISTS edges_src_idx ON edges (src_chunk_id)",
 ]
 
 

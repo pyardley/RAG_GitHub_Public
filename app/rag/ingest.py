@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 from rag.chunker import Chunk, chunk_source, embed_text, source_role
 from rag.db import connect, get_repository
+from rag.edges import rebuild_edges
 from rag.embedder import Embedder
 from rag.files import iter_source_files, parse_repo, read_text
 from rag.gitrepo import checkout, remote_commit, remove_checkout
@@ -75,6 +76,7 @@ def forget_repository(conn, name: str) -> dict:
         )
         files, chunks = cur.fetchone()
         cur.execute("DELETE FROM repositories WHERE id = %s", (found["id"],))
+        cur.execute("DELETE FROM settings WHERE key = %s", (f"call_edges:{found['id']}",))
     conn.commit()
     return {**found, "files": files, "chunks": chunks}
 
@@ -193,6 +195,7 @@ def _ingest(
             (checked_out, sha, repository_id),
         )
         cur.execute("ANALYZE chunks")
+    rebuild_edges(conn, repository_id)
     conn.commit()
     elapsed = time.perf_counter() - started
     print(

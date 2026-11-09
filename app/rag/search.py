@@ -30,6 +30,7 @@ class Hit:
     kind: str
     content: str
     score: float
+    via: str = ""
 
 
 def asks_for_features(question: str) -> bool:
@@ -397,6 +398,17 @@ def impact(conn, repository_ids: list[int], target: str) -> dict[str, list[Hit]]
             definitions.append(hit)
         else:
             references.append(hit)
+    callers, gaps = _callers_and_gaps(conn, repository_ids, definitions, seen)
+    merged: list[Hit] = []
+    for hit in references:
+        walked = callers.pop(hit.chunk_id, None)
+        merged.append(walked if walked is not None else hit)
+    for chunk_id, hit in callers.items():
+        if chunk_id in seen:
+            continue
+        seen.add(chunk_id)
+        merged.append(hit)
+    references = merged
     references.sort(key=_reference_order)
     related = [
         hit
@@ -404,10 +416,12 @@ def impact(conn, repository_ids: list[int], target: str) -> dict[str, list[Hit]]
         if hit.chunk_id not in seen
     ]
     logger.info(
-        "impact target=%r definitions=%s references=%s related=%s truncated=%s",
+        "impact target=%r definitions=%s references=%s callers=%s gaps=%s related=%s truncated=%s",
         target,
         len(definitions),
         len(references),
+        sum(1 for hit in references if hit.via),
+        len(gaps),
         len(related),
         str(truncated).lower(),
     )
@@ -415,6 +429,7 @@ def impact(conn, repository_ids: list[int], target: str) -> dict[str, list[Hit]]
         "definitions": definitions[:40],
         "references": references[:40],
         "related": related,
+        "gaps": gaps[:12],
         "definition_count": len(definitions),
         "reference_count": len(references),
         "truncated": truncated,
@@ -564,8 +579,141 @@ def _threshold_scenario(hits: list[Hit]) -> Hit:
 
 
 def _reference_order(hit: Hit) -> tuple:
-    test = hit.path.startswith(("spec/", "features/", "test/", "tests/", "performance-tests/"))
-    return (test, hit.repo, hit.path, hit.start_line)
+    return (_surface_rank(hit.path), 0 if not hit.via else 1, hit.repo, hit.path, hit.start_line)
+
+
+def _surface_rank(path: str) -> int:
+    """Features, page objects, and controllers are the surfaces a change reaches."""
+    lowered = path.replace("\\", "/").lower()
+    if lowered.endswith(".feature"):
+        return 0
+    if "page_object" in lowered or lowered.endswith("_page.rb"):
+        return 1
+    if "/controllers/" in lowered or lowered.endswith("_controller.rb"):
+        return 2
+    if "step_definitions" in lowered:
+        return 3
+    if lowered.startswith("app/"):
+        return 4
+    return 5
+
+
+def _callers_and_gaps(
+    conn,
+    repository_ids: list[int],
+    definitions: list[Hit],
+    seen: set[int],
+) -> tuple[dict[int, Hit], list[Hit]]:
+    """Walk stored call edges out from the definitions. Name search still stands."""
+    from rag.edges import prepare_call_edges, walk_callers
+
+    if not definitions:
+        return {}, []
+    prepare_call_edges(conn, repository_ids)
+    start = {hit.chunk_id for hit in definitions}
+    labels = {hit.chunk_id: hit.symbol or hit.path for hit in definitions}
+    incoming: dict[int, list[tuple[int, str]]] = {}
+    frontier = set(start)
+    known = set(start)
+    for _depth in range(4):
+        if not frontier or len(known) > 80:
+            break
+        added: set[int] = set()
+        for src_id, dst_id, detail, symbol, path in _edge_rows(conn, repository_ids, frontier):
+            incoming.setdefault(dst_id, []).append((src_id, detail))
+            labels.setdefault(src_id, symbol or path)
+            if src_id not in known:
+                added.add(src_id)
+        known.update(added)
+        frontier = added
+    reached = walk_callers(start, incoming, labels)
+    missing = [chunk_id for chunk_id, _via in reached if chunk_id not in seen]
+    loaded = {hit.chunk_id: hit for hit in _chunks_by_id(conn, missing)}
+    callers = {
+        chunk_id: replace(loaded[chunk_id], via=via)
+        for chunk_id, via in reached
+        if chunk_id in loaded
+    }
+    gap_ids = set(start) | set(callers)
+    gaps = _gap_hits(conn, repository_ids, gap_ids)
+    return callers, gaps
+
+
+def _edge_rows(conn, repository_ids: list[int], destinations: set[int]) -> list[tuple]:
+    if not destinations:
+        return []
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT e.src_chunk_id, e.dst_chunk_id, e.detail, c.symbol, c.path
+            FROM edges e
+            JOIN chunks c ON c.id = e.src_chunk_id
+            WHERE e.repository_id = ANY(%s)
+              AND e.confidence = 'high'
+              AND e.dst_chunk_id = ANY(%s)
+            ORDER BY c.path, c.start_line
+            LIMIT 200
+            """,
+            (repository_ids, list(destinations)),
+        )
+        return list(cur.fetchall())
+
+
+def _chunks_by_id(conn, chunk_ids: list[int]) -> list[Hit]:
+    if not chunk_ids:
+        return []
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT c.id, r.name, c.path, c.start_line, c.end_line, c.symbol, c.kind, c.content, 0
+            FROM chunks c
+            JOIN repositories r ON r.id = c.repository_id
+            WHERE c.id = ANY(%s)
+            ORDER BY c.path, c.start_line
+            """,
+            (chunk_ids,),
+        )
+        return [_hit_from_row(row) for row in cur.fetchall()]
+
+
+def _gap_hits(conn, repository_ids: list[int], chunk_ids: set[int]) -> list[Hit]:
+    if not chunk_ids:
+        return []
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT c.id, r.name, c.path, c.start_line, c.end_line, c.symbol, e.detail
+            FROM edges e
+            JOIN chunks c ON c.id = e.src_chunk_id
+            JOIN repositories r ON r.id = c.repository_id
+            WHERE e.repository_id = ANY(%s)
+              AND e.confidence = 'none'
+              AND e.src_chunk_id = ANY(%s)
+            ORDER BY c.path, c.start_line
+            LIMIT 12
+            """,
+            (repository_ids, list(chunk_ids)),
+        )
+        rows = cur.fetchall()
+    gaps: list[Hit] = []
+    seen: set[tuple] = set()
+    for row in rows:
+        key = (row[0], row[6])
+        if key in seen:
+            continue
+        seen.add(key)
+        gaps.append(Hit(
+            chunk_id=row[0],
+            repo=row[1],
+            path=row[2],
+            start_line=row[3],
+            end_line=row[4],
+            symbol=row[5],
+            kind="unresolved",
+            content=row[6],
+            score=0.0,
+        ))
+    return gaps
 
 
 def literal_hits(

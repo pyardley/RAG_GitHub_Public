@@ -54,9 +54,13 @@ _TRACE_INSTRUCTIONS = (
 _IMPACT_INSTRUCTIONS = (
     "You assess the impact of changing a named part of a software repository. "
     "Use only the retrieved passages. Organise the answer as: what it is, where "
-    "it is defined, what references it (including tests and views), and what to "
-    "retest or update if it changes. Cite path and line numbers. If the evidence "
-    "is thin, say so. Do not invent files or call sites."
+    "it is defined, what references it (including tests and "
+    "views), and what to retest or update if it changes. A via line is the path "
+    "of calls from that passage back to the name. Cite that path with the file "
+    "and line numbers. A passage of kind unresolved is a dynamic call such as "
+    "send or define_method whose target is not known. Say that the chain stops "
+    "there, and do not guess what it calls. Cite path and line numbers. If the "
+    "evidence is thin, say so. Do not invent files or call sites."
 )
 
 

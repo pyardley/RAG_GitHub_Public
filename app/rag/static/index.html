@@ -511,6 +511,7 @@
         }
         renderGroup("Definitions", body.definitions, body.definition_count);
         renderGroup("References", body.references, body.reference_count);
+        if (body.gaps || []).length) renderGroup("Unresolved", body.gaps, body.gaps.length);
         renderGroup("Related", body.related, (body.related || []).length);
         return;
       }
@@ -620,6 +621,12 @@
         symbol.className = "symbol";
         symbol.textContent = hit.symbol;
         article.append(symbol);
+      }
+      if (hit.via) {
+        const via = document.createElement("div");
+        via.className = "meta";
+        via.textContent = `via ${hit.via}`;
+        article.append(via);
       }
       if (showScore) {
         const meta = document.createElement("div");
