@@ -533,6 +533,28 @@ end
         self.assertTrue(_defines_target(factory, "factory :online_application"))
         self.assertTrue(_defines_target(method, "ApplicationController#online_application"))
 
+    def test_a_bare_call_is_stored_when_the_method_is_elsewhere(self):
+        from rag.edges import extract_edges, resolve_call_target
+
+        source = """Given('a claimant is on the page') do
+  et1_answer_case_heard_by_page
+end
+"""
+        chunks = chunk_source("ruby", source)
+        edges = extract_edges("features/step_definitions/example_steps.rb", chunks)
+        destinations = {edge.dst_symbol for _index, edge in edges}
+        self.assertIn("et1_answer_case_heard_by_page", destinations)
+        self.assertNotIn("end", destinations)
+        self.assertIsNone(resolve_call_target("save", {}, {"save": None}))
+        self.assertEqual(
+            resolve_call_target(
+                "et1_answer_case_heard_by_page",
+                {},
+                {"et1_answer_case_heard_by_page": 9},
+            ),
+            9,
+        )
+
     def test_a_dynamic_call_has_no_target(self):
         from rag.edges import extract_edges
 

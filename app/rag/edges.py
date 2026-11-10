@@ -26,7 +26,7 @@ _FACTORY_TARGET = re.compile(
     rf"^(?:FactoryBot\s*(?:\.|::)\s*)?(?:{_FACTORY_VERBS})\s*\(\s*{_FACTORY_ARGS}(?P<rest>.*)\)\s*$"
 )
 # Bump when edge extraction changes so the next startup rebuilds stored edges.
-_EDGE_VERSION = "2"
+_EDGE_VERSION = "3"
 _ALIAS_METHOD = re.compile(
     r"alias_method\s+:([A-Za-z_]\w*[?!]?)\s*,\s*:([A-Za-z_]\w*[?!]?)"
 )
@@ -46,7 +46,14 @@ _SKIP_CALLS = {
     "click", "set", "text", "visible", "present", "blank", "nil", "empty",
     "each", "map", "select", "first", "last", "where", "find", "order",
     "to_s", "to_i", "call", "new", "tap", "itself", "present?", "blank?",
-    "nil?", "empty?", "include", "exclude",
+    "nil?", "empty?", "include", "exclude", "send", "public_send", "__send__",
+}
+_RUBY_KEYWORDS = {
+    "alias", "and", "begin", "break", "case", "class", "def", "defined?",
+    "do", "else", "elsif", "end", "ensure", "false", "for", "if", "in",
+    "module", "next", "nil", "not", "or", "redo", "rescue", "retry",
+    "return", "self", "super", "then", "true", "undef", "unless", "until",
+    "when", "while", "yield",
 }
 _SKIP_RECEIVERS = {
     "RSpec", "FactoryBot", "SitePrism", "Capybara", "Rails", "ActiveRecord",
@@ -136,11 +143,17 @@ def extract_edges(path: str, chunks: list) -> list[tuple[int, CallEdge]]:
                 symbol = page_symbol(receiver, method)
                 add(index, CallEdge(symbol, None, "call", "high", symbol))
         for method in _BARE_CALL.findall(chunk.content):
-            if not owner or method in _SKIP_CALLS:
+            if method in _SKIP_CALLS or method in _RUBY_KEYWORDS:
                 continue
-            symbol = f"{owner}#{method}"
-            if symbol in methods:
-                add(index, CallEdge(symbol, None, "call", "high", method))
+            # A method declared in this file keeps its Class#method name.
+            # Any other bare call is stored by name and linked later when
+            # only one indexed method has that name.
+            if owner:
+                symbol = f"{owner}#{method}"
+                if symbol in methods:
+                    add(index, CallEdge(symbol, None, "call", "high", method))
+                    continue
+            add(index, CallEdge(method, None, "call", "high", method))
     return found
 
 
@@ -229,6 +242,7 @@ def rebuild_edges(conn, repository_id: int) -> int:
         rows = cur.fetchall()
     grouped: dict[str, list[IndexedChunk]] = {}
     by_symbol: dict[str, int] = {}
+    by_leaf: dict[str, int | None] = {}
     labels: dict[int, str] = {}
     for row in rows:
         chunk = IndexedChunk(row[0], row[1], row[2], row[3], row[4])
@@ -236,12 +250,18 @@ def rebuild_edges(conn, repository_id: int) -> int:
         labels[chunk.chunk_id] = chunk.symbol or chunk.path
         if chunk.symbol and chunk.symbol.lower() not in by_symbol:
             by_symbol[chunk.symbol.lower()] = chunk.chunk_id
+        if chunk.symbol and "#" in chunk.symbol:
+            leaf = chunk.symbol.rsplit("#", 1)[1].lower()
+            if leaf not in by_leaf:
+                by_leaf[leaf] = chunk.chunk_id
+            elif by_leaf[leaf] != chunk.chunk_id:
+                by_leaf[leaf] = None
     pending: list[tuple] = []
     for path, chunks in grouped.items():
         for index, edge in extract_edges(path, chunks):
             dst = edge.dst_chunk_id
             if dst is None and edge.dst_symbol:
-                dst = by_symbol.get(edge.dst_symbol.lower())
+                dst = resolve_call_target(edge.dst_symbol, by_symbol, by_leaf)
             pending.append((
                 repository_id, chunks[index].chunk_id, dst, edge.dst_symbol,
                 edge.edge_type, edge.confidence, edge.detail,
@@ -304,6 +324,20 @@ def prepare_call_edges(conn, repository_ids: list[int] | None = None) -> None:
             continue
         logger.info("building call edges for %s", name)
         rebuild_edges(conn, repository_id)
+
+
+def resolve_call_target(
+    dst_symbol: str,
+    by_symbol: dict[str, int],
+    by_leaf: dict[str, int | None],
+) -> int | None:
+    """Chunk for a call symbol. A bare name matches only a unique method."""
+    found = by_symbol.get(dst_symbol.lower())
+    if found is not None:
+        return found
+    if "#" in dst_symbol or " " in dst_symbol:
+        return None
+    return by_leaf.get(dst_symbol.lower())
 
 
 def _declarations(chunks: list) -> tuple[dict, dict, set[str]]:
