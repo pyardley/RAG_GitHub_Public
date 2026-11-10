@@ -30,7 +30,7 @@ from rag.follow import (
     step_needles,
     step_phrases,
 )
-from rag.gitrepo import default_branch_name
+from rag.gitrepo import branch_list, default_branch_name
 from rag.web import Handler, _progress_view, github_blob_url, public_status, run_query, start_ingest
 from unittest.mock import patch
 
@@ -352,6 +352,19 @@ function format(value) {
         output = "ref: refs/heads/master\tHEAD\nd6867d299ece441f1f26c14ab1ddd8cd1e571eb0\tHEAD\n"
         self.assertEqual(default_branch_name(output), "master")
         self.assertIsNone(default_branch_name("d6867d299ece441f1f26c14ab1ddd8cd1e571eb0\tHEAD\n"))
+
+    def test_branch_list_puts_the_default_first(self):
+        output = (
+            "ref: refs/heads/master\tHEAD\n"
+            "sha\tHEAD\n"
+            "sha\trefs/heads/nightly-dev\n"
+            "sha\trefs/heads/master\n"
+            "sha\trefs/heads/../secret\n"
+        )
+        found = branch_list(output)
+        self.assertEqual(found["default"], "master")
+        self.assertEqual(found["branches"], ["master", "nightly-dev"])
+        self.assertIsNone(branch_list("sha\tHEAD\n"))
 
     def test_blank_file(self):
         self.assertEqual(chunk_source("ruby", "\n\n"), [])
@@ -1291,6 +1304,11 @@ class WebTest(unittest.TestCase):
             self.assertIn("Relationships", page)
             self.assertIn("Call relationships", page)
             self.assertIn("Arrows point from a caller toward the definition.", page)
+            self.assertIn('id="index-toggle"', page)
+            self.assertIn('toggle.textContent = open ? "Close"', page)
+            self.assertIn('id="index-branch"', page)
+            self.assertIn("Enter a repository", page)
+            self.assertIn("Reading branches", page)
             self.assertIn("Remove this index", page)
             self.assertIn("This deletes that index and its checkout.", page)
             self.assertIn("remove-confirm", page)

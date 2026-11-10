@@ -25,7 +25,7 @@ from rag.config import LLM_PROVIDER
 from rag.db import connect, list_repositories, resolve_repositories
 from rag.edges import prepare_call_edges
 from rag.files import parse_repo
-from rag.gitrepo import default_branch
+from rag.gitrepo import list_branches
 from rag.ingest import delete_repository, ingest_repository
 from rag.log import logger
 from rag.plan import retrieval_model
@@ -63,6 +63,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/default-branch":
             repo = parse_qs(urlparse(self.path).query).get("repo", [""])[0]
             status, payload = lookup_default_branch(repo)
+            self._json(payload, status)
+            return
+        if path == "/api/branches":
+            repo = parse_qs(urlparse(self.path).query).get("repo", [""])[0]
+            status, payload = lookup_branches(repo)
             self._json(payload, status)
             return
         self._json({"error": "Not found"}, 404)
@@ -131,14 +136,23 @@ def serve(host: str, port: int) -> None:
 
 
 def lookup_default_branch(repo: str) -> tuple[int, dict]:
+    status, payload = lookup_branches(repo)
+    if status != 200:
+        if status == 404:
+            return 404, {"error": "The default branch could not be read"}
+        return status, payload
+    return 200, {"branch": payload["default"]}
+
+
+def lookup_branches(repo: str) -> tuple[int, dict]:
     try:
         _name, url = parse_repo(repo)
     except ValueError as exc:
         return 400, {"error": str(exc)}
-    branch = default_branch(url)
-    if not branch:
-        return 404, {"error": "The default branch could not be read"}
-    return 200, {"branch": branch}
+    found = list_branches(url)
+    if not found:
+        return 404, {"error": "The branches could not be read"}
+    return 200, found
 
 
 def public_status() -> tuple[int, dict]:

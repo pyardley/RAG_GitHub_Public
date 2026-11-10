@@ -48,11 +48,45 @@ def remote_commit(url: str, branch: str | None) -> str | None:
 
 def default_branch(url: str) -> str | None:
     """Return the remote HEAD branch name, such as master or main."""
+    found = list_branches(url)
+    return found["default"] if found else None
+
+
+def list_branches(url: str) -> dict[str, object] | None:
+    """Remote branch names, with the default branch first."""
     try:
-        output = _run(["git", "-c", "safe.directory=*", "ls-remote", "--symref", url, "HEAD"])
+        output = _run([
+            "git", "-c", "safe.directory=*", "ls-remote", "--symref",
+            url, "HEAD", "refs/heads/*",
+        ])
     except RuntimeError:
         return None
-    return default_branch_name(output)
+    return branch_list(output)
+
+
+def branch_list(output: str) -> dict[str, object] | None:
+    """Parse `git ls-remote --symref` output into a default and a name list."""
+    default = default_branch_name(output)
+    names: list[str] = []
+    seen: set[str] = set()
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) < 2 or parts[0] == "ref:":
+            continue
+        ref = parts[1]
+        if not ref.startswith("refs/heads/"):
+            continue
+        name = ref.removeprefix("refs/heads/")
+        if not name or name in seen or not _safe_branch(name):
+            continue
+        seen.add(name)
+        names.append(name)
+    if not names:
+        return None
+    if default not in seen:
+        default = names[0]
+    names.sort(key=lambda name: (name != default, name.lower()))
+    return {"default": default, "branches": names}
 
 
 def default_branch_name(output: str) -> str | None:
