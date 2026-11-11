@@ -199,6 +199,15 @@ class McpTest(unittest.TestCase):
         self.assertIn("confirm", reply["result"]["content"][0]["text"])
         self.assertEqual(len(_App.seen), before)
 
+    def test_cursor_and_claude_code_start_the_same_server(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        for name in (".cursor/mcp.json", ".mcp.json"):
+            config = json.loads((root / name).read_text(encoding="utf-8"))
+            entry = config["mcpServers"]["code-rag"]
+            self.assertTrue(entry["args"][0].endswith("/mcp/server.py"), name)
+            self.assertIn("python", entry["command"], name)
+            self.assertIn("http://127.0.0.1:8080", entry["env"]["CODE_RAG_URL"], name)
+
     def test_stdio_answers_initialize(self) -> None:
         process = subprocess.Popen(
             [sys.executable, str(Path(__file__).resolve().parents[1] / "mcp" / "server.py")],

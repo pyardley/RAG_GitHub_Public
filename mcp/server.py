@@ -1,7 +1,8 @@
 """Model Context Protocol server for the running Code RAG app.
 
 The process speaks newline-delimited JSON-RPC on stdin and stdout. Logs stay
-on stderr. Cursor launches this with the project `.cursor/mcp.json`.
+on stderr. Cursor launches this from `.cursor/mcp.json`, and Claude Code
+launches it from `.mcp.json`.
 """
 
 from __future__ import annotations

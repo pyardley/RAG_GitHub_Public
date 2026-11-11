@@ -59,6 +59,14 @@ python mcp/server.py
 
 Cursor loads that command from `.cursor/mcp.json` under the name `code-rag`. `CODE_RAG_URL` defaults to `http://127.0.0.1:8080`.
 
+Claude Code, including the Claude extension for VS Code, does not read `.cursor/mcp.json`. It reads `.mcp.json` in the project root, which defines the same `code-rag` server over stdio. Open the project folder, type `/mcp` in the Claude chat, and approve `code-rag`. Until you approve it, it is listed as pending and its tools are not offered. Then ask in plain words, for example "Use code-rag to list the indexed repositories".
+
+`.mcp.json` starts the server with `python3`, which is the name macOS and Linux use. Where the command is `python`, as on Windows, set `CODE_RAG_PYTHON` to `python` before you start VS Code or `claude`. Check what Claude Code has loaded with:
+
+```sh
+claude mcp get code-rag
+```
+
 The tools are `repositories`, `query`, `search`, `impact`, `default_branch`, `ingest`, and `remove_index`. `query` returns the passages and leaves the app's own written answer off, so the calling model reads the code. Set `answer` to true when you also want that reply. `impact` returns the definitions, the callers, and the diagram. `FactoryBot.create(:claim)` is a valid impact target. `remove_index` deletes one index only when `confirm` is true. Passage text is shortened in the tool result. The page still shows the full chunk.
 
 On macOS or Linux the same commands work. `rag.ps1` and `rag.sh` are thin wrappers:

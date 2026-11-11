@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "code-rag": {
+      "type": "stdio",
+      "command": "${CODE_RAG_PYTHON:-python3}",
+      "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp/server.py"],
+      "env": {
+        "CODE_RAG_URL": "${CODE_RAG_URL:-http://127.0.0.1:8080}"
+      }
+    }
+  }
+}
