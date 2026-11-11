@@ -322,3 +322,5 @@ python -m unittest discover -s tests -v
 ```
 
 Run that from this directory.
+
+GitHub Actions runs the same tests on every push and pull request, using Python 3.12 (see `.github/workflows/tests.yml`). There is no index there, so the `limit` check skips.

@@ -1,0 +1,29 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          # The same Python as app/Dockerfile.
+          python-version: "3.12"
+
+      # The tests stub the database and the embedding model, so they need the
+      # database driver to import and nothing else from app/requirements.txt.
+      - name: Install the database driver
+        run: python -m pip install "psycopg[binary]>=3.2.0"
+
+      # The one test that needs the running index skips itself here.
+      - name: Run the unit tests
+        run: python -m unittest discover -s tests
