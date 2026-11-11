@@ -26,12 +26,12 @@ _FACTORY_TARGET = re.compile(
     rf"^(?:FactoryBot\s*(?:\.|::)\s*)?(?:{_FACTORY_VERBS})\s*\(\s*{_FACTORY_ARGS}(?P<rest>.*)\)\s*$"
 )
 # Bump when edge extraction changes so the next startup rebuilds stored edges.
-_EDGE_VERSION = "5"
+_EDGE_VERSION = "8"
 _FACTORY_VERB_NAMES = frozenset(_FACTORY_VERBS.split("|"))
 # A bare name that more methods than this define is left unlinked.
 _AMBIGUOUS_LIMIT = 5
 CALL_ARROW = "→"
-# Joins a caller to a method when more than one class defines that name.
+# Joins a caller to a method when the name is defined in more than one place.
 POSSIBLE_ARROW = "⇢"
 _ALIAS_METHOD = re.compile(
     r"alias_method\s+:([A-Za-z_]\w*[?!]?)\s*,\s*:([A-Za-z_]\w*[?!]?)"
@@ -42,6 +42,37 @@ _ALIAS = re.compile(
 _CONST_CALL = re.compile(r"\b([A-Z][\w:]*)\.([a-z_][\w?!]*)")
 _RECEIVER_CALL = re.compile(r"\b([a-z_][\w]*)\.([a-z_][\w?!]*)")
 _BARE_CALL = re.compile(r"(?m)^[ \t]*([a-z_][\w?!]*)\s*(?:\(|$)")
+# Used to find a bare call that shares its line with other code.
+_HEREDOC = re.compile(r"(?ms)<<[~-]?['\"]?(\w+)['\"]?[^\n]*\n.*?^[ \t]*\1[ \t]*$")
+_STRING = re.compile(r'"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'')
+_INTERPOLATION = re.compile(r"#\{([^}]*)\}")
+_WORD_LIST = re.compile(r"%[wWiI]\s*[\[({<][^\])}>]*[\])}>]")
+_REGEX_LITERAL = re.compile(r"(?<=[(,=~\s])/(?=\S)(?:\\.|[^/\\\n])+/[imxo]*")
+_COMMENT = re.compile(r"(?m)#.*$")
+_STEP_HEADER = re.compile(r"(?m)^[ \t]*(?:Given|When|Then|And|But)\b.*$")
+_DEF_HEAD = re.compile(r"\bdef\s+(?:self\.)?[A-Za-z_]\w*[?!=]?")
+_DEF_PARAMS = re.compile(r"\bdef\s+(?:self\.)?[A-Za-z_]\w*[?!=]?\s*\(([^)]*)\)")
+_BLOCK_PARAMS = re.compile(r"\|([^|\n]*)\|")
+_ASSIGNED = re.compile(r"(?<![\w.@$:])([a-z_]\w*)\s*(?:\|\||&&|[-+*/%])?=(?![=~>])")
+_MULTI_ASSIGNED = re.compile(r"(?m)^[ \t]*((?:[a-z_]\w*\s*,\s*)+[a-z_]\w*)\s*=(?!=)")
+_RESCUED = re.compile(r"\brescue\b[^\n]*=>\s*([a-z_]\w*)")
+_FOR_VARIABLE = re.compile(r"\bfor\s+([a-z_]\w*)\s+in\b")
+_LET = re.compile(r"\b(?:let!?|subject)\s*[( ]\s*:([a-z_]\w*)")
+_NAME = re.compile(r"[a-z_]\w*")
+_CONSTANT = re.compile(r"[A-Z][\w:]*")
+_INLINE_CALL = re.compile(r"(?<![\w.:@$&])([a-z_]\w*[?!]?)(?![\w:])")
+_SUPERCLASS = re.compile(r"\bclass\s+([A-Z][\w:]*)\s*<\s*((?:::)?[A-Z][\w:]*)")
+_TEST_FOLDERS = frozenset({"spec", "features", "test", "tests"})
+# Names Capybara, RSpec, Rack, and Rails already define. A bare call by one
+# of these is only linked inside the class that declares its own.
+_FRAMEWORK_CALLS = frozenset({
+    "page", "visit", "expect", "params", "request", "response", "session",
+    "flash", "cookies", "render", "redirect_to", "get", "post", "put", "patch",
+    "delete", "head", "raise", "puts", "require", "require_relative",
+    "attribute", "validates", "validate", "describe", "context", "it",
+    "before", "after", "let", "subject", "within", "have_content", "have_text",
+    "included", "extended", "inherited",
+})
 _DYNAMIC = re.compile(
     r"(?m)^(?P<line>[ \t]*.*\b(?:public_send|__send__|define_method|method_missing)\b.*|"
     r"[ \t]*.*\bsend\s*[\(:].*)$"
@@ -108,6 +139,7 @@ def extract_edges(path: str, chunks: list) -> list[tuple[int, CallEdge]]:
     if not path.endswith(".rb"):
         return []
     sections, elements, methods = _declarations(chunks)
+    lets = {name for chunk in chunks for name in _LET.findall(chunk.content)}
     found: list[tuple[int, CallEdge]] = []
     seen: set[tuple] = set()
 
@@ -148,9 +180,17 @@ def extract_edges(path: str, chunks: list) -> list[tuple[int, CallEdge]]:
             if "step_definitions" in path.replace("\\", "/") and receiver.endswith("_page"):
                 symbol = page_symbol(receiver, method)
                 add(index, CallEdge(symbol, None, "call", "high", symbol))
+        # A bare name in a factory sets an attribute. It is not a call.
+        if (getattr(chunk, "kind", "") or "").startswith("factory"):
+            continue
+        own_line: set[str] = set()
+        # An RSpec block is not a class, so its name is not a method owner.
+        if owner and not _CONSTANT.fullmatch(owner):
+            owner = None
         for method in _BARE_CALL.findall(chunk.content):
             if method in _SKIP_CALLS or method in _RUBY_KEYWORDS:
                 continue
+            own_line.add(method)
             # A method declared in this file keeps its Class#method name.
             # Any other bare call is stored by name and linked later to the
             # indexed methods that have that name.
@@ -162,7 +202,60 @@ def extract_edges(path: str, chunks: list) -> list[tuple[int, CallEdge]]:
             if method in _FACTORY_VERB_NAMES:
                 continue
             add(index, CallEdge(method, None, "call", "high", method))
+        # A name inside a longer line, such as `total = fee_amount`, is only
+        # kept later if an indexed method has that name.
+        for method in inline_calls(chunk.content, lets):
+            if method in own_line:
+                continue
+            if owner:
+                symbol = f"{owner}#{method}"
+                if symbol in methods:
+                    add(index, CallEdge(symbol, None, "call", "high", method))
+                    continue
+            add(index, CallEdge(method, None, "inline", "high", method))
     return found
+
+
+def inline_calls(content: str, known_locals: set[str] | frozenset[str] = frozenset()) -> list[str]:
+    """Bare names in Ruby code that can be method calls.
+
+    Strings, comments, symbols, keyword arguments, and a name with a receiver
+    are left out. So is a name the code assigns, takes as a parameter, or
+    declares with let, because that is a local value, not a call.
+    """
+    text = _HEREDOC.sub(" ", content)
+    text = _STRING.sub(_string_calls, text)
+    text = _WORD_LIST.sub(" ", text)
+    text = _REGEX_LITERAL.sub(" ", text)
+    text = _COMMENT.sub("", text)
+    local = set(known_locals)
+    for params in _DEF_PARAMS.findall(text) + _BLOCK_PARAMS.findall(text) + _MULTI_ASSIGNED.findall(text):
+        local.update(_NAME.findall(params))
+    local.update(_ASSIGNED.findall(text))
+    local.update(_RESCUED.findall(text))
+    local.update(_FOR_VARIABLE.findall(text))
+    text = _STEP_HEADER.sub("", text)
+    text = _DEF_HEAD.sub(" ", text)
+    names: list[str] = []
+    for name in _INLINE_CALL.findall(text):
+        if (
+            name in local
+            or name in names
+            or name in _SKIP_CALLS
+            or name in _RUBY_KEYWORDS
+            or name in _FACTORY_VERB_NAMES
+        ):
+            continue
+        names.append(name)
+    return names
+
+
+def _string_calls(match: re.Match) -> str:
+    """Keep the code inside #{...} of a double-quoted string and drop the text."""
+    literal = match.group(0)
+    if not literal.startswith('"'):
+        return " "
+    return " " + " ".join(_INTERPOLATION.findall(literal)) + " "
 
 
 def link_steps(chunks: list[IndexedChunk]) -> list[tuple[int, CallEdge]]:
@@ -253,19 +346,10 @@ def rebuild_edges(conn, repository_id: int) -> int:
         )
         rows = cur.fetchall()
     grouped: dict[str, list[IndexedChunk]] = {}
-    by_symbol: dict[str, int] = {}
-    methods_by_leaf: dict[str, dict[str, int]] = {}
     for row in rows:
         chunk = IndexedChunk(row[0], row[1], row[2], row[3], row[4])
         grouped.setdefault(chunk.path, []).append(chunk)
-        if chunk.symbol and chunk.symbol.lower() not in by_symbol:
-            by_symbol[chunk.symbol.lower()] = chunk.chunk_id
-        # An RSpec block named '#save' is not a method, and a method split
-        # over two chunks is still one method.
-        if chunk.kind == "method" and chunk.symbol and "#" in chunk.symbol:
-            leaf = chunk.symbol.rsplit("#", 1)[1].lower()
-            methods_by_leaf.setdefault(leaf, {}).setdefault(chunk.symbol.lower(), chunk.chunk_id)
-    by_leaf = {leaf: list(found.values()) for leaf, found in methods_by_leaf.items()}
+    index_of_calls = CallIndex([chunk for chunks in grouped.values() for chunk in chunks])
     pending: list[tuple] = []
     for path, chunks in grouped.items():
         for index, edge in extract_edges(path, chunks):
@@ -273,18 +357,21 @@ def rebuild_edges(conn, repository_id: int) -> int:
             targets: list[int | None] = [edge.dst_chunk_id]
             confidence = edge.confidence
             if edge.dst_chunk_id is None and edge.dst_symbol:
-                found, certain = resolve_call_targets(
-                    edge.dst_symbol, by_symbol, by_leaf, _owner_name(chunks[index].symbol),
+                found, certain = index_of_calls.targets(
+                    edge.dst_symbol, _owner_name(chunks[index].symbol), path,
                 )
                 found = [chunk_id for chunk_id in found if chunk_id != src]
                 if found:
                     targets = list(found)
                     if not certain:
                         confidence = "low"
+                elif edge.edge_type == "inline":
+                    continue
+            edge_type = "call" if edge.edge_type == "inline" else edge.edge_type
             for dst in targets:
                 pending.append((
                     repository_id, src, dst, edge.dst_symbol,
-                    edge.edge_type, confidence, edge.detail,
+                    edge_type, confidence, edge.detail,
                 ))
     flat = [chunk for chunks in grouped.values() for chunk in chunks]
     for src, edge in link_steps(flat):
@@ -346,34 +433,150 @@ def prepare_call_edges(conn, repository_ids: list[int] | None = None) -> None:
         rebuild_edges(conn, repository_id)
 
 
-def resolve_call_targets(
-    dst_symbol: str,
-    by_symbol: dict[str, int],
-    by_leaf: dict[str, list[int]],
-    owner: str | None = None,
-) -> tuple[list[int], bool]:
-    """Chunks a call symbol can mean, and whether that reading is certain.
+@dataclass(frozen=True)
+class _Method:
+    chunk_id: int
+    owner: str | None
+    path: str
 
-    A qualified symbol names one chunk. A bare name is first read as a method
-    of the caller's own class. Otherwise one indexed method of that name is
-    certain, a few are each possible, and more than `_AMBIGUOUS_LIMIT` are
-    left unlinked.
+
+class CallIndex:
+    """What a call symbol can mean in one repository's chunks.
+
+    A qualified symbol names one chunk. A bare name is a call with no
+    receiver, so Ruby can only find it in the caller's own class, a class it
+    inherits from, a module, or a method defined outside any class. A method
+    of an unrelated class is never the target.
     """
-    found = by_symbol.get(dst_symbol.lower())
-    if found is not None:
-        return [found], True
-    if any(mark in dst_symbol for mark in ("#", " ", ".", ":")):
+
+    def __init__(self, chunks: list[IndexedChunk]) -> None:
+        self._by_symbol: dict[str, int] = {}
+        self._kinds: dict[str, str] = {}
+        self._owner_paths: dict[str, set[str]] = {}
+        self._parents: dict[str, str] = {}
+        self._methods: dict[str, dict[tuple[str, str], _Method]] = {}
+        self._method_ids: dict[str, int] = {}
+        self._texts: dict[str, list[str]] = {}
+        declared: list[tuple[str, str]] = []
+        for chunk in chunks:
+            self._texts.setdefault(chunk.path, []).append(chunk.content)
+            if not chunk.symbol:
+                continue
+            symbol = chunk.symbol.lower()
+            self._by_symbol.setdefault(symbol, chunk.chunk_id)
+            if chunk.kind in ("class", "module"):
+                self._kinds.setdefault(symbol, chunk.kind)
+                self._owner_paths.setdefault(symbol, set()).add(chunk.path)
+                if chunk.kind == "class":
+                    leaf = chunk.symbol.rsplit("::", 1)[-1]
+                    for name, parent in _SUPERCLASS.findall(chunk.content):
+                        if name.rsplit("::", 1)[-1] == leaf:
+                            declared.append((chunk.symbol, parent))
+                            break
+            # An RSpec block named '#save' is not a method, and a method split
+            # over two chunks is still one method.
+            elif chunk.kind == "method" and " " not in chunk.symbol:
+                parts = re.split(r"[#.]", chunk.symbol)
+                owner = chunk.symbol[: -len(parts[-1]) - 1] if len(parts) > 1 else None
+                self._method_ids.setdefault(symbol, chunk.chunk_id)
+                self._methods.setdefault(parts[-1].lower(), {}).setdefault(
+                    (symbol, chunk.path), _Method(chunk.chunk_id, owner, chunk.path),
+                )
+        for symbol, parent in declared:
+            found = self._constant(parent, symbol)
+            if found and found != symbol.lower():
+                self._parents.setdefault(symbol.lower(), found)
+
+    def targets(
+        self, dst_symbol: str, owner: str | None = None, path: str = "",
+    ) -> tuple[list[int], bool]:
+        """Chunks the symbol can mean, and whether that reading is certain.
+
+        One reachable method of a bare name is certain, a few are each
+        possible, and more than `_AMBIGUOUS_LIMIT` are left unlinked.
+        """
+        if any(mark in dst_symbol for mark in ("#", " ", ".", ":")):
+            found = self._by_symbol.get(dst_symbol.lower())
+            return ([found] if found is not None else []), True
+        name = dst_symbol.lower()
+        family = self._family(owner)
+        for relative in family:
+            for separator in ("#", "."):
+                own = self._method_ids.get(f"{relative}{separator}{name}")
+                if own is not None:
+                    return [own], True
+        if name in _FRAMEWORK_CALLS:
+            return [], True
+        reachable = [
+            method
+            for method in self._methods.get(name, {}).values()
+            if self._reachable(method, family, path)
+        ]
+        # A method written in the caller's own file is the one it calls.
+        local = [method for method in reachable if method.path == path]
+        candidates = [method.chunk_id for method in local or reachable]
+        if len(candidates) == 1:
+            return candidates, True
+        if 1 < len(candidates) <= _AMBIGUOUS_LIMIT:
+            return candidates, False
         return [], True
-    if owner:
-        own = by_symbol.get(f"{owner}#{dst_symbol}".lower())
-        if own is not None:
-            return [own], True
-    candidates = list(dict.fromkeys(by_leaf.get(dst_symbol.lower(), [])))
-    if len(candidates) == 1:
-        return candidates, True
-    if 1 < len(candidates) <= _AMBIGUOUS_LIMIT:
-        return candidates, False
-    return [], True
+
+    def _reachable(self, method: _Method, family: list[str], path: str) -> bool:
+        owner = (method.owner or "").lower()
+        if self._kinds.get(owner) == "class":
+            return False
+        if method.path != path:
+            # A method written in a spec file is local to that file, and
+            # application code does not call test support code.
+            if method.path.endswith("_spec.rb") or (_is_test(method.path) and not _is_test(path)):
+                return False
+        if method.owner and family and self._kinds.get(family[0]) == "class":
+            # A class only has a module's methods when it includes the module.
+            leaf = re.escape(method.owner.rsplit("::", 1)[-1])
+            paths = {path}
+            for relative in family:
+                paths |= self._owner_paths.get(relative, set())
+            mentioned = re.compile(rf"\b{leaf}\b")
+            return any(
+                mentioned.search(text)
+                for file_path in paths
+                for text in self._texts.get(file_path, [])
+            )
+        return True
+
+    def _family(self, owner: str | None) -> list[str]:
+        """The caller's class followed by the classes it inherits from."""
+        if not owner or not _CONSTANT.fullmatch(owner):
+            return []
+        family = [owner.lower()]
+        while len(family) < 8:
+            parent = self._parents.get(family[-1])
+            if parent is None or parent in family:
+                break
+            family.append(parent)
+        return family
+
+    def _constant(self, name: str, inside: str) -> str | None:
+        """Resolve a class name the way Ruby does from inside a namespace."""
+        name = name.removeprefix("::").lower()
+        scope = inside.lower().split("::")[:-1]
+        while scope:
+            candidate = "::".join(scope + [name])
+            if self._kinds.get(candidate) == "class":
+                return candidate
+            scope.pop()
+        if self._kinds.get(name) == "class":
+            return name
+        ending = f"::{name}"
+        matches = [
+            symbol for symbol, kind in self._kinds.items()
+            if kind == "class" and symbol.endswith(ending)
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+
+def _is_test(path: str) -> bool:
+    return bool(_TEST_FOLDERS.intersection(path.replace("\\", "/").split("/")[:-1]))
 
 
 def _declarations(chunks: list) -> tuple[dict, dict, set[str]]:

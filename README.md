@@ -146,7 +146,17 @@ ApplicationController#online_application
 
 The qualified name selects that method. The result is grouped into definitions, references, and related passages. The page draws the call paths, with each arrow pointing from a caller toward the definition.
 
-A call written as a bare name, such as `fill_in_all`, is linked to the method when one indexed class defines that name. When two to five classes define it, each of them is a possible target. That caller is listed with `⇢` in its path, and the diagram draws that arrow dashed. A name that more classes define is left as a plain reference.
+A call written as a bare name, such as `fill_in_all`, has no receiver. It is found anywhere in a line of Ruby, so `total = fee_amount` and `expect(fee_amount).to eq(5)` both count as calls to `fee_amount`. A name the code assigns, takes as a parameter, or declares with `let` is a local value and is not counted.
+
+A bare name is linked only to a method Ruby could reach that way:
+
+- a method of the caller's own class, or of a class it inherits from
+- a method of a module, when the caller is not in a class or its class file names that module
+- a method defined outside any class or module
+
+A method of an unrelated class is never linked. A method defined in a spec file is linked only inside that file, and application code is never linked to a method under `spec`, `features`, or `test`. Names that Capybara, RSpec, and Rails define, such as `page` and `params`, are linked only inside the class that declares its own.
+
+When one method fits, the call is certain. When two to five fit, each is a possible target. That caller is listed with `⇢` in its path, and the diagram draws that arrow dashed. A name with more matches is left as a plain reference.
 
 ```text
 factory :online_application

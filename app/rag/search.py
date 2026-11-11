@@ -466,7 +466,7 @@ def relationship_diagram(definitions: list[Hit], references: list[Hit]) -> dict:
 
     A via line is `caller → … → definition`. Arrows point toward the definition.
     A reference with no path is a mention, so it is left off the diagram. An
-    edge is marked possible when the call is by a name several classes define.
+    edge is marked possible when the call is by a name defined in several places.
     """
     nodes: dict[str, dict] = {}
     for hit in definitions:
@@ -720,7 +720,7 @@ def _callers_and_gaps(
 ) -> tuple[dict[int, Hit], list[Hit], int, bool]:
     """Walk stored call edges out from the definitions. Name search still stands.
 
-    A caller reached only through a name that several classes define is a
+    A caller reached only through a name defined in several places is a
     possible caller. Its path uses the possible arrow at that hop. The third
     value is how many callers were left out of the returned list. The fourth
     is true when a hop stopped before every caller was loaded.

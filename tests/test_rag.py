@@ -534,7 +534,7 @@ end
         self.assertTrue(_defines_target(method, "ApplicationController#online_application"))
 
     def test_a_bare_call_is_stored_when_the_method_is_elsewhere(self):
-        from rag.edges import extract_edges, resolve_call_targets
+        from rag.edges import CallIndex, IndexedChunk, extract_edges
 
         source = """Given('a claimant is on the page') do
   et1_answer_case_heard_by_page
@@ -547,27 +547,121 @@ end
         self.assertIn("et1_answer_case_heard_by_page", destinations)
         self.assertNotIn("end", destinations)
         self.assertNotIn("create", destinations)
+        helper = IndexedChunk(
+            9, "features/support/helpers/et1_helper.rb",
+            "Et1Helper#et1_answer_case_heard_by_page", "method", "def et1_answer_case_heard_by_page\nend\n",
+        )
+        module = IndexedChunk(8, helper.path, "Et1Helper", "module", "module Et1Helper\n")
+        calls = CallIndex([module, helper])
         self.assertEqual(
-            resolve_call_targets(
-                "et1_answer_case_heard_by_page",
-                {},
-                {"et1_answer_case_heard_by_page": [9]},
-            ),
+            calls.targets("et1_answer_case_heard_by_page", None, "features/step_definitions/example_steps.rb"),
             ([9], True),
         )
 
-    def test_a_name_several_classes_define_is_a_possible_target(self):
-        from rag.edges import resolve_call_targets
+    def test_a_bare_call_inside_a_longer_line_is_found(self):
+        from rag.edges import extract_edges, inline_calls
 
-        by_symbol = {"et1::page#fill_in_all": 4, "et3::page#fill_in_all": 5}
-        by_leaf = {"fill_in_all": [4, 5], "save": list(range(10, 30))}
-        self.assertEqual(resolve_call_targets("fill_in_all", by_symbol, by_leaf), ([4, 5], False))
-        self.assertEqual(
-            resolve_call_targets("fill_in_all", by_symbol, by_leaf, "Et3::Page"),
-            ([5], True),
-        )
-        self.assertEqual(resolve_call_targets("save", by_symbol, by_leaf), ([], True))
-        self.assertEqual(resolve_call_targets("Fee.save", by_symbol, by_leaf), ([], True))
+        source = """def total(fee, discount = 0)
+  # remission_amount is described here, not called
+  amount = fee_amount - discount
+  label = "Pay #{formatted_total} now"
+  note = 'ignore quoted_name here'
+  rows.each { |row| puts row }
+  expect(remission_amount).to eq(amount)
+  store(key: fee, other_key: lookup_value)
+  record.save if valid_fee?
+  match(/pattern_word here/)
+rescue StandardError => error
+  log(error)
+end
+"""
+        names = inline_calls(source)
+        for expected in ("fee_amount", "formatted_total", "remission_amount", "lookup_value", "valid_fee?"):
+            self.assertIn(expected, names)
+        for unexpected in (
+            "fee", "discount", "amount", "label", "note", "row", "error", "quoted_name",
+            "key", "other_key", "save", "total", "pattern_word", "rescue", "if",
+        ):
+            self.assertNotIn(unexpected, names)
+        self.assertNotIn("claim", inline_calls("expect(claim).to be_valid", {"claim"}))
+
+        step = """Given('a fee is entered') do
+  @total = fee_amount + 1
+end
+"""
+        chunks = chunk_source("ruby", step)
+        edges = extract_edges("features/step_definitions/fee_steps.rb", chunks)
+        inline = {edge.dst_symbol for _index, edge in edges if edge.edge_type == "inline"}
+        self.assertIn("fee_amount", inline)
+        self.assertNotIn("fee", inline)
+
+    def test_a_name_defined_in_several_places_is_a_possible_target(self):
+        from rag.edges import CallIndex, IndexedChunk
+
+        steps = "features/step_definitions/et_steps.rb"
+        chunks = [
+            IndexedChunk(1, "features/support/et1.rb", "Et1Helper", "module", "module Et1Helper\n"),
+            IndexedChunk(2, "features/support/et3.rb", "Et3Helper", "module", "module Et3Helper\n"),
+            IndexedChunk(4, "features/support/et1.rb", "Et1Helper#fill_in_all", "method", "def fill_in_all\nend\n"),
+            IndexedChunk(5, "features/support/et3.rb", "Et3Helper#fill_in_all", "method", "def fill_in_all\nend\n"),
+        ]
+        chunks += [
+            IndexedChunk(10 + number, f"features/support/h{number}.rb", f"H{number}#save", "method", "def save\nend\n")
+            for number in range(8)
+        ]
+        calls = CallIndex(chunks)
+        self.assertEqual(calls.targets("fill_in_all", None, steps), ([4, 5], False))
+        self.assertEqual(calls.targets("fill_in_all", "Et3Helper", "features/support/et3.rb"), ([5], True))
+        self.assertEqual(calls.targets("save", None, steps), ([], True))
+        self.assertEqual(calls.targets("Fee.save", None, steps), ([], True))
+
+    def test_a_bare_call_only_reaches_what_ruby_can_reach(self):
+        from rag.edges import CallIndex, IndexedChunk
+
+        chunks = [
+            IndexedChunk(1, "app/models/base.rb", "Views::Base", "class", "module Views\n  class Base\n"),
+            IndexedChunk(2, "app/models/base.rb", "Views::Base#to_flag", "method", "def to_flag\nend\n"),
+            IndexedChunk(
+                3, "app/models/detail.rb", "Views::Detail", "class",
+                "module Views\n  class Detail < Base\n    include Money\n",
+            ),
+            IndexedChunk(4, "app/models/detail.rb", "Views::Detail#fee", "method", "def fee\n  to_flag\nend\n"),
+            IndexedChunk(5, "app/models/other.rb", "Other", "class", "class Other\n"),
+            IndexedChunk(6, "app/models/other.rb", "Other#to_flag", "method", "def to_flag\nend\n"),
+            IndexedChunk(7, "app/lib/money.rb", "Money", "module", "module Money\n"),
+            IndexedChunk(8, "app/lib/money.rb", "Money#pounds", "method", "def pounds\nend\n"),
+            IndexedChunk(9, "spec/models/detail_spec.rb", "sample_fee", "method", "def sample_fee\nend\n"),
+            IndexedChunk(10, "features/support/helpers.rb", "fee_page", "method", "def fee_page\nend\n"),
+            IndexedChunk(11, "app/helpers/list_helper.rb", "ListHelper", "module", "module ListHelper\n"),
+            IndexedChunk(12, "app/helpers/list_helper.rb", "ListHelper#page", "method", "def page\nend\n"),
+            IndexedChunk(13, "app/models/fee.rb", "Fee", "class", "class Fee\n"),
+        ]
+        calls = CallIndex(chunks)
+        # A subclass reaches the method it inherits, and nothing else does.
+        self.assertEqual(calls.targets("to_flag", "Views::Detail", "app/models/detail.rb"), ([2], True))
+        self.assertEqual(calls.targets("to_flag", "Other", "app/models/other.rb"), ([6], True))
+        self.assertEqual(calls.targets("to_flag", None, "spec/models/detail_spec.rb"), ([], True))
+        self.assertEqual(calls.targets("fee", None, "spec/models/detail_spec.rb"), ([], True))
+        # A class has a module's method only when it includes the module.
+        self.assertEqual(calls.targets("pounds", "Views::Detail", "app/models/detail.rb"), ([8], True))
+        self.assertEqual(calls.targets("pounds", "Other", "app/models/other.rb"), ([], True))
+        self.assertEqual(calls.targets("pounds", None, "spec/lib/money_spec.rb"), ([8], True))
+        # A method written in a spec stays in that file, and application code
+        # does not call test helpers.
+        self.assertEqual(calls.targets("sample_fee", None, "spec/models/detail_spec.rb"), ([9], True))
+        self.assertEqual(calls.targets("sample_fee", None, "spec/models/other_spec.rb"), ([], True))
+        own = IndexedChunk(14, "spec/features/fee_spec.rb", "fee_page", "method", "def fee_page\nend\n")
+        shared = IndexedChunk(15, "spec/support/steps.rb", "fee_page", "method", "def fee_page\nend\n")
+        both = CallIndex([own, shared])
+        self.assertEqual(both.targets("fee_page", None, "spec/features/fee_spec.rb"), ([14], True))
+        self.assertEqual(both.targets("fee_page", None, "spec/features/other_spec.rb"), ([15], True))
+        self.assertEqual(calls.targets("fee_page", None, "features/step_definitions/fee_steps.rb"), ([10], True))
+        self.assertEqual(calls.targets("fee_page", "Other", "app/models/other.rb"), ([], True))
+        # A lower-case name is a call, not the class of the same name, and
+        # Capybara's page is not a helper that happens to be called page.
+        self.assertEqual(calls.targets("fee", None, "features/step_definitions/fee_steps.rb"), ([], True))
+        self.assertEqual(calls.targets("page", None, "spec/features/list_spec.rb"), ([], True))
+        self.assertEqual(calls.targets("page", "ListHelper", "app/helpers/list_helper.rb"), ([12], True))
 
     def test_a_possible_hop_is_marked_in_the_path_and_the_diagram(self):
         from rag.edges import walk_callers
@@ -1373,7 +1467,7 @@ class WebTest(unittest.TestCase):
             self.assertIn("Relationships", page)
             self.assertIn("Call relationships", page)
             self.assertIn("Arrows point from a caller toward the definition.", page)
-            self.assertIn("A dashed arrow is a call by a name that more than one class defines.", page)
+            self.assertIn("A dashed arrow is a call by a name that is defined in more than one place.", page)
             self.assertIn("Possible caller.", page)
             self.assertIn('id="index-toggle"', page)
             self.assertIn('toggle.textContent = open ? "Close"', page)

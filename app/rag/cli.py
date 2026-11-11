@@ -154,7 +154,7 @@ def _impact(target: str, repo: str | None, no_answer: bool, model: str | None) -
     _print_section("References", references, found["reference_count"])
     _print_caller_note(found.get("callers_omitted", 0), found.get("callers_capped", False))
     if found.get("possible_count"):
-        print("⇢ is a call by a name that more than one class defines. That caller is possible, not certain.\n")
+        print("⇢ is a call by a name that is defined in more than one place. That caller is possible, not certain.\n")
     if found.get("gaps"):
         _print_section("Unresolved", found["gaps"], len(found["gaps"]))
     _print_section("Related", related, len(related))

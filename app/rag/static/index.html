@@ -713,7 +713,7 @@
       caption.className = "hint";
       caption.textContent = "Arrows point from a caller toward the definition. Choose a box to show that passage.";
       if (diagram.edges.some((edge) => edge.possible)) {
-        caption.textContent += " A dashed arrow is a call by a name that more than one class defines.";
+        caption.textContent += " A dashed arrow is a call by a name that is defined in more than one place.";
       }
       const frame = document.createElement("div");
       frame.className = "diagram-frame";
@@ -946,7 +946,7 @@
       if (hit.possible) {
         const possible = document.createElement("div");
         possible.className = "meta";
-        possible.textContent = "Possible caller. More than one class defines the name at ⇢.";
+        possible.textContent = "Possible caller. The name at ⇢ is defined in more than one place.";
         article.append(possible);
       }
       if (showScore) {
