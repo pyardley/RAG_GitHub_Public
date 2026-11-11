@@ -227,7 +227,7 @@ docker compose run --rm -T rag remove owner/name
 
 `--force` rebuilds the index even when that commit is already stored. Use it after the chunking code changes. `remove` deletes that repository's index and its checkout. The other repositories stay. On the page, choose the repository and use Remove this index. Index it again to store a different branch.
 
-For a private repository, set `GITHUB_TOKEN` in a `.env` file next to `docker-compose.yml`. Compose reads that file when it starts the container. `.env.example` shows the variables. Do not commit `.env`.
+For a private repository, set `GITHUB_TOKEN` in a `.env` file next to `docker-compose.yml`. Compose reads that file when it creates the container, so see [After you change `.env`](#after-you-change-env) when you edit it. `.env.example` shows the variables. Do not commit `.env`.
 
 ## Written answers
 
@@ -278,6 +278,16 @@ OPENAI_MODEL=gpt-4o
 ```
 
 `OPENAI_BASE_URL` can point at any OpenAI-compatible chat API.
+
+### After you change `.env`
+
+Compose copies the values in `.env` into the container when it creates the container. `docker compose restart rag` restarts the same container, so it keeps the old values. After you edit `.env`, run:
+
+```powershell
+docker compose up -d rag
+```
+
+Compose sees that the settings differ and creates the container again. The index is in a volume, so it stays. The page header shows the provider and model the app is using, so check it there. Use `docker compose restart rag` only to reload changed Python code. Do not use `docker compose down -v` for either job, because it deletes the index.
 
 ## How the index is built
 
