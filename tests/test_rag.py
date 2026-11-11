@@ -1512,6 +1512,11 @@ class WebTest(unittest.TestCase):
         def reject(*_args, **_kwargs):
             raise ValueError(message)
 
+        class _Connection:
+            def close(self):
+                return None
+
+        repo = {"id": 1, "name": "hmcts/hwf-publicapp", "branch": "master", "commit_sha": "b1d15f83c0a9"}
         try:
             request = urllib.request.Request(
                 f"http://127.0.0.1:{port}/api/search",
@@ -1519,7 +1524,11 @@ class WebTest(unittest.TestCase):
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with patch("rag.web.retrieve", side_effect=reject):
+            with (
+                patch("rag.web.connect", return_value=_Connection()),
+                patch("rag.web.resolve_repositories", return_value=[repo]),
+                patch("rag.web.retrieve", side_effect=reject),
+            ):
                 with self.assertRaises(urllib.error.HTTPError) as caught:
                     urllib.request.urlopen(request)
             self.assertEqual(caught.exception.code, 400)

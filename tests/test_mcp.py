@@ -258,7 +258,6 @@ class McpTest(unittest.TestCase):
             reply = json.loads(line)
             self.assertEqual(reply["id"], 7)
             self.assertEqual(reply["result"]["serverInfo"]["name"], "code-rag")
-            process.stdin.close()
             rest, _err = process.communicate(timeout=5)
             self.assertEqual(rest, "")
         finally:
