@@ -515,6 +515,10 @@ end
         self.assertEqual(depths["Fee / saves"], 2)
         self.assertEqual(kinds["Fee#save"], "definition")
         self.assertNotIn("README.md", depths)
+        paths = {node["label"]: node.get("path") for node in diagram["nodes"]}
+        self.assertEqual(paths["Fee / saves"], "features/fee.feature")
+        self.assertEqual(paths["I save the fee"], "features/step_definitions/fee_steps.rb")
+        self.assertEqual(paths["Fee#save"], "app/models/fee.rb")
 
     def test_a_factory_symbol_is_not_the_method_of_the_same_name(self):
         from rag.search import _defines_target
@@ -1468,6 +1472,8 @@ class WebTest(unittest.TestCase):
             self.assertIn("Call relationships", page)
             self.assertIn("Arrows point from a caller toward the definition.", page)
             self.assertIn("A dashed arrow is a call by a name that is defined in more than one place.", page)
+            self.assertIn("Callers in the same file are shown as one box.", page)
+            self.assertIn('"Collapse all" : "Expand all"', page)
             self.assertIn("Possible caller.", page)
             self.assertIn('id="index-toggle"', page)
             self.assertIn('toggle.textContent = open ? "Close"', page)

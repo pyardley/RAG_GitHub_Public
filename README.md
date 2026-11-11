@@ -144,7 +144,7 @@ Naming a feature file and asking how it runs follows one step into its step defi
 ApplicationController#online_application
 ```
 
-The qualified name selects that method. The result is grouped into definitions, references, and related passages. The page draws the call paths, with each arrow pointing from a caller toward the definition.
+The qualified name selects that method. The result is grouped into definitions, references, and related passages. The page draws the call paths, with each arrow pointing from a caller toward the definition. When the diagram has more than 12 boxes, three or more callers in the same file are drawn as one box, such as a feature file and its count of scenarios. Choose that box to list them, or use **Expand all**.
 
 A call written as a bare name, such as `fill_in_all`, has no receiver. It is found anywhere in a line of Ruby, so `total = fee_amount` and `expect(fee_amount).to eq(5)` both count as calls to `fee_amount`. A name the code assigns, takes as a parameter, or declares with `let` is a local value and is not counted.
 

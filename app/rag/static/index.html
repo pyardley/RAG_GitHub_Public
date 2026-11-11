@@ -164,6 +164,9 @@
     .diagram-node text { font: 12px/1.25 "Segoe UI", "Helvetica Neue", sans-serif; fill: var(--ink); }
     .diagram-node.definition rect { fill: var(--accent); stroke: var(--accent); }
     .diagram-node.definition text { fill: var(--accent-ink); }
+    .diagram-node.group rect { fill: var(--bg); stroke: var(--muted); }
+    .diagram-node.group text:last-of-type { font-weight: 650; }
+    .diagram-all { margin-bottom: 0.6rem; padding: 0.3rem 0.7rem; font-size: 0.85rem; }
     .diagram-node:focus { outline: none; }
     .diagram-node:focus rect { stroke: var(--ink); stroke-width: 2; }
   </style>
@@ -715,14 +718,110 @@
       if (diagram.edges.some((edge) => edge.possible)) {
         caption.textContent += " A dashed arrow is a call by a name that is defined in more than one place.";
       }
+      const groups = diagramGroups(diagram);
+      const expanded = new Set();
       const frame = document.createElement("div");
       frame.className = "diagram-frame";
-      frame.append(drawDiagram(diagram));
-      section.append(heading, caption, frame);
+      const all = document.createElement("button");
+      all.type = "button";
+      all.className = "secondary diagram-all";
+      const redraw = (focusKey) => {
+        frame.replaceChildren(drawDiagram(diagramView(diagram, groups, expanded), toggle));
+        all.textContent = expanded.size === groups.size ? "Collapse all" : "Expand all";
+        if (!focusKey) return;
+        for (const node of frame.querySelectorAll("[data-group]")) {
+          if (node.dataset.group === focusKey) node.focus();
+        }
+      };
+      const toggle = (key) => {
+        if (expanded.has(key)) expanded.delete(key);
+        else expanded.add(key);
+        redraw(key);
+      };
+      all.addEventListener("click", () => {
+        const open = expanded.size !== groups.size;
+        expanded.clear();
+        if (open) for (const key of groups.keys()) expanded.add(key);
+        redraw();
+      });
+      redraw();
+      section.append(heading, caption);
+      if (groups.size) {
+        caption.textContent += " Callers in the same file are shown as one box. Choose it to list them.";
+        section.append(all);
+      }
+      section.append(frame);
       results.append(section);
     }
 
-    function drawDiagram(diagram) {
+    // A large diagram shows one box for a file's callers until it is opened.
+    const DIAGRAM_GROUP_FROM = 12;
+    const DIAGRAM_GROUP_SIZE = 3;
+
+    function diagramGroups(diagram) {
+      const groups = new Map();
+      if (diagram.nodes.length <= DIAGRAM_GROUP_FROM) return groups;
+      for (const node of diagram.nodes) {
+        if (node.kind !== "caller" || !node.path) continue;
+        const key = `${node.depth || 0}|${node.path}`;
+        const members = groups.get(key) || [];
+        members.push(node);
+        groups.set(key, members);
+      }
+      for (const [key, members] of [...groups]) {
+        if (members.length < DIAGRAM_GROUP_SIZE) groups.delete(key);
+      }
+      return groups;
+    }
+
+    function diagramView(diagram, groups, expanded) {
+      const owner = new Map();
+      for (const [key, members] of groups) {
+        for (const member of members) owner.set(member.id, key);
+      }
+      const nodes = [];
+      const placed = new Set();
+      for (const node of diagram.nodes) {
+        const key = owner.get(node.id);
+        if (!key) {
+          nodes.push(node);
+          continue;
+        }
+        if (placed.has(key)) continue;
+        placed.add(key);
+        const members = groups.get(key);
+        const open = expanded.has(key);
+        const path = members[0].path;
+        const count = `${members.length} ${path.endsWith(".feature") ? "scenarios" : "callers"}`;
+        nodes.push({
+          id: `group:${key}`,
+          label: `${path}, ${count}`,
+          lines: [...wrapLabel(path, 28).slice(0, 3), `${open ? "▾" : "▸"} ${count}`],
+          kind: "group",
+          depth: members[0].depth,
+          group: key,
+          open
+        });
+        if (open) nodes.push(...members);
+      }
+      const shown = (id) => {
+        const key = owner.get(id);
+        return key && !expanded.has(key) ? `group:${key}` : id;
+      };
+      const edges = new Map();
+      for (const edge of diagram.edges) {
+        const from = shown(edge.from);
+        const to = shown(edge.to);
+        if (from === to) continue;
+        const pair = `${from}\n${to}`;
+        const known = edges.get(pair);
+        if (!known) edges.set(pair, { from, to, possible: Boolean(edge.possible) });
+        else if (!edge.possible) known.possible = false;
+      }
+      return { nodes, edges: [...edges.values()] };
+    }
+
+    function drawDiagram(diagram, toggle) {
       const svgNs = "http://www.w3.org/2000/svg";
       const nodeWidth = 220;
       const lineHeight = 15;
@@ -731,7 +830,7 @@
       const columnGap = 78;
       const rowGap = 16;
       const nodes = diagram.nodes.map((node) => {
-        const lines = wrapLabel(node.label, 28);
+        const lines = node.lines || wrapLabel(node.label, 28);
         return {
           ...node,
           lines,
@@ -803,25 +902,36 @@
         path.setAttribute("marker-end", "url(#diagram-arrow)");
         svg.append(path);
       }
-      for (const node of nodes) svg.append(diagramNode(svgNs, node, nodeWidth, lineHeight, padY));
+      for (const node of nodes) svg.append(diagramNode(svgNs, node, nodeWidth, lineHeight, padY, toggle));
       return svg;
     }
 
-    function diagramNode(svgNs, node, nodeWidth, lineHeight, padY) {
+    function diagramNode(svgNs, node, nodeWidth, lineHeight, padY, toggle) {
       const group = document.createElementNS(svgNs, "g");
-      group.setAttribute("class", node.kind === "definition" ? "diagram-node definition" : "diagram-node");
+      const grouped = node.kind === "group";
+      group.setAttribute("class", node.kind === "caller" ? "diagram-node" : `diagram-node ${node.kind}`);
       group.setAttribute("tabindex", "0");
       group.setAttribute("role", "button");
       group.setAttribute("aria-label", node.label);
+      if (grouped) {
+        group.setAttribute("aria-expanded", String(node.open));
+        group.dataset.group = node.group;
+      }
       const title = document.createElementNS(svgNs, "title");
       title.textContent = node.label;
-      const rect = document.createElementNS(svgNs, "rect");
-      rect.setAttribute("x", String(node.x));
-      rect.setAttribute("y", String(node.y));
-      rect.setAttribute("width", String(nodeWidth));
-      rect.setAttribute("height", String(node.height));
-      rect.setAttribute("rx", "8");
-      group.append(title, rect);
+      group.append(title);
+      const box = (offset) => {
+        const rect = document.createElementNS(svgNs, "rect");
+        rect.setAttribute("x", String(node.x + offset));
+        rect.setAttribute("y", String(node.y + offset));
+        rect.setAttribute("width", String(nodeWidth));
+        rect.setAttribute("height", String(node.height));
+        rect.setAttribute("rx", "8");
+        return rect;
+      };
+      // A closed group is drawn as a stack of boxes.
+      if (grouped && !node.open) group.append(box(5));
+      group.append(box(0));
       node.lines.forEach((line, index) => {
         const text = document.createElementNS(svgNs, "text");
         text.setAttribute("x", String(node.x + 10));
@@ -829,7 +939,7 @@
         text.textContent = line;
         group.append(text);
       });
-      const open = () => openPassage(node.label);
+      const open = () => (grouped ? toggle(node.group) : openPassage(node.label));
       group.addEventListener("click", open);
       group.addEventListener("keydown", (event) => {
         if (event.key !== "Enter" && event.key !== " ") return;
@@ -840,29 +950,31 @@
     }
 
     function wrapLabel(label, maxChars) {
+      // A long path or symbol breaks before / and # and after an underscore.
+      // A piece cut from one word joins the piece before it with no space.
       const pieces = [];
       for (const word of String(label || "").split(/\s+/).filter(Boolean)) {
         if (word.length <= maxChars) {
-          pieces.push(word);
+          pieces.push({ text: word, joined: false });
           continue;
         }
+        let joined = false;
         for (const part of word.split(/(?=[/#])/)) {
-          if (part.length <= maxChars) pieces.push(part);
-          else {
-            for (let index = 0; index < part.length; index += maxChars) {
-              pieces.push(part.slice(index, index + maxChars));
+          for (const bit of part.match(/[^_]+_*|_+/g) || []) {
+            for (let index = 0; index < bit.length; index += maxChars) {
+              pieces.push({ text: bit.slice(index, index + maxChars), joined });
+              joined = true;
             }
           }
         }
       }
       const lines = [];
       let line = "";
-      for (const piece of pieces.length ? pieces : [""]) {
-        const attached = (piece.startsWith("/") || piece.startsWith("#")) && piece.length > 1;
-        const next = line ? `${line}${attached ? "" : " "}${piece}` : piece;
+      for (const piece of pieces) {
+        const next = line ? `${line}${piece.joined ? "" : " "}${piece.text}` : piece.text;
         if (next.length > maxChars && line) {
           lines.push(line);
-          line = piece;
+          line = piece.text;
         } else {
           line = next;
         }

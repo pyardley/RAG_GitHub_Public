@@ -467,11 +467,12 @@ def relationship_diagram(definitions: list[Hit], references: list[Hit]) -> dict:
     A via line is `caller → … → definition`. Arrows point toward the definition.
     A reference with no path is a mention, so it is left off the diagram. An
     edge is marked possible when the call is by a name defined in several places.
+    A node carries its file path so the page can show one file's callers as a group.
     """
     nodes: dict[str, dict] = {}
     for hit in definitions:
         label = hit.symbol or hit.path
-        nodes[label] = {"id": label, "label": label, "kind": "definition", "depth": 0}
+        nodes[label] = {"id": label, "label": label, "kind": "definition", "depth": 0, "path": hit.path}
     edges: list[dict] = []
     seen: dict[tuple[str, str], dict] = {}
     for hit in references:
@@ -488,6 +489,8 @@ def relationship_diagram(definitions: list[Hit], references: list[Hit]) -> dict:
                 }
             elif index == len(parts) - 1:
                 nodes[label]["kind"] = "definition"
+        # The first label on a via line is the passage itself.
+        nodes[parts[0]].setdefault("path", hit.path)
         for left, right, uncertain in zip(parts, parts[1:], possible):
             known = seen.get((left, right))
             if known is not None:
