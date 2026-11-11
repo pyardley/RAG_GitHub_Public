@@ -158,6 +158,7 @@
     }
     .diagram-frame svg { display: block; width: 100%; height: auto; }
     .diagram-edge { fill: none; stroke: var(--muted); stroke-width: 1.4; }
+    .diagram-edge.possible { stroke-dasharray: 5 4; }
     .diagram-node { cursor: pointer; }
     .diagram-node rect { fill: var(--paper); stroke: var(--line); }
     .diagram-node text { font: 12px/1.25 "Segoe UI", "Helvetica Neue", sans-serif; fill: var(--ink); }
@@ -711,6 +712,9 @@
       const caption = document.createElement("p");
       caption.className = "hint";
       caption.textContent = "Arrows point from a caller toward the definition. Choose a box to show that passage.";
+      if (diagram.edges.some((edge) => edge.possible)) {
+        caption.textContent += " A dashed arrow is a call by a name that more than one class defines.";
+      }
       const frame = document.createElement("div");
       frame.className = "diagram-frame";
       frame.append(drawDiagram(diagram));
@@ -794,7 +798,7 @@
         const y2 = to.y + to.height / 2;
         const bend = Math.max(24, (x2 - x1) / 2);
         const path = document.createElementNS(svgNs, "path");
-        path.setAttribute("class", "diagram-edge");
+        path.setAttribute("class", edge.possible ? "diagram-edge possible" : "diagram-edge");
         path.setAttribute("d", `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`);
         path.setAttribute("marker-end", "url(#diagram-arrow)");
         svg.append(path);
@@ -938,6 +942,12 @@
         via.className = "meta";
         via.textContent = `via ${hit.via}`;
         article.append(via);
+      }
+      if (hit.possible) {
+        const possible = document.createElement("div");
+        possible.className = "meta";
+        possible.textContent = "Possible caller. More than one class defines the name at ⇢.";
+        article.append(possible);
       }
       if (showScore) {
         const meta = document.createElement("div");

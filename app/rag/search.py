@@ -8,7 +8,7 @@ from dataclasses import dataclass, replace
 
 import psycopg
 
-from rag.edges import factory_symbols
+from rag.edges import CALL_ARROW, POSSIBLE_ARROW, factory_symbols
 from rag.log import log_retrieval, logger
 from rag.text import (
     has_declaration,
@@ -22,8 +22,10 @@ from rag.text import (
 
 _IMPACT_LIST_LIMIT = 80
 _CALLER_WALK_LIMIT = 80
+_POSSIBLE_CALLER_LIMIT = 40
 _EDGE_HOP_LIMIT = 400
 _KNOWN_CALLER_LIMIT = 400
+_VIA_ARROWS = re.compile(rf"\s*({CALL_ARROW}|{POSSIBLE_ARROW})\s*")
 
 
 @dataclass(frozen=True)
@@ -418,14 +420,16 @@ def impact(conn, repository_ids: list[int], target: str) -> dict[str, list[Hit]]
         for hit in search(conn, repository_ids, target, k=8)[0]
         if hit.chunk_id not in seen
     ]
+    possible_count = sum(1 for hit in shown_references if POSSIBLE_ARROW in hit.via)
     logger.info(
-        "impact target=%r looked_up=%s definitions=%s references=%s callers=%s "
+        "impact target=%r looked_up=%s definitions=%s references=%s callers=%s possible=%s "
         "callers_omitted=%s callers_capped=%s gaps=%s related=%s truncated=%s",
         target,
         looked_up,
         len(definitions),
         len(shown_references),
         sum(1 for hit in shown_references if hit.via),
+        possible_count,
         callers_omitted,
         str(callers_capped).lower(),
         len(gaps),
@@ -442,24 +446,36 @@ def impact(conn, repository_ids: list[int], target: str) -> dict[str, list[Hit]]
         "truncated": truncated,
         "callers_omitted": callers_omitted,
         "callers_capped": callers_capped,
+        "possible_count": possible_count,
         "diagram": relationship_diagram(shown_definitions, shown_references),
     }
+
+
+def via_steps(via: str) -> tuple[list[str], list[bool]]:
+    """Labels along a via line, and whether each hop between them is only possible."""
+    pieces = _VIA_ARROWS.split(via or "")
+    labels = [piece.strip() for piece in pieces[0::2]]
+    possible = [piece == POSSIBLE_ARROW for piece in pieces[1::2]]
+    if not all(labels):
+        return [], []
+    return labels, possible
 
 
 def relationship_diagram(definitions: list[Hit], references: list[Hit]) -> dict:
     """Nodes and edges for the call paths shown with an impact result.
 
     A via line is `caller → … → definition`. Arrows point toward the definition.
-    A reference with no path is a mention, so it is left off the diagram.
+    A reference with no path is a mention, so it is left off the diagram. An
+    edge is marked possible when the call is by a name several classes define.
     """
     nodes: dict[str, dict] = {}
     for hit in definitions:
         label = hit.symbol or hit.path
         nodes[label] = {"id": label, "label": label, "kind": "definition", "depth": 0}
-    edges: list[dict[str, str]] = []
-    seen: set[tuple[str, str]] = set()
+    edges: list[dict] = []
+    seen: dict[tuple[str, str], dict] = {}
     for hit in references:
-        parts = [part.strip() for part in (hit.via or "").split("→") if part.strip()]
+        parts, possible = via_steps(hit.via)
         if len(parts) < 2:
             continue
         for index, label in enumerate(parts):
@@ -472,11 +488,17 @@ def relationship_diagram(definitions: list[Hit], references: list[Hit]) -> dict:
                 }
             elif index == len(parts) - 1:
                 nodes[label]["kind"] = "definition"
-        for left, right in zip(parts, parts[1:]):
-            if (left, right) in seen:
+        for left, right, uncertain in zip(parts, parts[1:], possible):
+            known = seen.get((left, right))
+            if known is not None:
+                if not uncertain:
+                    known.pop("possible", None)
                 continue
-            seen.add((left, right))
-            edges.append({"from": left, "to": right})
+            edge: dict = {"from": left, "to": right}
+            if uncertain:
+                edge["possible"] = True
+            seen[(left, right)] = edge
+            edges.append(edge)
     _assign_diagram_depths(nodes, edges)
     ordered = sorted(nodes.values(), key=lambda node: (node["depth"], node["label"]))
     return {"nodes": ordered, "edges": edges}
@@ -698,8 +720,10 @@ def _callers_and_gaps(
 ) -> tuple[dict[int, Hit], list[Hit], int, bool]:
     """Walk stored call edges out from the definitions. Name search still stands.
 
-    The third value is how many callers were left out of the returned list.
-    The fourth is true when a hop stopped before every caller was loaded.
+    A caller reached only through a name that several classes define is a
+    possible caller. Its path uses the possible arrow at that hop. The third
+    value is how many callers were left out of the returned list. The fourth
+    is true when a hop stopped before every caller was loaded.
     """
     from rag.edges import prepare_call_edges, walk_callers
 
@@ -708,7 +732,9 @@ def _callers_and_gaps(
     prepare_call_edges(conn, repository_ids)
     start = {hit.chunk_id for hit in definitions}
     labels = {hit.chunk_id: hit.symbol or hit.path for hit in definitions}
-    incoming: dict[int, list[tuple[int, str]]] = {}
+    certain: dict[int, list[tuple[int, str]]] = {}
+    either: dict[int, list[tuple[int, str]]] = {}
+    uncertain: set[tuple[int, int]] = set()
     frontier = set(start)
     known = set(start)
     capped = False
@@ -721,14 +747,29 @@ def _callers_and_gaps(
         added: set[int] = set()
         rows, hop_capped = _edge_rows(conn, repository_ids, frontier)
         capped = capped or hop_capped
-        for src_id, dst_id, detail, symbol, path in rows:
-            incoming.setdefault(dst_id, []).append((src_id, detail))
+        for src_id, dst_id, detail, symbol, path, confidence in rows:
+            either.setdefault(dst_id, []).append((src_id, detail))
+            if confidence == "high":
+                certain.setdefault(dst_id, []).append((src_id, detail))
+            elif not any(src == src_id for src, _detail in certain.get(dst_id, [])):
+                uncertain.add((src_id, dst_id))
             labels.setdefault(src_id, symbol or path)
             if src_id not in known:
                 added.add(src_id)
         known.update(added)
         frontier = added
-    reached, omitted = walk_callers(start, incoming, labels, limit=_CALLER_WALK_LIMIT)
+    everyone = len(known) + 1
+    sure, _none = walk_callers(start, certain, labels, limit=everyone)
+    sure_ids = {chunk_id for chunk_id, _via in sure}
+    maybe = [
+        (chunk_id, via)
+        for chunk_id, via in walk_callers(
+            start, either, labels, limit=everyone, uncertain=uncertain,
+        )[0]
+        if chunk_id not in sure_ids
+    ]
+    reached = sure[:_CALLER_WALK_LIMIT] + maybe[:_POSSIBLE_CALLER_LIMIT]
+    omitted = len(sure) + len(maybe) - len(reached)
     missing = [chunk_id for chunk_id, _via in reached if chunk_id not in seen]
     loaded = {hit.chunk_id: hit for hit in _chunks_by_id(conn, missing)}
     callers = {
@@ -747,13 +788,13 @@ def _edge_rows(conn, repository_ids: list[int], destinations: set[int]) -> tuple
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT e.src_chunk_id, e.dst_chunk_id, e.detail, c.symbol, c.path
+            SELECT e.src_chunk_id, e.dst_chunk_id, e.detail, c.symbol, c.path, e.confidence
             FROM edges e
             JOIN chunks c ON c.id = e.src_chunk_id
             WHERE e.repository_id = ANY(%s)
-              AND e.confidence = 'high'
+              AND e.confidence IN ('high', 'low')
               AND e.dst_chunk_id = ANY(%s)
-            ORDER BY c.path, c.start_line
+            ORDER BY (e.confidence = 'low'), c.path, c.start_line
             LIMIT %s
             """,
             (repository_ids, list(destinations), _EDGE_HOP_LIMIT),

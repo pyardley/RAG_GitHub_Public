@@ -23,7 +23,7 @@ from rag.answer import (
 )
 from rag.config import LLM_PROVIDER
 from rag.db import connect, list_repositories, resolve_repositories
-from rag.edges import prepare_call_edges
+from rag.edges import POSSIBLE_ARROW, prepare_call_edges
 from rag.files import parse_repo
 from rag.gitrepo import list_branches
 from rag.ingest import delete_repository, ingest_repository
@@ -211,6 +211,7 @@ def run_impact(body: dict) -> tuple[int, dict]:
         "truncated": found["truncated"],
         "callers_omitted": found.get("callers_omitted", 0),
         "callers_capped": found.get("callers_capped", False),
+        "possible_count": found.get("possible_count", 0),
         "diagram": found.get("diagram") or {"nodes": [], "edges": []},
         "answer": written,
         "answer_error": answer_error,
@@ -413,6 +414,8 @@ def _hit(hit: Hit, commits: dict[str, str]) -> dict:
     }
     if hit.via:
         payload["via"] = hit.via
+        if POSSIBLE_ARROW in hit.via:
+            payload["possible"] = True
     url = github_blob_url(hit.repo, commits.get(hit.repo, ""), hit.path, hit.start_line, hit.end_line)
     if url:
         payload["url"] = url

@@ -146,6 +146,8 @@ ApplicationController#online_application
 
 The qualified name selects that method. The result is grouped into definitions, references, and related passages. The page draws the call paths, with each arrow pointing from a caller toward the definition.
 
+A call written as a bare name, such as `fill_in_all`, is linked to the method when one indexed class defines that name. When two to five classes define it, each of them is a possible target. That caller is listed with `⇢` in its path, and the diagram draws that arrow dashed. A name that more classes define is left as a plain reference.
+
 ```text
 factory :online_application
 ```

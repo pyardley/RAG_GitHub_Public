@@ -26,7 +26,13 @@ _FACTORY_TARGET = re.compile(
     rf"^(?:FactoryBot\s*(?:\.|::)\s*)?(?:{_FACTORY_VERBS})\s*\(\s*{_FACTORY_ARGS}(?P<rest>.*)\)\s*$"
 )
 # Bump when edge extraction changes so the next startup rebuilds stored edges.
-_EDGE_VERSION = "3"
+_EDGE_VERSION = "5"
+_FACTORY_VERB_NAMES = frozenset(_FACTORY_VERBS.split("|"))
+# A bare name that more methods than this define is left unlinked.
+_AMBIGUOUS_LIMIT = 5
+CALL_ARROW = "→"
+# Joins a caller to a method when more than one class defines that name.
+POSSIBLE_ARROW = "⇢"
 _ALIAS_METHOD = re.compile(
     r"alias_method\s+:([A-Za-z_]\w*[?!]?)\s*,\s*:([A-Za-z_]\w*[?!]?)"
 )
@@ -146,13 +152,15 @@ def extract_edges(path: str, chunks: list) -> list[tuple[int, CallEdge]]:
             if method in _SKIP_CALLS or method in _RUBY_KEYWORDS:
                 continue
             # A method declared in this file keeps its Class#method name.
-            # Any other bare call is stored by name and linked later when
-            # only one indexed method has that name.
+            # Any other bare call is stored by name and linked later to the
+            # indexed methods that have that name.
             if owner:
                 symbol = f"{owner}#{method}"
                 if symbol in methods:
                     add(index, CallEdge(symbol, None, "call", "high", method))
                     continue
+            if method in _FACTORY_VERB_NAMES:
+                continue
             add(index, CallEdge(method, None, "call", "high", method))
     return found
 
@@ -196,13 +204,16 @@ def walk_callers(
     *,
     max_depth: int = 4,
     limit: int = 80,
+    uncertain: set[tuple[int, int]] | None = None,
 ) -> tuple[list[tuple[int, str]], int]:
     """Callers of the start chunks, then callers of those, out to `max_depth`.
 
     Each result is the caller chunk and the path from that caller back to the
     start, using the chunk symbols. A cycle is not followed again. The second
-    value is how many further callers were left out of the list.
+    value is how many further callers were left out of the list. A
+    (caller, callee) pair in `uncertain` is joined with the possible arrow.
     """
+    uncertain = uncertain or set()
     visited = set(start_ids)
     frontier = [(chunk_id, labels.get(chunk_id, "")) for chunk_id in start_ids]
     found: list[tuple[int, str]] = []
@@ -216,7 +227,8 @@ def walk_callers(
                     continue
                 visited.add(src)
                 label = labels.get(src) or "caller"
-                via = f"{label} → {path}" if path else label
+                arrow = POSSIBLE_ARROW if (src, node) in uncertain else CALL_ARROW
+                via = f"{label} {arrow} {path}" if path else label
                 if len(found) < limit:
                     found.append((src, via))
                 else:
@@ -242,30 +254,38 @@ def rebuild_edges(conn, repository_id: int) -> int:
         rows = cur.fetchall()
     grouped: dict[str, list[IndexedChunk]] = {}
     by_symbol: dict[str, int] = {}
-    by_leaf: dict[str, int | None] = {}
-    labels: dict[int, str] = {}
+    methods_by_leaf: dict[str, dict[str, int]] = {}
     for row in rows:
         chunk = IndexedChunk(row[0], row[1], row[2], row[3], row[4])
         grouped.setdefault(chunk.path, []).append(chunk)
-        labels[chunk.chunk_id] = chunk.symbol or chunk.path
         if chunk.symbol and chunk.symbol.lower() not in by_symbol:
             by_symbol[chunk.symbol.lower()] = chunk.chunk_id
-        if chunk.symbol and "#" in chunk.symbol:
+        # An RSpec block named '#save' is not a method, and a method split
+        # over two chunks is still one method.
+        if chunk.kind == "method" and chunk.symbol and "#" in chunk.symbol:
             leaf = chunk.symbol.rsplit("#", 1)[1].lower()
-            if leaf not in by_leaf:
-                by_leaf[leaf] = chunk.chunk_id
-            elif by_leaf[leaf] != chunk.chunk_id:
-                by_leaf[leaf] = None
+            methods_by_leaf.setdefault(leaf, {}).setdefault(chunk.symbol.lower(), chunk.chunk_id)
+    by_leaf = {leaf: list(found.values()) for leaf, found in methods_by_leaf.items()}
     pending: list[tuple] = []
     for path, chunks in grouped.items():
         for index, edge in extract_edges(path, chunks):
-            dst = edge.dst_chunk_id
-            if dst is None and edge.dst_symbol:
-                dst = resolve_call_target(edge.dst_symbol, by_symbol, by_leaf)
-            pending.append((
-                repository_id, chunks[index].chunk_id, dst, edge.dst_symbol,
-                edge.edge_type, edge.confidence, edge.detail,
-            ))
+            src = chunks[index].chunk_id
+            targets: list[int | None] = [edge.dst_chunk_id]
+            confidence = edge.confidence
+            if edge.dst_chunk_id is None and edge.dst_symbol:
+                found, certain = resolve_call_targets(
+                    edge.dst_symbol, by_symbol, by_leaf, _owner_name(chunks[index].symbol),
+                )
+                found = [chunk_id for chunk_id in found if chunk_id != src]
+                if found:
+                    targets = list(found)
+                    if not certain:
+                        confidence = "low"
+            for dst in targets:
+                pending.append((
+                    repository_id, src, dst, edge.dst_symbol,
+                    edge.edge_type, confidence, edge.detail,
+                ))
     flat = [chunk for chunks in grouped.values() for chunk in chunks]
     for src, edge in link_steps(flat):
         pending.append((
@@ -326,18 +346,34 @@ def prepare_call_edges(conn, repository_ids: list[int] | None = None) -> None:
         rebuild_edges(conn, repository_id)
 
 
-def resolve_call_target(
+def resolve_call_targets(
     dst_symbol: str,
     by_symbol: dict[str, int],
-    by_leaf: dict[str, int | None],
-) -> int | None:
-    """Chunk for a call symbol. A bare name matches only a unique method."""
+    by_leaf: dict[str, list[int]],
+    owner: str | None = None,
+) -> tuple[list[int], bool]:
+    """Chunks a call symbol can mean, and whether that reading is certain.
+
+    A qualified symbol names one chunk. A bare name is first read as a method
+    of the caller's own class. Otherwise one indexed method of that name is
+    certain, a few are each possible, and more than `_AMBIGUOUS_LIMIT` are
+    left unlinked.
+    """
     found = by_symbol.get(dst_symbol.lower())
     if found is not None:
-        return found
-    if "#" in dst_symbol or " " in dst_symbol:
-        return None
-    return by_leaf.get(dst_symbol.lower())
+        return [found], True
+    if any(mark in dst_symbol for mark in ("#", " ", ".", ":")):
+        return [], True
+    if owner:
+        own = by_symbol.get(f"{owner}#{dst_symbol}".lower())
+        if own is not None:
+            return [own], True
+    candidates = list(dict.fromkeys(by_leaf.get(dst_symbol.lower(), [])))
+    if len(candidates) == 1:
+        return candidates, True
+    if 1 < len(candidates) <= _AMBIGUOUS_LIMIT:
+        return candidates, False
+    return [], True
 
 
 def _declarations(chunks: list) -> tuple[dict, dict, set[str]]:

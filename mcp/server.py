@@ -69,7 +69,9 @@ _TOOLS = [
         "description": (
             "Show where a class, method, file, or FactoryBot call is defined and what reaches it. "
             "FactoryBot.create(:claim) resolves to factory :claim. "
-            "via is the call path. Diagram edges point from a caller toward the definition."
+            "via is the call path. Diagram edges point from a caller toward the definition. "
+            "A ⇢ in via, and possible on a passage or edge, is a call by a name that more than "
+            "one class defines, so that caller is possible, not certain."
         ),
         "inputSchema": {
             "type": "object",

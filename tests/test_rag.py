@@ -534,10 +534,11 @@ end
         self.assertTrue(_defines_target(method, "ApplicationController#online_application"))
 
     def test_a_bare_call_is_stored_when_the_method_is_elsewhere(self):
-        from rag.edges import extract_edges, resolve_call_target
+        from rag.edges import extract_edges, resolve_call_targets
 
         source = """Given('a claimant is on the page') do
   et1_answer_case_heard_by_page
+  create(:claim)
 end
 """
         chunks = chunk_source("ruby", source)
@@ -545,14 +546,60 @@ end
         destinations = {edge.dst_symbol for _index, edge in edges}
         self.assertIn("et1_answer_case_heard_by_page", destinations)
         self.assertNotIn("end", destinations)
-        self.assertIsNone(resolve_call_target("save", {}, {"save": None}))
+        self.assertNotIn("create", destinations)
         self.assertEqual(
-            resolve_call_target(
+            resolve_call_targets(
                 "et1_answer_case_heard_by_page",
                 {},
-                {"et1_answer_case_heard_by_page": 9},
+                {"et1_answer_case_heard_by_page": [9]},
             ),
-            9,
+            ([9], True),
+        )
+
+    def test_a_name_several_classes_define_is_a_possible_target(self):
+        from rag.edges import resolve_call_targets
+
+        by_symbol = {"et1::page#fill_in_all": 4, "et3::page#fill_in_all": 5}
+        by_leaf = {"fill_in_all": [4, 5], "save": list(range(10, 30))}
+        self.assertEqual(resolve_call_targets("fill_in_all", by_symbol, by_leaf), ([4, 5], False))
+        self.assertEqual(
+            resolve_call_targets("fill_in_all", by_symbol, by_leaf, "Et3::Page"),
+            ([5], True),
+        )
+        self.assertEqual(resolve_call_targets("save", by_symbol, by_leaf), ([], True))
+        self.assertEqual(resolve_call_targets("Fee.save", by_symbol, by_leaf), ([], True))
+
+    def test_a_possible_hop_is_marked_in_the_path_and_the_diagram(self):
+        from rag.edges import walk_callers
+        from rag.search import relationship_diagram
+
+        incoming = {1: [(2, "fill_in_all")], 2: [(3, "step")]}
+        labels = {1: "Et1::Page#fill_in_all", 2: "features/step_definitions/et1_steps.rb", 3: "ET1 / fills in"}
+        found, omitted = walk_callers({1}, incoming, labels, uncertain={(2, 1)})
+        self.assertEqual(
+            found,
+            [
+                (2, "features/step_definitions/et1_steps.rb ⇢ Et1::Page#fill_in_all"),
+                (3, "ET1 / fills in → features/step_definitions/et1_steps.rb ⇢ Et1::Page#fill_in_all"),
+            ],
+        )
+        self.assertEqual(omitted, 0)
+        definition = Hit(1, "repo", "page.rb", 1, 4, "Et1::Page#fill_in_all", "method", "", 0)
+        callers = [
+            Hit(chunk_id, "repo", "x", 1, 2, labels[chunk_id], "method", "", 0, via=via)
+            for chunk_id, via in found
+        ]
+        diagram = relationship_diagram([definition], callers)
+        self.assertEqual(
+            diagram["edges"],
+            [
+                {
+                    "from": "features/step_definitions/et1_steps.rb",
+                    "to": "Et1::Page#fill_in_all",
+                    "possible": True,
+                },
+                {"from": "ET1 / fills in", "to": "features/step_definitions/et1_steps.rb"},
+            ],
         )
 
     def test_a_dynamic_call_has_no_target(self):
@@ -1326,6 +1373,8 @@ class WebTest(unittest.TestCase):
             self.assertIn("Relationships", page)
             self.assertIn("Call relationships", page)
             self.assertIn("Arrows point from a caller toward the definition.", page)
+            self.assertIn("A dashed arrow is a call by a name that more than one class defines.", page)
+            self.assertIn("Possible caller.", page)
             self.assertIn('id="index-toggle"', page)
             self.assertIn('toggle.textContent = open ? "Close"', page)
             self.assertIn('id="index-branch"', page)

@@ -63,6 +63,7 @@ def impact(target: str, repo: str | None = None, answer: bool = False) -> dict:
         "reference_count": payload.get("reference_count", 0),
         "callers_omitted": payload.get("callers_omitted", 0),
         "callers_capped": payload.get("callers_capped", False),
+        "possible_count": payload.get("possible_count", 0),
         "truncated": payload.get("truncated", False),
     }
     _keep_answer(result, payload)
@@ -140,6 +141,8 @@ def _passage(hit: dict) -> dict:
         item["content_shortened"] = True
     if hit.get("via"):
         item["via"] = hit["via"]
+    if hit.get("possible"):
+        item["possible"] = True
     if hit.get("url"):
         item["url"] = hit["url"]
     score = hit.get("score")
