@@ -7,6 +7,8 @@ import io
 import json
 import re
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -25,7 +27,7 @@ from rag.config import LLM_PROVIDER
 from rag.db import connect, list_repositories, resolve_repositories
 from rag.edges import POSSIBLE_ARROW, prepare_call_edges
 from rag.files import parse_repo
-from rag.gitrepo import list_branches
+from rag.gitrepo import list_branches, remote_commit
 from rag.ingest import delete_repository, ingest_repository
 from rag.log import logger
 from rag.plan import retrieval_model
@@ -36,6 +38,11 @@ _PAGE = Path(__file__).with_name("static") / "index.html"
 _MAX_BODY = 1_000_000
 _STARTED_AT = datetime.now(timezone.utc).replace(microsecond=0)
 _STARTED_LABEL = _STARTED_AT.strftime("%Y-%m-%d %H:%M UTC")
+
+_FRESHNESS_SECONDS = 600
+_FRESHNESS_TIMEOUT = 20
+_freshness_lock = threading.Lock()
+_freshness: dict[tuple[str, str, str], tuple[float, str]] = {}
 
 _ingest_lock = threading.Lock()
 _ingest_state: dict[str, Any] = {
@@ -68,6 +75,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/branches":
             repo = parse_qs(urlparse(self.path).query).get("repo", [""])[0]
             status, payload = lookup_branches(repo)
+            self._json(payload, status)
+            return
+        if path == "/api/freshness":
+            refresh = parse_qs(urlparse(self.path).query).get("refresh", [""])[0] == "1"
+            status, payload = index_freshness(refresh)
             self._json(payload, status)
             return
         self._json({"error": "Not found"}, 404)
@@ -153,6 +165,59 @@ def lookup_branches(repo: str) -> tuple[int, dict]:
     if not found:
         return 404, {"error": "The branches could not be read"}
     return 200, found
+
+
+def index_freshness(refresh: bool = False) -> tuple[int, dict]:
+    """Compare each indexed commit with its branch on GitHub.
+
+    This asks GitHub, so it is kept apart from the status the page polls, and
+    an answer is reused for `_FRESHNESS_SECONDS` unless refresh is set.
+    """
+    try:
+        conn = connect()
+        try:
+            rows = list_repositories(conn)
+        finally:
+            conn.close()
+    except (OSError, SystemExit, RuntimeError) as exc:
+        return 503, {"error": _failure_text(exc)}
+    keys = {(row["name"], row["branch"], row["commit_sha"]) for row in rows}
+    with _freshness_lock:
+        for key in [key for key in _freshness if key not in keys]:
+            del _freshness[key]
+
+    def remote(row: dict) -> str | None:
+        key = (row["name"], row["branch"], row["commit_sha"])
+        with _freshness_lock:
+            known = _freshness.get(key)
+        if known and not refresh and time.monotonic() - known[0] < _FRESHNESS_SECONDS:
+            return known[1]
+        try:
+            _name, url = parse_repo(row["name"])
+            sha = remote_commit(url, row["branch"], timeout=_FRESHNESS_TIMEOUT)
+        except ValueError:
+            sha = None
+        # A failed lookup is not kept, so the next request asks again.
+        if sha:
+            with _freshness_lock:
+                _freshness[key] = (time.monotonic(), sha)
+        return sha
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        remotes = list(pool.map(remote, rows))
+    return 200, {"repositories": [freshness_row(row, sha) for row, sha in zip(rows, remotes)]}
+
+
+def freshness_row(row: dict, remote_sha: str | None) -> dict:
+    """One repository's indexed commit beside the commit its branch is at now."""
+    indexed = str(row["commit_sha"])
+    return {
+        "name": row["name"],
+        "branch": row["branch"],
+        "indexed": indexed[:12],
+        "remote": remote_sha[:12] if remote_sha else None,
+        "stale": bool(remote_sha) and not remote_sha.startswith(indexed),
+    }
 
 
 def public_status() -> tuple[int, dict]:

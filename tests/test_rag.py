@@ -1473,6 +1473,8 @@ class WebTest(unittest.TestCase):
             self.assertIn("Arrows point from a caller toward the definition.", page)
             self.assertIn("A dashed arrow is a call by a name that is defined in more than one place.", page)
             self.assertIn("Callers in the same file are shown as one box.", page)
+            self.assertIn('id="stale-update"', page)
+            self.assertIn('fetch("/api/freshness")', page)
             # The written answer is built from elements, not set as HTML.
             self.assertIn("answer.append(renderMarkdown(body.answer));", page)
             self.assertNotIn("innerHTML", page)
@@ -1533,6 +1535,54 @@ class WebTest(unittest.TestCase):
             status, body = public_status()
         self.assertEqual(status, 200)
         self.assertRegex(body["started"], r"\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC")
+
+    def test_an_index_behind_its_branch_is_reported_as_stale(self):
+        import rag.web as web
+
+        class _Connection:
+            def close(self):
+                pass
+
+        old = "a" * 40
+        new = "b" * 40
+        rows = [
+            {"name": "hmcts/hwf-publicapp", "branch": "master", "commit_sha": old},
+            {"name": "hmcts/hwf-staffapp", "branch": "master", "commit_sha": new},
+            {"name": "hmcts/et-full-system", "branch": "develop", "commit_sha": old},
+        ]
+        asked: list[tuple[str, str]] = []
+
+        def remote(url, branch, timeout=None):
+            asked.append((url, branch))
+            return None if "et-full-system" in url else new
+
+        web._freshness.clear()
+        with (
+            patch("rag.web.connect", return_value=_Connection()),
+            patch("rag.web.list_repositories", return_value=rows),
+            patch("rag.web.remote_commit", side_effect=remote),
+        ):
+            status, body = web.index_freshness()
+            self.assertEqual(status, 200)
+            found = {row["name"]: row for row in body["repositories"]}
+            self.assertEqual(
+                found["hmcts/hwf-publicapp"],
+                {
+                    "name": "hmcts/hwf-publicapp", "branch": "master",
+                    "indexed": "a" * 12, "remote": "b" * 12, "stale": True,
+                },
+            )
+            self.assertFalse(found["hmcts/hwf-staffapp"]["stale"])
+            # A branch that could not be read is unknown, not stale.
+            self.assertIsNone(found["hmcts/et-full-system"]["remote"])
+            self.assertFalse(found["hmcts/et-full-system"]["stale"])
+            self.assertEqual(len(asked), 3)
+            # The answer is reused. Only the failed lookup is asked again.
+            web.index_freshness()
+            self.assertEqual(len(asked), 4)
+            web.index_freshness(refresh=True)
+            self.assertEqual(len(asked), 7)
+        web._freshness.clear()
 
     def test_query_response_includes_usage_stages(self):
         hit = Hit(

@@ -30,13 +30,13 @@ def checkout(name: str, url: str, branch: str | None) -> tuple[Path, str, str]:
     return destination, sha, checked_out
 
 
-def remote_commit(url: str, branch: str | None) -> str | None:
-    """Return the remote commit, or None when the remote cannot be read."""
+def remote_commit(url: str, branch: str | None, timeout: float | None = None) -> str | None:
+    """Return the remote commit, or None when the remote cannot be read in time."""
     if branch and not _safe_branch(branch):
         raise ValueError(f"Invalid branch name: {branch}")
     ref = f"refs/heads/{branch}" if branch else "HEAD"
     try:
-        output = _run(["git", "-c", "safe.directory=*", "ls-remote", url, ref])
+        output = _run(["git", "-c", "safe.directory=*", "ls-remote", url, ref], timeout=timeout)
     except RuntimeError:
         return None
     lines = output.strip().splitlines()
@@ -120,14 +120,18 @@ def _destination(name: str) -> Path:
     return destination
 
 
-def _run(args: list[str]) -> str:
-    completed = subprocess.run(
-        args,
-        check=False,
-        capture_output=True,
-        text=True,
-        env=_git_env(),
-    )
+def _run(args: list[str], timeout: float | None = None) -> str:
+    try:
+        completed = subprocess.run(
+            args,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=_git_env(),
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("git did not answer in time") from exc
     if completed.returncode != 0:
         message = (completed.stderr or completed.stdout or "git failed").strip()
         if GITHUB_TOKEN:

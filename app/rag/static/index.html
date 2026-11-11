@@ -114,6 +114,8 @@
       border-radius: 12px;
     }
     .confirm p { margin: 0; }
+    .notice { display: flex; gap: 0.75rem; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+    .notice[hidden] { display: none; }
     #status { min-height: 1.5rem; margin: 0.8rem 0; color: var(--muted); }
     #status.error { color: var(--warn); }
     .scope { color: var(--muted); margin: 0 0 0.8rem; }
@@ -206,6 +208,11 @@
       <button class="secondary" type="button" id="remove-index" disabled>Remove this index</button>
     </section>
 
+    <div class="confirm notice" id="stale" hidden>
+      <p id="stale-text"></p>
+      <button class="secondary" type="button" id="stale-update">Update the index</button>
+    </div>
+
     <div class="confirm" id="remove-confirm" hidden>
       <p id="remove-confirm-text"></p>
       <div class="row">
@@ -272,6 +279,9 @@
     let branchTimer = null;
     let branchLookup = 0;
     let indexPaneClosed = false;
+    // Repository name to its indexed commit and the commit its branch is at now.
+    let freshness = new Map();
+    let indexedCommits = new Map();
 
     const repoSelect = document.querySelector("#repo");
     const prompt = document.querySelector("#prompt");
@@ -286,9 +296,11 @@
     document.querySelector("#remove-index").addEventListener("click", onRemove);
     document.querySelector("#remove-confirm-yes").addEventListener("click", confirmRemove);
     document.querySelector("#remove-confirm-no").addEventListener("click", hideRemoveConfirm);
+    document.querySelector("#stale-update").addEventListener("click", updateStaleIndex);
     repoSelect.addEventListener("change", () => {
       hideRemoveConfirm();
       syncRemove();
+      syncStale();
     });
     document.querySelector("#index-repo").addEventListener("input", () => {
       clearTimeout(branchTimer);
@@ -336,10 +348,13 @@
       all.value = "";
       all.textContent = body.repositories.length ? "All indexed repositories" : "No repositories indexed yet";
       repoSelect.append(all);
+      indexedCommits = new Map(body.repositories.map((repo) => [repo.name, repo.commit_sha]));
       for (const repo of body.repositories) {
         const option = document.createElement("option");
         option.value = repo.name;
-        option.textContent = `${repo.name} · ${repo.branch} · ${repo.commit_sha} · ${repo.chunks} chunks`;
+        const known = freshness.get(repo.name);
+        const behind = known && known.stale && known.indexed === repo.commit_sha ? " · branch has newer commits" : "";
+        option.textContent = `${repo.name} · ${repo.branch} · ${repo.commit_sha} · ${repo.chunks} chunks${behind}`;
         repoSelect.append(option);
       }
       if ([...repoSelect.options].some((option) => option.value === previous)) repoSelect.value = previous;
@@ -353,7 +368,77 @@
       const started = document.querySelector("#process");
       started.textContent = body.started ? `This process started ${body.started}` : "";
       showIngest(body.ingest);
+      syncStale();
       return body;
+    }
+
+    // Asks GitHub where each indexed branch is now. The server keeps the
+    // answer for a few minutes, and this is not part of the ingest poll.
+    async function refreshFreshness() {
+      try {
+        const response = await fetch("/api/freshness");
+        const body = await response.json();
+        if (!response.ok || !body.repositories) return;
+        freshness = new Map(body.repositories.map((row) => [row.name, row]));
+      } catch (_error) {
+        return;
+      }
+      await refresh();
+    }
+
+    function staleRows() {
+      // A row only counts while the index is still at the commit it compared.
+      return [...freshness.values()].filter(
+        (row) => row.stale && indexedCommits.get(row.name) === row.indexed
+      );
+    }
+
+    function syncStale() {
+      const box = document.querySelector("#stale");
+      const text = document.querySelector("#stale-text");
+      const button = document.querySelector("#stale-update");
+      const rows = staleRows();
+      const chosen = rows.find((row) => row.name === repoSelect.value);
+      const running = Boolean(currentIngest && currentIngest.running);
+      if (chosen) {
+        text.textContent =
+          `${chosen.branch} has newer commits than this index of ${chosen.name}. ` +
+          `The index is at ${chosen.indexed} and the branch is at ${chosen.remote}.`;
+        button.hidden = false;
+        button.disabled = running;
+        box.hidden = false;
+        return;
+      }
+      button.hidden = true;
+      if (!repoSelect.value && rows.length) {
+        const names = rows.map((row) => row.name).join(", ");
+        text.textContent =
+          `${rows.length === 1 ? "One index is" : `${rows.length} indexes are`} behind the branch on GitHub: ${names}. ` +
+          "Choose a repository to update its index.";
+        box.hidden = false;
+        return;
+      }
+      box.hidden = true;
+    }
+
+    async function updateStaleIndex() {
+      const row = staleRows().find((item) => item.name === repoSelect.value);
+      if (!row) return;
+      setStatus(`Starting the index of ${row.name}…`);
+      const response = await fetch("/api/ingest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ repo: row.name, branch: row.branch, force: false })
+      });
+      const body = await response.json();
+      if (!response.ok) {
+        setStatus(body.error || "Could not start the index", true);
+        return;
+      }
+      indexPaneClosed = false;
+      showIngest(body.ingest);
+      syncStale();
+      if (!poll) poll = setInterval(pollIngest, 1000);
     }
 
     function showIngest(ingest) {
@@ -465,6 +550,7 @@
       const body = await refresh();
       if (body && body.ingest && !body.ingest.running && !body.ingest.error) {
         setStatus(body.ingest.repo ? `Indexed ${body.ingest.repo}` : "Index updated");
+        refreshFreshness();
       }
     }
 
@@ -1244,7 +1330,7 @@
     }
 
     setMode("query");
-    refresh().catch(() => setStatus("The index is unavailable", true));
+    refresh().then(refreshFreshness).catch(() => setStatus("The index is unavailable", true));
   </script>
 </body>
 </html>
