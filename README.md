@@ -233,7 +233,7 @@ For a private repository, set `GITHUB_TOKEN` in a `.env` file next to `docker-co
 
 Retrieval works with no language model. The commands print the matching source.
 
-The answer is written only from the retrieved passages, and it cites file paths and line numbers. `--no-answer` prints the passages and skips the model. `--model` selects a different answer model for one command.
+The answer is written only from the retrieved passages, and it cites file paths and line numbers. The page shows the answer's Markdown as headings, lists, bold text, and code. `--no-answer` prints the passages and skips the model. `--model` selects a different answer model for one command.
 
 ### Search model and answer model
 

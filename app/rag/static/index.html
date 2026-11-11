@@ -129,9 +129,25 @@
       border-left: 4px solid var(--accent);
       padding: 0.9rem 1rem;
       border-radius: 8px;
-      white-space: pre-wrap;
       margin-bottom: 1rem;
+      overflow-wrap: anywhere;
     }
+    .answer > :first-child { margin-top: 0; }
+    .answer > :last-child { margin-bottom: 0; }
+    .answer p, .answer ul, .answer ol, .answer blockquote, .answer pre.code { margin: 0 0 0.7rem; }
+    .answer h3, .answer h4 { font-size: 1rem; margin: 1rem 0 0.4rem; }
+    .answer ul, .answer ol { padding-left: 1.4rem; }
+    .answer li { margin: 0.2rem 0; }
+    .answer li > ul, .answer li > ol { margin: 0.2rem 0 0; }
+    .answer code {
+      font: 0.86em/1.4 ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
+      background: #ebe2cd;
+      border-radius: 4px;
+      padding: 0.05rem 0.3rem;
+    }
+    .answer blockquote { padding-left: 0.8rem; border-left: 3px solid var(--line); color: var(--muted); }
+    .answer hr { border: 0; border-top: 1px solid var(--line); margin: 0.9rem 0; }
+    .answer a { color: var(--accent); text-underline-offset: 0.18em; }
     .group { margin-top: 0.8rem; padding: 0.4rem 0.9rem 0.9rem; }
     .group h2 { font-size: 1rem; margin: 0.7rem 0; }
     article { border-top: 1px solid var(--line); padding-top: 0.8rem; margin-top: 0.8rem; }
@@ -616,7 +632,7 @@
       } else if (body.answer) {
         const answer = document.createElement("div");
         answer.className = "answer";
-        answer.textContent = body.answer;
+        answer.append(renderMarkdown(body.answer));
         results.append(answer);
       }
       if (requested === "impact") {
@@ -704,6 +720,154 @@
       }
       box.append(heading, total, list);
       results.append(box);
+    }
+
+    // The written answer is Markdown. It is built as elements and text nodes,
+    // never as HTML, so nothing in the answer can run as markup.
+    const MARKDOWN_INLINE = new RegExp(
+      [
+        "(`+)([^\\n]+?)\\1(?!`)",
+        "\\*\\*([^*\\n]+?)\\*\\*",
+        "\\*([^\\s*](?:[^*\\n]*?[^\\s*])?)\\*",
+        "\\[([^\\]\\n]+)\\]\\((https?:\\/\\/[^\\s)]+)\\)"
+      ].join("|"),
+      "g"
+    );
+
+    function appendInline(parent, text) {
+      let last = 0;
+      for (const match of text.matchAll(MARKDOWN_INLINE)) {
+        if (match.index > last) parent.append(text.slice(last, match.index));
+        last = match.index + match[0].length;
+        if (match[2] !== undefined) {
+          const code = document.createElement("code");
+          code.textContent = match[2].trim();
+          parent.append(code);
+        } else if (match[3] !== undefined || match[4] !== undefined) {
+          const marked = document.createElement(match[3] !== undefined ? "strong" : "em");
+          appendInline(marked, match[3] !== undefined ? match[3] : match[4]);
+          parent.append(marked);
+        } else {
+          const link = document.createElement("a");
+          link.href = match[6];
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+          appendInline(link, match[5]);
+          parent.append(link);
+        }
+      }
+      if (last < text.length) parent.append(text.slice(last));
+    }
+
+    function renderMarkdown(text) {
+      const root = document.createDocumentFragment();
+      const lines = String(text || "").replace(/\r\n?/g, "\n").split("\n");
+      let paragraph = null;
+      let quote = null;
+      let lists = [];
+      let gap = false;
+      const addLine = (block, content) => {
+        if (block.childNodes.length) block.append(document.createElement("br"));
+        appendInline(block, content);
+      };
+      const endBlocks = () => {
+        paragraph = null;
+        quote = null;
+        lists = [];
+      };
+      for (let index = 0; index < lines.length; index += 1) {
+        const line = lines[index].replace(/\t/g, "    ");
+        const fence = line.match(/^\s*(```+|~~~+)/);
+        if (fence) {
+          const code = [];
+          index += 1;
+          while (index < lines.length && !lines[index].trim().startsWith(fence[1])) {
+            code.push(lines[index]);
+            index += 1;
+          }
+          const pre = document.createElement("pre");
+          pre.className = "code";
+          pre.textContent = code.join("\n");
+          root.append(pre);
+          endBlocks();
+          continue;
+        }
+        if (!line.trim()) {
+          paragraph = null;
+          quote = null;
+          gap = true;
+          continue;
+        }
+        const heading = line.match(/^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/);
+        if (heading) {
+          const title = document.createElement(heading[1].length <= 2 ? "h3" : "h4");
+          appendInline(title, heading[2]);
+          root.append(title);
+          endBlocks();
+          gap = false;
+          continue;
+        }
+        if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) {
+          root.append(document.createElement("hr"));
+          endBlocks();
+          gap = false;
+          continue;
+        }
+        const item = line.match(/^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/);
+        if (item) {
+          const indent = item[1].length;
+          const ordered = /\d/.test(item[2]);
+          while (lists.length && lists[lists.length - 1].indent > indent) lists.pop();
+          let top = lists[lists.length - 1];
+          if (top && top.indent === indent && top.ordered !== ordered) {
+            lists.pop();
+            top = null;
+          }
+          if (!top || top.indent < indent) {
+            const list = document.createElement(ordered ? "ol" : "ul");
+            const first = parseInt(item[2], 10);
+            if (ordered && first !== 1) list.start = first;
+            const parent = lists.length ? lists[lists.length - 1].item : root;
+            parent.append(list);
+            top = { indent, ordered, list, item: null };
+            lists.push(top);
+          }
+          top.item = document.createElement("li");
+          appendInline(top.item, item[3]);
+          top.list.append(top.item);
+          paragraph = null;
+          quote = null;
+          gap = false;
+          continue;
+        }
+        if (lists.length) {
+          // An indented line, or one straight after an item, belongs to that item.
+          if (/^\s{2,}/.test(line) || !gap) {
+            addLine(lists[lists.length - 1].item, line.trim());
+            gap = false;
+            continue;
+          }
+          lists = [];
+        }
+        gap = false;
+        const quoted = line.match(/^\s*>\s?(.*)$/);
+        if (quoted) {
+          paragraph = null;
+          if (!quote) {
+            quote = document.createElement("blockquote");
+            root.append(quote);
+          }
+          addLine(quote, quoted[1]);
+          continue;
+        }
+        quote = null;
+        if (!paragraph) {
+          paragraph = document.createElement("p");
+          root.append(paragraph);
+        }
+        addLine(paragraph, line.trim());
+      }
+      return root;
     }
 
     function renderDiagram(diagram) {

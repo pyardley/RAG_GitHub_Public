@@ -1473,6 +1473,9 @@ class WebTest(unittest.TestCase):
             self.assertIn("Arrows point from a caller toward the definition.", page)
             self.assertIn("A dashed arrow is a call by a name that is defined in more than one place.", page)
             self.assertIn("Callers in the same file are shown as one box.", page)
+            # The written answer is built from elements, not set as HTML.
+            self.assertIn("answer.append(renderMarkdown(body.answer));", page)
+            self.assertNotIn("innerHTML", page)
             self.assertIn('"Collapse all" : "Expand all"', page)
             self.assertIn("Possible caller.", page)
             self.assertIn('id="index-toggle"', page)
