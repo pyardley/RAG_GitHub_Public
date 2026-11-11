@@ -98,6 +98,21 @@ _TOOLS = [
         },
     },
     {
+        "name": "branches",
+        "description": (
+            "List the branches of a GitHub repository, with the default branch first. "
+            "Use this to choose the branch for ingest."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "repo": {"type": "string", "description": "owner/name or a GitHub URL."},
+            },
+            "required": ["repo"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "ingest",
         "description": (
             "Start indexing a GitHub repository. The call returns when the index has started, not when it finishes. "
@@ -214,6 +229,8 @@ def _tool(name: object, arguments: dict) -> dict:
         return api.impact(arguments.get("target", ""), arguments.get("repo"), arguments.get("answer", False))
     if name == "default_branch":
         return api.default_branch(arguments.get("repo", ""))
+    if name == "branches":
+        return api.branches(arguments.get("repo", ""))
     if name == "ingest":
         return api.ingest(arguments.get("repo", ""), arguments.get("branch"), arguments.get("force", False))
     if name == "remove_index":

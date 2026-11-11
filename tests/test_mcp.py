@@ -33,6 +33,14 @@ class _App(BaseHTTPRequestHandler):
             self._record("GET", path, {"repo": repo})
             self._json({"branch": "master"})
             return
+        if path == "/api/branches":
+            repo = parse_qs(urlparse(self.path).query).get("repo", [""])[0]
+            self._record("GET", path, {"repo": repo})
+            if repo == "hmcts/missing":
+                self._json({"error": "The branches could not be read"}, 404)
+                return
+            self._json({"default": "develop", "branches": ["develop", "main", "release/1.2"]})
+            return
         self._json({"error": "Not found"}, 404)
 
     def do_POST(self) -> None:
@@ -122,6 +130,7 @@ class McpTest(unittest.TestCase):
     @classmethod
     def tearDownClass(cls) -> None:
         cls.httpd.shutdown()
+        cls.httpd.server_close()
 
     def test_initialize_names_the_tools(self) -> None:
         reply = server.handle({
@@ -136,8 +145,27 @@ class McpTest(unittest.TestCase):
         names = [tool["name"] for tool in listed["result"]["tools"]]
         self.assertEqual(
             names,
-            ["repositories", "query", "search", "impact", "default_branch", "ingest", "remove_index"],
+            ["repositories", "query", "search", "impact", "default_branch", "branches", "ingest", "remove_index"],
         )
+
+    def test_branches_lists_the_default_first(self) -> None:
+        reply = server.handle({
+            "jsonrpc": "2.0",
+            "id": 8,
+            "method": "tools/call",
+            "params": {"name": "branches", "arguments": {"repo": "hmcts/et-full-system"}},
+        })
+        text = json.loads(reply["result"]["content"][0]["text"])
+        self.assertEqual(text, {"default": "develop", "branches": ["develop", "main", "release/1.2"]})
+        self.assertEqual(_App.seen[-1], ("GET", "/api/branches", {"repo": "hmcts/et-full-system"}))
+        missing = server.handle({
+            "jsonrpc": "2.0",
+            "id": 9,
+            "method": "tools/call",
+            "params": {"name": "branches", "arguments": {"repo": "hmcts/missing"}},
+        })
+        self.assertTrue(missing["result"]["isError"])
+        self.assertIn("could not be read", missing["result"]["content"][0]["text"])
 
     def test_a_notification_has_no_reply(self) -> None:
         self.assertIsNone(server.handle({

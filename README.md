@@ -67,7 +67,7 @@ Claude Code, including the Claude extension for VS Code, does not read `.cursor/
 claude mcp get code-rag
 ```
 
-The tools are `repositories`, `query`, `search`, `impact`, `default_branch`, `ingest`, and `remove_index`. `query` returns the passages and leaves the app's own written answer off, so the calling model reads the code. Set `answer` to true when you also want that reply. `impact` returns the definitions, the callers, and the diagram. `FactoryBot.create(:claim)` is a valid impact target. `remove_index` deletes one index only when `confirm` is true. Passage text is shortened in the tool result. The page still shows the full chunk.
+The tools are `repositories`, `query`, `search`, `impact`, `default_branch`, `branches`, `ingest`, and `remove_index`. `branches` lists a GitHub repository's branches with the default first, so the model can choose one for `ingest`. `query` returns the passages and leaves the app's own written answer off, so the calling model reads the code. Set `answer` to true when you also want that reply. `impact` returns the definitions, the callers, and the diagram. `FactoryBot.create(:claim)` is a valid impact target. `remove_index` deletes one index only when `confirm` is true. Passage text is shortened in the tool result. The page still shows the full chunk.
 
 On macOS or Linux the same commands work. `rag.ps1` and `rag.sh` are thin wrappers:
 

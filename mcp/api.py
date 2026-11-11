@@ -76,6 +76,13 @@ def default_branch(repo: str) -> dict:
     return _request("GET", f"/api/default-branch?repo={quoted}")
 
 
+def branches(repo: str) -> dict:
+    name = _required(repo, "Enter a GitHub repository")
+    quoted = urllib.request.quote(name, safe="")
+    payload = _request("GET", f"/api/branches?repo={quoted}")
+    return {"default": payload.get("default"), "branches": payload.get("branches") or []}
+
+
 def ingest(repo: str, branch: str | None = None, force: bool = False) -> dict:
     name = _required(repo, "Enter a GitHub repository")
     body: dict = {"repo": name, "force": bool(force)}
