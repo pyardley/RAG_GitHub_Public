@@ -35,9 +35,20 @@ def repositories() -> dict:
     }
 
 
-def query(question: str, repo: str | None = None, k: int = 8, answer: bool = False) -> dict:
+def query(
+    question: str,
+    repo: str | None = None,
+    k: int = 8,
+    answer: bool = False,
+    index: str | None = None,
+    fusion: str | None = None,
+) -> dict:
     body = _lookup_body(question, "question", repo, k)
     body["answer"] = bool(answer)
+    if index:
+        body["index"] = index
+    if fusion:
+        body["fusion"] = fusion
     return _passages(_request("POST", "/api/query", body), include_queries=True)
 
 
@@ -120,6 +131,10 @@ def _passages(payload: dict, *, include_queries: bool) -> dict:
     }
     if include_queries and payload.get("queries"):
         result["queries"] = payload["queries"]
+    if payload.get("index"):
+        result["index"] = payload["index"]
+    if payload.get("fusion"):
+        result["fusion"] = payload["fusion"]
     _keep_answer(result, payload)
     return result
 

@@ -8,7 +8,9 @@ from dataclasses import dataclass, replace
 
 import psycopg
 
+from rag.config import resolve_fusion, resolve_index, resolve_rrf_k
 from rag.edges import CALL_ARROW, POSSIBLE_ARROW, factory_symbols
+from rag.fusion import combine_rankings
 from rag.log import log_retrieval, logger
 from rag.text import (
     has_declaration,
@@ -135,11 +137,24 @@ def topic_terms(question: str) -> list[str]:
     return terms
 
 
-def retrieve(conn, repository_ids: list[int], question: str, k: int, meter=None) -> tuple[list[Hit], list[str], bool]:
+def retrieve(
+    conn,
+    repository_ids: list[int],
+    question: str,
+    k: int,
+    meter=None,
+    *,
+    index: str | None = None,
+    fusion: str | None = None,
+    rrf_k: int | None = None,
+) -> tuple[list[Hit], list[str], bool]:
     """Search once, or once per query when a small model splits the question."""
     from rag.plan import search_queries
     from rag.usage import Stage
 
+    chosen_index = resolve_index(index)
+    chosen_fusion = resolve_fusion(fusion)
+    chosen_k = resolve_rrf_k(rrf_k)
     excluded = path_exclusions(question)
     scopes = [
         scope for scope in path_scopes(question)
@@ -168,6 +183,7 @@ def retrieve(conn, repository_ids: list[int], question: str, k: int, meter=None)
             return _logged(
                 question, conn, repository_ids, k, _direct_kind(terms, phrases),
                 [question], [], scopes, excluded, truncated, hits,
+                index="-", fusion="-",
             )
     planned = search_queries(question, meter)
     queries = _without_scope_queries(planned, scopes)
@@ -175,7 +191,10 @@ def retrieve(conn, repository_ids: list[int], question: str, k: int, meter=None)
     groups: list[list[Hit]] = []
     truncated = False
     for query in queries:
-        found, extra = search(conn, repository_ids, query, k, meter, scopes, excluded)
+        found, extra = search(
+            conn, repository_ids, query, k, meter, scopes, excluded,
+            index=chosen_index, fusion=chosen_fusion, rrf_k=chosen_k,
+        )
         groups.append(found)
         truncated = truncated or extra
     hits = merge_hits(groups, k)
@@ -186,10 +205,14 @@ def retrieve(conn, repository_ids: list[int], question: str, k: int, meter=None)
     return _logged(
         question, conn, repository_ids, k, "semantic",
         queries, dropped, scopes, excluded, truncated, hits,
+        index=chosen_index, fusion=chosen_fusion,
     )
 
 
-def _logged(question, conn, repository_ids, k, path, queries, dropped, scopes, excluded, truncated, hits):
+def _logged(
+    question, conn, repository_ids, k, path, queries, dropped, scopes, excluded, truncated, hits,
+    *, index: str, fusion: str,
+):
     log_retrieval(
         question=question,
         repos=_repo_names(conn, repository_ids, hits),
@@ -201,6 +224,8 @@ def _logged(question, conn, repository_ids, k, path, queries, dropped, scopes, e
         dropped=dropped,
         truncated=truncated,
         hits=hits,
+        index=index,
+        fusion=fusion,
     )
     return hits, queries, truncated
 
@@ -255,14 +280,27 @@ def search(
     meter=None,
     scopes: list[str] | None = None,
     excluded: list[str] | None = None,
+    *,
+    index: str | None = None,
+    fusion: str | None = None,
+    rrf_k: int | None = None,
 ) -> tuple[list[Hit], bool]:
     """Return the passages and whether more matches were cut off by the limit."""
-    from rag.embedder import Embedder
+    from rag.embedder import Embedder, code_embedder
 
     if k < 1:
         raise ValueError("Result count must be at least 1")
+    chosen_index = resolve_index(index)
+    chosen_fusion = resolve_fusion(fusion)
+    chosen_k = resolve_rrf_k(rrf_k)
     embed_started = time.perf_counter()
-    embedding = _vector_literal(Embedder().embed_query(question))
+    embeddings: dict[str, str] = {}
+    # The text model stays Embedder() so a query that does not ask for code
+    # never loads the larger model.
+    if chosen_index in {"text", "both"}:
+        embeddings["text"] = _vector_literal(Embedder().embed_query(question))
+    if chosen_index in {"code", "both"}:
+        embeddings["code"] = _vector_literal(code_embedder().embed_query(question))
     embed_seconds = time.perf_counter() - embed_started
     database_started = time.perf_counter()
     if len(repository_ids) > 1:
@@ -270,7 +308,8 @@ def search(
         truncated = False
         for repo_id in repository_ids:
             found, extra = _search_with_embedding(
-                conn, [repo_id], question, k, embedding, scopes, excluded,
+                conn, [repo_id], question, k, embeddings, scopes, excluded,
+                index=chosen_index, fusion=chosen_fusion, rrf_k=chosen_k,
             )
             groups.append(found)
             truncated = truncated or extra
@@ -281,7 +320,8 @@ def search(
         )
     else:
         hits, truncated = _search_with_embedding(
-            conn, repository_ids, question, k, embedding, scopes, excluded,
+            conn, repository_ids, question, k, embeddings, scopes, excluded,
+            index=chosen_index, fusion=chosen_fusion, rrf_k=chosen_k,
         )
     if meter is not None:
         meter.add_search(embed_seconds, time.perf_counter() - database_started)
@@ -293,83 +333,51 @@ def _search_with_embedding(
     repository_ids: list[int],
     question: str,
     k: int,
-    embedding: str,
+    embeddings: dict[str, str],
     scopes: list[str] | None,
     excluded: list[str] | None,
+    *,
+    index: str,
+    fusion: str,
+    rrf_k: int,
 ) -> tuple[list[Hit], bool]:
     listing = asks_for_features(question)
     terms = topic_terms(question) if listing else []
-    # Rank by exact cosine similarity. The HNSW index walks a cluster of short
-    # feature titles and misses closer scenarios, so this scan does not use it.
-    sql = f"""
-        WITH semantic AS (
-            SELECT id, 1 - ord AS similarity
-            FROM (
-                SELECT id, embedding <=> %(embedding)s::vector AS ord
-                FROM chunks
-                WHERE repository_id = ANY(%(repos)s)
-                  AND (%(features_only)s = FALSE OR right(path, 8) = '.feature')
-                  AND {_PATH_SCOPE_SQL}
-                  AND {_PATH_EXCLUDE_SQL}
-                ORDER BY ord
-                LIMIT %(semantic_limit)s
-            ) nearest
-        ),
-        lexical AS (
-            SELECT id,
-                   ts_rank_cd(
-                       tsv,
-                       CASE WHEN %(lexical_mode)s = 'or'
-                            THEN to_tsquery('simple', %(lexical)s)
-                            ELSE plainto_tsquery('simple', %(lexical)s)
-                       END
-                   ) AS rank
-            FROM chunks
-            WHERE repository_id = ANY(%(repos)s)
-              AND (%(features_only)s = FALSE OR right(path, 8) = '.feature')
-              AND {_PATH_SCOPE_SQL}
-              AND {_PATH_EXCLUDE_SQL}
-              AND %(lexical_mode)s <> 'none'
-              AND CASE WHEN %(lexical_mode)s = 'or'
-                       THEN tsv @@ to_tsquery('simple', %(lexical)s)
-                       ELSE numnode(plainto_tsquery('simple', %(lexical)s)) > 0
-                            AND tsv @@ plainto_tsquery('simple', %(lexical)s)
-                  END
-            ORDER BY rank DESC
-            LIMIT 50
-        )
-        SELECT c.id, r.name, c.path, c.start_line, c.end_line, c.symbol, c.kind, c.content,
-               COALESCE(s.similarity, 0) + COALESCE(l.rank, 0) AS score
-        FROM chunks c
-        JOIN repositories r ON r.id = c.repository_id
-        LEFT JOIN semantic s ON s.id = c.id
-        LEFT JOIN lexical l ON l.id = c.id
-        WHERE s.id IS NOT NULL OR l.id IS NOT NULL
-        ORDER BY score DESC, c.path, c.start_line
-        LIMIT %(k)s
-    """
     pool = max(k, 40) if listing else k
+    # A single index with raw-score fusion keeps the previous candidate depth,
+    # so that ranking stays the one this index used to return. Reciprocal rank
+    # fusion needs a deeper list from each side before the ranks are merged.
+    vector_limit = pool + 1
+    if fusion != "score" or index == "both":
+        vector_limit = max(vector_limit, 50)
+    params = _search_params(repository_ids, question, listing, terms, scopes, excluded)
+    text_ranked: list[tuple[int, float]] | None = None
+    code_ranked: list[tuple[int, float]] | None = None
     with conn.cursor() as cur:
+        # Rank by exact cosine similarity. The HNSW index walks a cluster of
+        # short feature titles and misses closer scenarios, so this scan does
+        # not use it.
         cur.execute("SET LOCAL enable_indexscan = off")
-        cur.execute(
-            sql,
-            {
-                "embedding": embedding,
-                "repos": repository_ids,
-                "lexical": " | ".join(terms) if terms else question,
-                "lexical_mode": "or" if terms else "and",
-                "features_only": listing,
-                "k": pool + 1,
-                "semantic_limit": pool + 1,
-                "scoped": bool(scopes),
-                "scopes": [scope.lower().strip("/") for scope in (scopes or [])] or [""],
-                "has_excluded": bool(excluded),
-                "excluded": [item.lower().strip("/") for item in (excluded or [])] or [""],
-            },
-        )
-        hits = [_hit_from_row(row) for row in cur.fetchall()]
-    truncated = len(hits) > pool
-    hits = hits[:pool]
+        if "text" in embeddings:
+            text_ranked = _vector_ranks(cur, "embedding_text", embeddings["text"], vector_limit, params)
+        if "code" in embeddings:
+            if not _column_populated(cur, "embedding_code", repository_ids):
+                logger.warning(
+                    "No code embeddings are stored for this search. "
+                    "Run `backfill` to fill them without copying chunks."
+                )
+            code_ranked = _vector_ranks(cur, "embedding_code", embeddings["code"], vector_limit, params)
+        lexical = _lexical_ranks(cur, params)
+    ranked = combine_rankings(
+        index=index,
+        fusion=fusion,
+        text=text_ranked,
+        code=code_ranked,
+        lexical=lexical,
+        rrf_k=rrf_k,
+    )
+    truncated = len(ranked) > pool
+    hits = _hits_in_rank_order(conn, ranked[:pool])
     if listing:
         chosen = _feature_files(hits, terms, k)
         truncated = truncated or len(chosen) > k
@@ -379,6 +387,119 @@ def _search_with_embedding(
         chain = _feature_chain(conn, repository_ids, question, hits)
     conn.commit()
     return _drop_excluded(_with_chain(chain, hits, k), excluded or []), truncated
+
+
+_VECTOR_COLUMNS = {"embedding_text": "embedding_text", "embedding_code": "embedding_code"}
+
+
+def _vector_ranks(cur, column: str, embedding: str, limit: int, params: dict) -> list[tuple[int, float]]:
+    stored = _VECTOR_COLUMNS[column]
+    cur.execute(
+        f"""
+        SELECT id, 1 - ({stored} <=> %(embedding)s::vector) AS similarity
+        FROM chunks
+        WHERE repository_id = ANY(%(repos)s)
+          AND {stored} IS NOT NULL
+          AND (%(features_only)s = FALSE OR right(path, 8) = '.feature')
+          AND {_PATH_SCOPE_SQL}
+          AND {_PATH_EXCLUDE_SQL}
+        ORDER BY {stored} <=> %(embedding)s::vector
+        LIMIT %(limit)s
+        """,
+        {**params, "embedding": embedding, "limit": limit},
+    )
+    return [(row[0], float(row[1])) for row in cur.fetchall()]
+
+
+def _lexical_ranks(cur, params: dict) -> list[tuple[int, float]]:
+    cur.execute(
+        f"""
+        SELECT id,
+               ts_rank_cd(
+                   tsv,
+                   CASE WHEN %(lexical_mode)s = 'or'
+                        THEN to_tsquery('simple', %(lexical)s)
+                        ELSE plainto_tsquery('simple', %(lexical)s)
+                   END
+               ) AS rank
+        FROM chunks
+        WHERE repository_id = ANY(%(repos)s)
+          AND (%(features_only)s = FALSE OR right(path, 8) = '.feature')
+          AND {_PATH_SCOPE_SQL}
+          AND {_PATH_EXCLUDE_SQL}
+          AND %(lexical_mode)s <> 'none'
+          AND CASE WHEN %(lexical_mode)s = 'or'
+                   THEN tsv @@ to_tsquery('simple', %(lexical)s)
+                   ELSE numnode(plainto_tsquery('simple', %(lexical)s)) > 0
+                        AND tsv @@ plainto_tsquery('simple', %(lexical)s)
+              END
+        ORDER BY rank DESC
+        LIMIT 50
+        """,
+        params,
+    )
+    return [(row[0], float(row[1])) for row in cur.fetchall()]
+
+
+def _column_populated(cur, column: str, repository_ids: list[int]) -> bool:
+    stored = _VECTOR_COLUMNS[column]
+    cur.execute(
+        f"""
+        SELECT EXISTS (
+            SELECT 1 FROM chunks
+            WHERE repository_id = ANY(%s) AND {stored} IS NOT NULL
+        )
+        """,
+        (repository_ids,),
+    )
+    return bool(cur.fetchone()[0])
+
+
+def _search_params(repository_ids, question, listing, terms, scopes, excluded) -> dict:
+    return {
+        "repos": repository_ids,
+        "lexical": " | ".join(terms) if terms else question,
+        "lexical_mode": "or" if terms else "and",
+        "features_only": listing,
+        "scoped": bool(scopes),
+        "scopes": [scope.lower().strip("/") for scope in (scopes or [])] or [""],
+        "has_excluded": bool(excluded),
+        "excluded": [item.lower().strip("/") for item in (excluded or [])] or [""],
+    }
+
+
+def _hits_in_rank_order(conn, ranked: list[tuple[int, float]]) -> list[Hit]:
+    if not ranked:
+        return []
+    scores = {chunk_id: score for chunk_id, score in ranked}
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT c.id, r.name, c.path, c.start_line, c.end_line, c.symbol, c.kind, c.content
+            FROM chunks c
+            JOIN repositories r ON r.id = c.repository_id
+            WHERE c.id = ANY(%s)
+            """,
+            (list(scores),),
+        )
+        rows = cur.fetchall()
+    hits = [
+        Hit(
+            chunk_id=row[0],
+            repo=row[1],
+            path=row[2],
+            start_line=row[3],
+            end_line=row[4],
+            symbol=row[5],
+            kind=row[6],
+            content=row[7],
+            score=scores[row[0]],
+        )
+        for row in rows
+    ]
+    order = {chunk_id: position for position, (chunk_id, _score) in enumerate(ranked)}
+    hits.sort(key=lambda hit: (order.get(hit.chunk_id, len(order)), hit.path, hit.start_line))
+    return hits
 
 
 def impact(conn, repository_ids: list[int], target: str) -> dict[str, list[Hit]]:

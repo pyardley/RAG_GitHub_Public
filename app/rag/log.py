@@ -35,10 +35,14 @@ def log_retrieval(
     dropped: list[str],
     truncated: bool,
     hits: list,
+    index: str = "-",
+    fusion: str = "-",
 ) -> None:
     """Record how a question was searched and which passages were kept."""
     parts = [
         f"path={path}",
+        f"index={index}",
+        f"fusion={fusion}",
         f"k={k}",
         "repos=" + ("|".join(repos) if repos else "-"),
         "scopes=" + ("|".join(scopes) if scopes else "-"),

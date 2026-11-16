@@ -16,11 +16,16 @@ ENV PYTHONUNBUFFERED=1 \
     HF_HOME=/opt/hf \
     EMBEDDING_MODEL=BAAI/bge-small-en-v1.5 \
     EMBEDDING_DIM=384 \
+    CODE_EMBEDDING_MODEL=jinaai/jina-embeddings-v2-base-code \
+    CODE_EMBEDDING_DIM=768 \
+    RAG_INDEX=text \
+    RAG_FUSION=score \
+    RRF_K=60 \
     REPOS_DIR=/data/repos
 
-# Bake the embedding model into the image so a machine can query after the
-# image has been built, without downloading it again on first ingest.
-RUN python -c "from fastembed import TextEmbedding; TextEmbedding(model_name='BAAI/bge-small-en-v1.5', cache_dir='/opt/fastembed')"
+# Bake both embedding models into the image so a machine can query after the
+# image has been built, without downloading them again on first ingest.
+RUN python -c "from fastembed import TextEmbedding; TextEmbedding(model_name='BAAI/bge-small-en-v1.5', cache_dir='/opt/fastembed'); TextEmbedding(model_name='jinaai/jina-embeddings-v2-base-code', cache_dir='/opt/fastembed')"
 
 COPY rag ./rag
 

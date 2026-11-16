@@ -23,7 +23,7 @@ from rag.answer import (
     language_model_configured,
     matching_lines,
 )
-from rag.config import LLM_PROVIDER
+from rag.config import LLM_PROVIDER, resolve_fusion, resolve_index
 from rag.db import connect, list_repositories, resolve_repositories
 from rag.edges import POSSIBLE_ARROW, prepare_call_edges
 from rag.files import parse_repo
@@ -330,6 +330,8 @@ def remove_index(body: dict) -> tuple[int, dict]:
 def _retrieve(body: dict, question: str, *, written: bool, impact_mode: bool) -> tuple[int, dict]:
     repo = _optional_repo(body)
     count = _passage_count(body)
+    index = resolve_index(body["index"] if "index" in body else None)
+    fusion = resolve_fusion(body["fusion"] if "fusion" in body else None)
     meter = Meter()
     try:
         conn = connect()
@@ -337,7 +339,10 @@ def _retrieve(body: dict, question: str, *, written: bool, impact_mode: bool) ->
         return 503, {"error": _failure_text(exc)}
     try:
         repositories = resolve_repositories(conn, repo)
-        hits, queries, truncated = retrieve(conn, [item["id"] for item in repositories], question, count, meter)
+        hits, queries, truncated = retrieve(
+            conn, [item["id"] for item in repositories], question, count, meter,
+            index=index, fusion=fusion,
+        )
     except SystemExit as exc:
         return 400, {"error": _failure_text(exc)}
     finally:
@@ -348,6 +353,8 @@ def _retrieve(body: dict, question: str, *, written: bool, impact_mode: bool) ->
     return 200, {
         "repositories": [_scope(item) for item in repositories],
         "queries": queries,
+        "index": index,
+        "fusion": fusion,
         "truncated": truncated,
         "passage_limit": count,
         "hits": [_hit(item, _indexed_commits(repositories)) for item in hits],
