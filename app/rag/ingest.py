@@ -8,9 +8,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from rag.chunker import Chunk, chunk_source, embed_text, source_role
-from rag.db import connect, get_repository
+from rag.db import connect, get_repository, list_repositories
 from rag.edges import rebuild_edges
-from rag.embedder import Embedder
+from rag.embedder import Embedder, code_embedder, text_embedder
 from rag.files import iter_source_files, parse_repo, read_text
 from rag.gitrepo import checkout, remote_commit, remove_checkout
 from rag.log import logger
@@ -81,6 +81,35 @@ def forget_repository(conn, name: str) -> dict:
     return {**found, "files": files, "chunks": chunks}
 
 
+def backfill_repository(repo: str | None) -> int:
+    """Fill embeddings that are still null. Chunks are updated, not copied."""
+    conn = connect()
+    try:
+        conn.execute("SELECT pg_advisory_lock(%s)", (_LOCK_KEY,))
+        conn.commit()
+        try:
+            repository_id = None
+            if repo:
+                name, _url = parse_repo(repo)
+                found = get_repository(conn, name)
+                if found is None:
+                    known = ", ".join(item["name"] for item in list_repositories(conn)) or "(none)"
+                    raise ValueError(f"Repository {name} is not indexed. Indexed repositories: {known}")
+                repository_id = found["id"]
+            filled = backfill_missing(conn, repository_id)
+        finally:
+            conn.rollback()
+            conn.execute("SELECT pg_advisory_unlock(%s)", (_LOCK_KEY,))
+            conn.commit()
+    finally:
+        conn.close()
+    if filled:
+        print(f"Filled {filled} missing embeddings.")
+    else:
+        print("Every chunk already has both embeddings.")
+    return 0
+
+
 def ingest_repository(
     repo: str,
     branch: str | None,
@@ -121,6 +150,11 @@ def _ingest(
         and not force
         and (branch is None or branch == existing["branch"])
     ):
+        filled = backfill_missing(conn, existing["id"])
+        if filled:
+            print(f"Filled {filled} missing embeddings on the existing index.")
+            _note(progress, phase="done", done=1, total=1, chunks=filled, label=f"Filled {filled} embeddings")
+            return 0
         print(f"{name} is already indexed at {remote[:12]} ({existing['branch']}).")
         print("Pass --force to rebuild the index for this commit.")
         _note(progress, phase="done", done=1, total=1, chunks=0, label="Already indexed")
@@ -136,13 +170,19 @@ def _ingest(
         and checked_out == existing["branch"]
         and not force
     ):
+        filled = backfill_missing(conn, existing["id"])
+        if filled:
+            print(f"Filled {filled} missing embeddings on the existing index.")
+            _note(progress, phase="done", done=1, total=1, chunks=filled, label=f"Filled {filled} embeddings")
+            return 0
         print(f"{name} is already indexed at {sha[:12]} ({checked_out}).")
         _note(progress, phase="done", done=1, total=1, chunks=0, label="Already indexed")
         return 0
 
     repository_id = _ensure_repository(conn, name, url)
     known = _existing_documents(conn, repository_id)
-    embedder = Embedder()
+    text_model = text_embedder()
+    code_model = code_embedder()
     pending: list[_PendingFile] = []
     pending_chunks = 0
     kept: list[str] = []
@@ -172,7 +212,7 @@ def _ingest(
         pending_chunks += max(1, len(pending[-1].chunks))
         changed += 1
         if pending_chunks >= _EMBED_BATCH:
-            stored_chunks += _flush(conn, embedder, repository_id, pending)
+            stored_chunks += _flush(conn, text_model, code_model, repository_id, pending)
             pending = []
             pending_chunks = 0
             print(
@@ -182,7 +222,7 @@ def _ingest(
         _note_file(progress, done, total, stored_chunks)
 
     if pending:
-        stored_chunks += _flush(conn, embedder, repository_id, pending)
+        stored_chunks += _flush(conn, text_model, code_model, repository_id, pending)
         _note_file(progress, total, total, stored_chunks)
     _delete_missing(conn, repository_id, kept)
     with conn.cursor() as cur:
@@ -196,6 +236,9 @@ def _ingest(
         )
         cur.execute("ANALYZE chunks")
     rebuild_edges(conn, repository_id)
+    filled = backfill_missing(conn, repository_id)
+    if filled:
+        print(f"Filled {filled} missing embeddings on chunks that were already stored.")
     conn.commit()
     elapsed = time.perf_counter() - started
     print(
@@ -255,14 +298,84 @@ def _existing_documents(conn, repository_id: int) -> dict[str, str]:
         return {row[0]: row[1] for row in cur.fetchall()}
 
 
-def _flush(conn, embedder: Embedder, repository_id: int, pending: list[_PendingFile]) -> int:
+def backfill_missing(conn, repository_id: int | None) -> int:
+    """Write null embeddings in place. A second run finds nothing to update."""
+    rows = _missing_rows(conn, repository_id)
+    if not rows:
+        return 0
+    needs_text = any(row[5] for row in rows)
+    needs_code = any(row[6] for row in rows)
+    text_model = text_embedder() if needs_text else None
+    code_model = code_embedder() if needs_code else None
+    filled = 0
+    total = len(rows)
+    for start in range(0, total, _EMBED_BATCH):
+        batch = rows[start:start + _EMBED_BATCH]
+        texts = [
+            embed_text(path, language, symbol, content)
+            for _chunk_id, path, language, symbol, content, _needs_text, _needs_code in batch
+        ]
+        text_vectors = text_model.embed_documents(texts) if text_model is not None else None
+        code_vectors = code_model.embed_documents(texts) if code_model is not None else None
+        with conn.cursor() as cur:
+            for index, row in enumerate(batch):
+                chunk_id, _path, _language, _symbol, _content, missing_text, missing_code = row
+                if missing_text and text_vectors is not None:
+                    cur.execute(
+                        """
+                        UPDATE chunks
+                        SET embedding_text = %s::vector
+                        WHERE id = %s AND embedding_text IS NULL
+                        """,
+                        (_vector_literal(text_vectors[index]), chunk_id),
+                    )
+                    filled += cur.rowcount
+                if missing_code and code_vectors is not None:
+                    cur.execute(
+                        """
+                        UPDATE chunks
+                        SET embedding_code = %s::vector
+                        WHERE id = %s AND embedding_code IS NULL
+                        """,
+                        (_vector_literal(code_vectors[index]), chunk_id),
+                    )
+                    filled += cur.rowcount
+        conn.commit()
+        print(f"  filled embeddings for {min(start + len(batch), total)} of {total} chunks", flush=True)
+    return filled
+
+
+def _missing_rows(conn, repository_id: int | None) -> list[tuple]:
+    sql = """
+        SELECT id, path, language, symbol, content,
+               embedding_text IS NULL AS needs_text,
+               embedding_code IS NULL AS needs_code
+        FROM chunks
+        WHERE (embedding_text IS NULL OR embedding_code IS NULL)
+    """
+    params: tuple = ()
+    if repository_id is not None:
+        sql += " AND repository_id = %s"
+        params = (repository_id,)
+    sql += " ORDER BY id"
+    with conn.cursor() as cur:
+        cur.execute(sql, params)
+        return list(cur.fetchall())
+
+
+def _flush(
+    conn,
+    text_model: Embedder,
+    code_model: Embedder,
+    repository_id: int,
+    pending: list[_PendingFile],
+) -> int:
     texts: list[str] = []
-    owners: list[tuple[_PendingFile, Chunk]] = []
     for item in pending:
         for chunk in item.chunks:
-            owners.append((item, chunk))
             texts.append(embed_text(item.path, item.language, chunk.symbol, chunk.content))
-    vectors = embedder.embed_documents(texts) if texts else []
+    text_vectors = text_model.embed_documents(texts) if texts else []
+    code_vectors = code_model.embed_documents(texts) if texts else []
     stored = 0
     with conn.cursor() as cur:
         vector_index = 0
@@ -285,9 +398,9 @@ def _flush(conn, embedder: Embedder, repository_id: int, pending: list[_PendingF
                     """
                     INSERT INTO chunks (
                         repository_id, document_id, path, language, start_line, end_line,
-                        symbol, kind, content, search_text, embedding
+                        symbol, kind, content, search_text, embedding_text, embedding_code
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector, %s::vector)
                     """,
                     (
                         repository_id,
@@ -300,7 +413,8 @@ def _flush(conn, embedder: Embedder, repository_id: int, pending: list[_PendingF
                         chunk.kind,
                         chunk.content,
                         search_text(item.path, chunk.symbol, source_role(item.path, chunk.content), chunk.content),
-                        _vector_literal(vectors[vector_index]),
+                        _vector_literal(text_vectors[vector_index]),
+                        _vector_literal(code_vectors[vector_index]),
                     ),
                 )
                 vector_index += 1

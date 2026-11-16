@@ -53,6 +53,8 @@ class _App(BaseHTTPRequestHandler):
             self._json({
                 "repositories": [{"name": "hmcts/hwf-publicapp"}],
                 "queries": [body["question"]],
+                "index": body.get("index"),
+                "fusion": body.get("fusion"),
                 "truncated": False,
                 "passage_limit": body.get("k"),
                 "hits": [{
@@ -191,6 +193,38 @@ class McpTest(unittest.TestCase):
         self.assertEqual((method, path), ("POST", "/api/query"))
         self.assertEqual(body["answer"], False)
         self.assertEqual(body["repo"], "hmcts/hwf-publicapp")
+        self.assertNotIn("index", body)
+
+    def test_query_index_is_an_enum_and_is_sent_when_chosen(self) -> None:
+        listed = server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+        query = next(tool for tool in listed["result"]["tools"] if tool["name"] == "query")
+        self.assertEqual(query["inputSchema"]["properties"]["index"]["enum"], ["text", "code", "both"])
+        self.assertEqual(query["inputSchema"]["properties"]["fusion"]["enum"], ["rrf", "score"])
+        self.assertNotIn("index", query["inputSchema"]["required"])
+        _App.seen.clear()
+        reply = server.handle({
+            "jsonrpc": "2.0",
+            "id": 11,
+            "method": "tools/call",
+            "params": {
+                "name": "query",
+                "arguments": {"question": "where is the fee saved", "index": "both", "fusion": "score"},
+            },
+        })
+        self.assertNotIn("isError", reply["result"])
+        text = json.loads(reply["result"]["content"][0]["text"])
+        self.assertEqual(text["index"], "both")
+        self.assertEqual(text["fusion"], "score")
+        _method, _path, body = _App.seen[-1]
+        self.assertEqual(body["index"], "both")
+        self.assertEqual(body["fusion"], "score")
+        rejected = server.handle({
+            "jsonrpc": "2.0",
+            "id": 12,
+            "method": "tools/call",
+            "params": {"name": "query", "arguments": {"question": "where", "index": "graph"}},
+        })
+        self.assertTrue(rejected["result"]["isError"])
 
     def test_repositories_leave_out_the_ingest_log(self) -> None:
         reply = server.handle({

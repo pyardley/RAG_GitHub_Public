@@ -20,13 +20,14 @@ The first repository to index is [hmcts/hwf-publicapp](https://github.com/hmcts/
   - [Hosted model](#hosted-model)
 - [How the index is built](#how-the-index-is-built)
 - [Data](#data)
+- [Evaluate the indexes](#evaluate-the-indexes)
 - [Tests](#tests)
 
 ## What you need
 
 - Docker, with Compose v2 (`docker compose`)
 
-The app container already contains Git and the embedding model. Nothing else has to be installed on the machine.
+The app container already contains Git and both embedding models. Nothing else has to be installed on the machine.
 
 ## Start
 
@@ -37,7 +38,9 @@ docker compose build
 docker compose run --rm -T rag ingest https://github.com/hmcts/hwf-publicapp
 ```
 
-The first build downloads the embedding model (about 700 MB) and takes a few minutes. The first ingest clones the repository and embeds it on CPU. Later ingests of the same commit return immediately.
+The first build downloads two embedding models and takes a few minutes. `BAAI/bge-small-en-v1.5` is about 67 MB on disk. `jinaai/jina-embeddings-v2-base-code` is about 640 MB. Together that is about 700 MB of model files. The text model needs a few hundred megabytes of RAM once it is loaded. The code model is larger: with both models loaded, allow about 2 GB to 4 GB of RAM, and more while a big repository is being embedded. A query that stays on the text index does not load the code model. The ONNX runtime is started with its memory arena off, which is what keeps this inside a laptop-sized Docker machine. If the process is killed during ingest, give the container more memory and run `backfill` again. It continues from the chunks that are still missing.
+
+The first ingest clones the repository and embeds every chunk with both models on CPU. Later ingests of the same commit return immediately once both embeddings are stored. If the code embeddings are missing, that ingest fills them in place instead of copying the chunks.
 
 ## Web
 
@@ -69,7 +72,7 @@ Claude Code, including the Claude extension for VS Code, does not read `.cursor/
 claude mcp get code-rag
 ```
 
-The tools are `repositories`, `query`, `search`, `impact`, `default_branch`, `branches`, `ingest`, and `remove_index`. `branches` lists a GitHub repository's branches with the default first, so the model can choose one for `ingest`. `query` returns the passages and leaves the app's own written answer off, so the calling model reads the code. Set `answer` to true when you also want that reply. `impact` returns the definitions, the callers, and the diagram. `FactoryBot.create(:claim)` is a valid impact target. `remove_index` deletes one index only when `confirm` is true. Passage text is shortened in the tool result. The page still shows the full chunk.
+The tools are `repositories`, `query`, `search`, `impact`, `default_branch`, `branches`, `ingest`, and `remove_index`. `branches` lists a GitHub repository's branches with the default first, so the model can choose one for `ingest`. `query` returns the passages and leaves the app's own written answer off, so the calling model reads the code. Set `answer` to true when you also want that reply. `query` takes an optional `index` of `text`, `code`, or `both` (the default is `text`) and an optional `fusion` of `rrf` or `score`. `impact` returns the definitions, the callers, and the diagram. `FactoryBot.create(:claim)` is a valid impact target. `remove_index` deletes one index only when `confirm` is true. Passage text is shortened in the tool result. The page still shows the full chunk.
 
 On macOS or Linux the same commands work. `rag.ps1` and `rag.sh` are thin wrappers:
 
@@ -86,11 +89,13 @@ On macOS or Linux the same commands work. `rag.ps1` and `rag.sh` are thin wrappe
 ```powershell
 docker compose run --rm -T rag query "where is the application submitted"
 docker compose run --rm -T rag query "how are fees calculated" -k 12
+docker compose run --rm -T rag query "how are fees calculated" --index code
+docker compose run --rm -T rag query "how are fees calculated" --index both --fusion score
 docker compose run --rm -T rag impact "OnlineApplication"
 docker compose run --rm -T rag repos
 ```
 
-`query` retrieves the code passages most relevant to a question. A question that names a directory and a value, such as `look under /app for 4250 or min_threshold_base`, searches that directory for those values and leaves the rest of the repository out. `Ignore files in folders /features/support and /features/step_definitions` leaves those folders out, including a step definition or page object reached from a feature file. Quote the text to match it exactly: `look under /features for "with income '8000' and average"` finds that step and leaves other income files out. Inside the quotes, a regular expression is used as written. `look under /features for "with income '[0-9]*' and average"` matches any amount in that step. Use `[0-9]` for a digit. When the quoted text is not in the index, the result is empty. The page shows when this process started. When more matches exist than the Passages limit, the page says so. A question that asks to show or list features returns feature files only. When a question names a `.feature` file and asks how that step runs, retrieval follows it into its step definition and the page-object methods that fill fields and click buttons. `impact` looks up a class, method, or file and groups the result into definitions, references, and related code. References include specs and feature tests when those files mention the name.
+`query` retrieves the code passages most relevant to a question. `--index text` (the default) searches the general-English embeddings, which is the behaviour this app had with a single model. `--index code` searches the code-model embeddings. `--index both` merges those two ranked lists with reciprocal rank fusion. The page has the same selector. A question that names a directory and a value, such as `look under /app for 4250 or min_threshold_base`, searches that directory for those values and leaves the rest of the repository out. It does not use either vector index. `Ignore files in folders /features/support and /features/step_definitions` leaves those folders out, including a step definition or page object reached from a feature file. Quote the text to match it exactly: `look under /features for "with income '8000' and average"` finds that step and leaves other income files out. Inside the quotes, a regular expression is used as written. `look under /features for "with income '[0-9]*' and average"` matches any amount in that step. Use `[0-9]` for a digit. When the quoted text is not in the index, the result is empty. The page shows when this process started. When more matches exist than the Passages limit, the page says so. A question that asks to show or list features returns feature files only. When a question names a `.feature` file and asks how that step runs, retrieval follows it into its step definition and the page-object methods that fill fields and click buttons. `impact` looks up a class, method, or file and groups the result into definitions, references, and related code. References include specs and feature tests when those files mention the name.
 
 Search covers every indexed repository. Each repository is searched on its own, then the passages are sorted by how close they are to the question, so a weaker match sinks below a closer one. Pass `--repo hmcts/hwf-publicapp` when more than one is loaded and you want only one.
 
@@ -297,13 +302,37 @@ Each source file is split on declarations (`class`, `module`, `def`, Java method
 
 A page object, factory, spec, feature, or step definition is labelled with that role on the text that is embedded and on the keyword text. A question about a SitePrism page or a FactoryBot trait can then line up with that file. An index built before this split keeps the old chunks until you ingest that repository again with `--force`.
 
-Those chunks are embedded locally with `BAAI/bge-small-en-v1.5` (384 dimensions, so no model API is required) and stored in Postgres with [pgvector](https://github.com/pgvector/pgvector). This model is small enough to index a repository on a laptop-sized Docker virtual machine. Keyword search uses the Postgres `simple` dictionary, which does not stem tokens, after CamelCase and snake_case have been split. A question uses both searches together.
+Those chunks are embedded locally, twice, and stored in Postgres with [pgvector](https://github.com/pgvector/pgvector). No model API is required.
+
+- `embedding_text` is `BAAI/bge-small-en-v1.5`, 384 dimensions, with the HNSW index `chunks_embedding_text_idx`. The file is about 67 MB. This is the index a query uses unless you ask for another one. It is small enough to run on a laptop-sized Docker virtual machine.
+- `embedding_code` is `jinaai/jina-embeddings-v2-base-code`, 768 dimensions, with the HNSW index `chunks_embedding_code_idx`. FastEmbed loads it, so there is no second embedding library. The file is about 640 MB. FastEmbed describes it as a multilingual model covering English and about 30 programming languages, with an 8192-token input. Plan for about 2 GB to 4 GB of RAM while it is loaded next to the text model.
+
+Keyword search uses the Postgres `simple` dictionary, which does not stem tokens, after CamelCase and snake_case have been split. A question uses a vector index and the keyword search together.
+
+`--fusion score` is the default. It adds cosine similarity to `ts_rank_cd`, and a chunk missing from one list scores 0 on that side. That is the sum a single index used before, so `--index text` with no fusion flag keeps the previous order. Cosine similarity is usually much larger than `ts_rank_cd`, so the vector ranking leads and the keyword rank nudges it.
+
+`--fusion rrf` uses reciprocal rank fusion instead (k = 60, set with `RRF_K` or `--rrf-k`). A chunk scores `1 / (k + rank)` in each list, and those contributions are added. The lists then have an equal vote, which is what you want when an exact word should compete with a semantically close passage. On a trial question, "where is the local embedding model loaded", the raw-score sum put `app/rag/embedder.py` first. Reciprocal rank fusion put the README first, because the README repeats those words and the fusion treats that keyword rank as equal to the vector rank. The eval table prints both, so the two can be compared on your own questions.
+
+With `--index both`, the two vector lists are always merged with reciprocal rank fusion. `--fusion score` then adds the keyword score (`ts_rank_cd`) to that fused score. `--fusion rrf` puts the keyword list into the same fusion as the two vector lists, so the keyword list is not given the weight of both models combined.
+
+The vector scan ranks by exact cosine similarity. It turns the HNSW index scan off for that query, because the index can walk a cluster of short feature titles and miss a closer scenario. The HNSW indexes are still built, one per column.
 
 `impact` starts with an identifier search, then walks the calls stored for those passages. A direct call, a FactoryBot `build` or `create`, a SitePrism element used on its page, an `alias`, and a Cucumber step that matches a step definition are followed for a few hops. The path is shown on the passage. `send`, `public_send`, `define_method`, and `method_missing` are listed as unresolved and are not given a guessed target. Features, page objects, and controllers are listed before specs. A qualified name such as `ApplicationController#online_application` matches that method, not every file whose name is only the method's last word. A declaration the splitter misses can be absent. The matching source is what the command shows. Call edges are built from the chunks already stored, including an index built before this walk.
 
-To use the larger code model instead, set `EMBEDDING_MODEL=jinaai/jina-embeddings-v2-base-code` and `EMBEDDING_DIM=768`, then remove the database volume and ingest again. That model needs several extra gigabytes of memory during indexing.
-
 Vendor directories, lockfiles, `node_modules`, VCR cassettes, and secret-shaped files (`.env`, private keys, `credentials.yml.enc`) are not indexed. `.env.example` files are.
+
+### An index that already exists
+
+A volume created before the two columns existed has a single `embedding` column. On startup the app renames it. A 384-dimension column becomes `embedding_text`. A 768-dimension column, from a volume that was built with the code model alone, becomes `embedding_code`. It then adds the missing column and builds the HNSW index for each column. Running that migration again does not rename anything a second time.
+
+The renamed rows do not yet have the other embedding. Fill them without copying chunks:
+
+```powershell
+docker compose run --rm -T rag backfill
+docker compose run --rm -T rag backfill hmcts/hwf-publicapp
+```
+
+`backfill` updates the null column in place. A second run finds nothing to do. Ingesting a commit that is already stored does the same fill, and leaves the chunks where they are. `--force` still rebuilds the chunks, and writes both embeddings as it goes. Do not use `docker compose down -v` for this. That deletes the index.
 
 ## Data
 
@@ -311,11 +340,24 @@ Postgres listens on `localhost:5433` (user `rag`, password `rag`, database `rag`
 
 `docker compose down` stops the containers and keeps the index. `docker compose down -v` deletes it. Checkouts live in the `repos` volume, separate from the Postgres volume.
 
-The embedding model is fixed when the database is first created. Changing `EMBEDDING_MODEL` means removing the volume and ingesting again.
+Both models are fixed when the database is first created. Changing `EMBEDDING_MODEL` or `CODE_EMBEDDING_MODEL` means removing the volume and ingesting again. Adding the code column to an existing volume does not: use `backfill`, described above.
+
+## Evaluate the indexes
+
+`eval/questions.jsonl` holds a few example questions for an ingest of this repository. Each line names the file paths a good hit would land on. They are examples to replace with paths from your own ingest before you treat the numbers as a result. Chunk ids are accepted as well, but paths survive a rebuild and chunk ids do not.
+
+The script searches once per question, without the question-planning model, and prints recall@k and mean reciprocal rank for `text`, `code`, and `both`, each with `rrf` and `score`:
+
+```powershell
+python eval/run_eval.py
+python eval/run_eval.py --k 8 --repo pyardley/RAG_GitHub_Public --details
+```
+
+Run that from this directory, with Postgres listening on `localhost:5433`. Recall@k is the share of the expected paths (and chunk ids) that appear in the top k. Mean reciprocal rank uses the first hit that matches any expected path or chunk id.
 
 ## Tests
 
-The unit tests cover chunking and file selection. They do not need Docker. When the local index is running, one test also checks that a search for `limit` still returns a passage about a threshold, and skips that check when the index is stopped:
+The unit tests cover chunking, file selection, reciprocal rank fusion, the index and fusion options, and the schema migration. They do not need Docker. When the local index is running, one test also checks that a search for `limit` still returns a passage about a threshold, and skips that check when the index is stopped:
 
 ```powershell
 python -m unittest discover -s tests -v

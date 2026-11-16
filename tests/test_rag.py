@@ -934,7 +934,7 @@ class PlanTest(unittest.TestCase):
 
         seen = {}
 
-        def fake_search(_conn, _repos, query, _k, _meter, scopes, skipped):
+        def fake_search(_conn, _repos, query, _k, _meter, scopes, skipped, **_options):
             seen["query"] = query
             seen["scopes"] = scopes
             seen["skipped"] = skipped
@@ -978,7 +978,7 @@ class PlanTest(unittest.TestCase):
             1, 1, None, "scenario", "Ask a manager page", 0.69,
         )
 
-        def fake(_conn, repos, _question, _k, _embedding, _scopes, _excluded):
+        def fake(_conn, repos, _question, _k, _embedding, _scopes, _excluded, **_options):
             if repos == [1]:
                 return [public], False
             return [staff_far, staff_close], False
@@ -1490,6 +1490,11 @@ class WebTest(unittest.TestCase):
             self.assertIn('id="diagram-data"', page)
             self.assertIn("let output = document.querySelector('#results');", page)
             self.assertIn("Remove this index", page)
+            self.assertIn('id="search-index"', page)
+            self.assertIn('value="both"', page)
+            self.assertIn('id="fusion"', page)
+            self.assertIn('value="rrf"', page)
+            self.assertIn("Index chooses the text model, the code model, or both.", page)
             self.assertIn("This deletes that index and its checkout.", page)
             self.assertIn("remove-confirm", page)
             request = urllib.request.Request(
@@ -1616,7 +1621,7 @@ class WebTest(unittest.TestCase):
             "commit_sha": "b1d15f83c0a9",
         }
 
-        def fake_retrieve(_conn, _repository_ids, question, _k, meter=None):
+        def fake_retrieve(_conn, _repository_ids, question, _k, meter=None, **_options):
             if meter is not None:
                 meter.add_search(0.0, 0.01)
                 meter.finish_retrieval(1, embedded=False)
@@ -1807,6 +1812,371 @@ class RemoveIndexTest(unittest.TestCase):
         self.assertEqual(body["error"], "An ingest is already running")
 
 
+class DualIndexTest(unittest.TestCase):
+    def test_reciprocal_rank_fusion_uses_one_over_k_plus_rank(self):
+        from rag.fusion import combine_rankings, reciprocal_rank_fusion
+
+        single = reciprocal_rank_fusion([[10, 20, 30]], k=60)
+        self.assertEqual(
+            single,
+            [(10, 1 / 61), (20, 1 / 62), (30, 1 / 63)],
+        )
+        # A repeated id keeps its first rank and does not push the next id down.
+        self.assertEqual(
+            reciprocal_rank_fusion([[5, 5, 6]], k=60),
+            [(5, 1 / 61), (6, 1 / 62)],
+        )
+        both_lists = reciprocal_rank_fusion([[1, 2], [1, 3]], k=60)
+        self.assertEqual(both_lists[0][0], 1)
+        self.assertAlmostEqual(both_lists[0][1], 1 / 61 + 1 / 61)
+        self.assertEqual([item[0] for item in both_lists[1:]], [2, 3])
+        with self.assertRaises(ValueError):
+            reciprocal_rank_fusion([[1]], k=-1)
+
+        summed = combine_rankings(
+            index="text",
+            fusion="score",
+            text=[(1, 0.8), (2, 0.2)],
+            code=None,
+            lexical=[(2, 0.5), (3, 0.1)],
+            rrf_k=60,
+        )
+        self.assertEqual(summed, [(1, 0.8), (2, 0.7), (3, 0.1)])
+
+        keyword_in_the_same_fusion = combine_rankings(
+            index="text",
+            fusion="rrf",
+            text=[(1, 0.9), (2, 0.1)],
+            code=None,
+            lexical=[(2, 0.4)],
+            rrf_k=60,
+        )
+        self.assertEqual(keyword_in_the_same_fusion[0][0], 2)
+        self.assertAlmostEqual(keyword_in_the_same_fusion[0][1], 1 / 61 + 1 / 62)
+
+        merged = combine_rankings(
+            index="both",
+            fusion="rrf",
+            text=[(1, 0.4), (2, 0.3)],
+            code=[(2, 0.5), (3, 0.2)],
+            lexical=[(3, 0.9)],
+            rrf_k=60,
+        )
+        self.assertEqual([item[0] for item in merged], [2, 3, 1])
+        self.assertAlmostEqual(merged[0][1], 1 / 62 + 1 / 61)
+
+        raw_after_the_vector_merge = combine_rankings(
+            index="both",
+            fusion="score",
+            text=[(1, 0.4), (2, 0.3)],
+            code=[(2, 0.5), (3, 0.2)],
+            lexical=[(3, 0.5)],
+            rrf_k=60,
+        )
+        self.assertEqual(raw_after_the_vector_merge[0][0], 3)
+        self.assertGreater(raw_after_the_vector_merge[0][1], 0.5)
+
+    def test_the_default_index_is_text_and_only_that_model_is_loaded(self):
+        from rag.config import (
+            CODE_EMBEDDING_DIM,
+            CODE_EMBEDDING_MODEL,
+            DEFAULT_FUSION,
+            DEFAULT_INDEX,
+            resolve_fusion,
+            resolve_index,
+        )
+
+        self.assertEqual(DEFAULT_INDEX, "text")
+        self.assertEqual(DEFAULT_FUSION, "score")
+        self.assertEqual(resolve_index(None), "text")
+        self.assertEqual(resolve_index(" CODE "), "code")
+        self.assertEqual(resolve_fusion(None), "score")
+        with self.assertRaises(ValueError):
+            resolve_index("graph")
+        with self.assertRaises(ValueError):
+            resolve_fusion("blend")
+
+        constructed: list[tuple] = []
+        seen: dict = {}
+
+        class FakeEmbedder:
+            def __init__(self, model_name=None, dim=None):
+                constructed.append((model_name, dim))
+
+            def embed_query(self, _question):
+                return [0.0, 0.0, 0.0]
+
+        def fake_search(_conn, _repos, _question, _k, embeddings, _scopes, _excluded, **options):
+            seen["keys"] = set(embeddings)
+            seen["index"] = options["index"]
+            seen["fusion"] = options["fusion"]
+            return [], False
+
+        with (
+            patch("rag.embedder.Embedder", FakeEmbedder),
+            patch("rag.search._search_with_embedding", side_effect=fake_search),
+        ):
+            search(None, [1], "where is it saved", 4)
+            self.assertEqual(constructed, [(None, None)])
+            self.assertEqual(seen, {"keys": {"text"}, "index": "text", "fusion": "score"})
+            constructed.clear()
+            search(None, [1], "where is it saved", 4, index="both", fusion="score")
+        self.assertEqual(seen["index"], "both")
+        self.assertEqual(seen["fusion"], "score")
+        self.assertEqual(seen["keys"], {"text", "code"})
+        self.assertEqual(
+            constructed,
+            [(None, None), (CODE_EMBEDDING_MODEL, CODE_EMBEDDING_DIM)],
+        )
+
+    def test_query_flags_reach_retrieval(self):
+        seen: dict = {}
+
+        class _Connection:
+            def close(self):
+                return None
+
+        def fake_retrieve(_conn, _ids, question, k, meter=None, **options):
+            seen.update(question=question, k=k, **options)
+            return [], [question], False
+
+        with (
+            patch("rag.cli.connect", return_value=_Connection()),
+            patch("rag.cli.resolve_repositories", return_value=[
+                {"id": 1, "name": "hmcts/hwf-publicapp", "commit_sha": "b1d15f83c0a9", "branch": "master"},
+            ]),
+            patch("rag.cli.retrieve", side_effect=fake_retrieve),
+        ):
+            status = main([
+                "query", "where is the fee saved",
+                "--index", "code", "--fusion", "score", "--rrf-k", "10",
+                "--no-answer", "-k", "3",
+            ])
+        self.assertEqual(status, 0)
+        self.assertEqual(seen["question"], "where is the fee saved")
+        self.assertEqual(seen["k"], 3)
+        self.assertEqual(seen["index"], "code")
+        self.assertEqual(seen["fusion"], "score")
+        self.assertEqual(seen["rrf_k"], 10)
+
+    def test_the_web_api_rejects_an_unknown_index_before_opening_the_database(self):
+        with patch("rag.web.connect", side_effect=AssertionError("database")):
+            with self.assertRaises(ValueError):
+                run_query({"question": "where", "index": "graph"})
+        seen: dict = {}
+
+        def fake_retrieve(_conn, _ids, _question, _k, meter=None, **options):
+            seen.update(options)
+            return [], ["where"], False
+
+        class _Connection:
+            def close(self):
+                return None
+
+        with (
+            patch("rag.web.connect", return_value=_Connection()),
+            patch("rag.web.resolve_repositories", return_value=[
+                {"id": 1, "name": "hmcts/hwf-publicapp", "branch": "master", "commit_sha": "b1d15f83c0a9"},
+            ]),
+            patch("rag.web.retrieve", side_effect=fake_retrieve),
+        ):
+            status, body = run_query({
+                "question": "where is it",
+                "answer": False,
+                "index": "both",
+                "fusion": "score",
+            })
+        self.assertEqual(status, 200)
+        self.assertEqual(body["index"], "both")
+        self.assertEqual(body["fusion"], "score")
+        self.assertEqual(seen["index"], "both")
+        self.assertEqual(seen["fusion"], "score")
+
+    def test_migration_from_the_single_column_is_idempotent(self):
+        from rag.db import CODE_INDEX, LEGACY_INDEX, TEXT_INDEX, ChunkSchema, migration_statements, settings_plan
+        from rag.config import CODE_EMBEDDING_MODEL, TEXT_EMBEDDING_DIM, TEXT_EMBEDDING_MODEL
+
+        legacy = ChunkSchema(
+            columns={"id": "bigint", "embedding": f"vector({TEXT_EMBEDDING_DIM})"},
+            indexes=frozenset({LEGACY_INDEX, "chunks_tsv_idx"}),
+        )
+        first = migration_statements(legacy)
+        self.assertIn(
+            "ALTER TABLE chunks RENAME COLUMN embedding TO embedding_text",
+            first,
+        )
+        self.assertIn(f"ALTER INDEX {LEGACY_INDEX} RENAME TO {TEXT_INDEX}", first)
+        self.assertTrue(any("embedding_code vector(768)" in statement for statement in first))
+        migrated = _schema_after(legacy, first)
+        second = migration_statements(migrated)
+        third = migration_statements(migrated)
+        self.assertEqual(second, third)
+        self.assertFalse(any("RENAME" in statement for statement in second))
+        for statement in second:
+            self.assertIn("IF NOT EXISTS", statement)
+        self.assertIn(TEXT_INDEX, migrated.indexes)
+        self.assertIn(CODE_INDEX, migrated.indexes)
+        self.assertNotIn("embedding", migrated.columns)
+
+        code_only = ChunkSchema(
+            columns={"embedding": "vector(768)"},
+            indexes=frozenset({LEGACY_INDEX}),
+        )
+        renamed = migration_statements(code_only)
+        self.assertIn("ALTER TABLE chunks RENAME COLUMN embedding TO embedding_code", renamed)
+        self.assertIn(f"ALTER INDEX {LEGACY_INDEX} RENAME TO {CODE_INDEX}", renamed)
+        self.assertNotIn("RENAME COLUMN embedding TO embedding_text", " ".join(renamed))
+
+        with self.assertRaises(SystemExit):
+            migration_statements(ChunkSchema(columns={"embedding": "vector(1024)"}, indexes=frozenset()))
+        with self.assertRaises(SystemExit):
+            migration_statements(ChunkSchema(
+                columns={"embedding_text": "vector(768)", "embedding_code": "vector(768)"},
+                indexes=frozenset(),
+            ))
+
+        fresh = _schema_after(
+            ChunkSchema(
+                columns={"embedding_text": "vector(384)", "embedding_code": "vector(768)"},
+                indexes=frozenset({TEXT_INDEX, CODE_INDEX}),
+            ),
+            [],
+        )
+        repeat = migration_statements(fresh)
+        self.assertEqual(repeat, migration_statements(fresh))
+        self.assertFalse(any("RENAME" in statement for statement in repeat))
+
+        init_sql = (Path(__file__).resolve().parents[1] / "db" / "init.sql").read_text(encoding="utf-8")
+        self.assertIn("embedding_text vector(384)", init_sql)
+        self.assertIn("embedding_code vector(768)", init_sql)
+        self.assertIn(TEXT_INDEX, init_sql)
+        self.assertIn(CODE_INDEX, init_sql)
+        self.assertNotIn("embedding vector(", init_sql)
+
+        self.assertEqual(
+            settings_plan({}),
+            {
+                "embedding_text_model": TEXT_EMBEDDING_MODEL,
+                "embedding_text_dim": str(TEXT_EMBEDDING_DIM),
+                "embedding_code_model": CODE_EMBEDDING_MODEL,
+                "embedding_code_dim": "768",
+            },
+        )
+        self.assertEqual(
+            settings_plan({"embedding_model": TEXT_EMBEDDING_MODEL, "embedding_dim": "384"}),
+            settings_plan({}),
+        )
+        self.assertEqual(
+            settings_plan({"embedding_model": CODE_EMBEDDING_MODEL, "embedding_dim": "768"}),
+            settings_plan({}),
+        )
+        with self.assertRaises(SystemExit):
+            settings_plan({"embedding_model": "other/model", "embedding_dim": "32"})
+        stored = settings_plan({})
+        self.assertEqual(settings_plan(stored), stored)
+        with self.assertRaises(SystemExit):
+            settings_plan({**stored, "embedding_text_model": "other/model"})
+
+    def test_backfill_updates_a_missing_code_embedding_in_place(self):
+        from rag.ingest import backfill_missing
+
+        calls: list[tuple] = []
+        state = {"rows": [(
+            9,
+            "app/rag/search.py",
+            "python",
+            "search",
+            "def search():\n    return hits\n",
+            False,
+            True,
+        )]}
+
+        class Cursor:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def execute(self, sql, params=None):
+                compact = " ".join(sql.split())
+                calls.append((compact, params))
+                self._rowcount = 0
+                if compact.startswith("SELECT"):
+                    self._rows = state["rows"]
+                    state["rows"] = []
+                elif compact.startswith("UPDATE"):
+                    self._rowcount = 1
+                    self.assert_update(compact)
+
+            def fetchall(self):
+                return self._rows
+
+            @property
+            def rowcount(self):
+                return self._rowcount
+
+            @staticmethod
+            def assert_update(sql: str) -> None:
+                if "INSERT" in sql or "DELETE" in sql:
+                    raise AssertionError(sql)
+
+        class Connection:
+            def cursor(self):
+                return Cursor()
+
+            def commit(self):
+                self.committed = True
+
+        class FakeModel:
+            def __init__(self, dim):
+                self.dim = dim
+
+            def embed_documents(self, texts):
+                self.texts = texts
+                return [[0.25] * self.dim for _text in texts]
+
+        model = FakeModel(768)
+        with (
+            patch("rag.ingest.text_embedder", side_effect=AssertionError("text model")),
+            patch("rag.ingest.code_embedder", return_value=model),
+        ):
+            filled = backfill_missing(Connection(), 3)
+            again = backfill_missing(Connection(), 3)
+        self.assertEqual(filled, 1)
+        self.assertEqual(again, 0)
+        updates = [call for call in calls if call[0].startswith("UPDATE")]
+        self.assertEqual(len(updates), 1)
+        self.assertIn("embedding_code IS NULL", updates[0][0])
+        self.assertNotIn("INSERT INTO chunks", " ".join(call[0] for call in calls))
+        self.assertNotIn("DELETE FROM chunks", " ".join(call[0] for call in calls))
+        self.assertIn("def search", model.texts[0])
+        self.assertEqual(updates[0][1][1], 9)
+
+
+def _schema_after(schema, statements):
+    from rag.db import CODE_INDEX, TEXT_INDEX, ChunkSchema
+
+    columns = dict(schema.columns)
+    indexes = set(schema.indexes)
+    for statement in statements:
+        parts = statement.split()
+        if statement.startswith("ALTER TABLE chunks RENAME COLUMN"):
+            columns[parts[7]] = columns.pop(parts[5])
+        elif statement.startswith("ALTER INDEX") and "RENAME TO" in statement:
+            indexes.discard(parts[2])
+            indexes.add(parts[5])
+        elif "ADD COLUMN IF NOT EXISTS embedding_text" in statement:
+            columns.setdefault("embedding_text", "vector(384)")
+        elif "ADD COLUMN IF NOT EXISTS embedding_code" in statement:
+            columns.setdefault("embedding_code", "vector(768)")
+        elif statement.startswith("CREATE INDEX") and TEXT_INDEX in statement:
+            indexes.add(TEXT_INDEX)
+        elif statement.startswith("CREATE INDEX") and CODE_INDEX in statement:
+            indexes.add(CODE_INDEX)
+    return ChunkSchema(columns, frozenset(indexes))
+
+
 class CliTest(unittest.TestCase):
     def test_remove_help_does_not_need_a_database(self):
         with self.assertRaises(SystemExit) as caught:
@@ -1814,9 +2184,23 @@ class CliTest(unittest.TestCase):
         self.assertEqual(caught.exception.code, 0)
 
     def test_help_does_not_need_a_database(self):
+        from io import StringIO
+
         with self.assertRaises(SystemExit) as caught:
-            main(["--help"])
+            with patch("sys.stdout", StringIO()) as output:
+                main(["--help"])
         self.assertEqual(caught.exception.code, 0)
+        self.assertIn("backfill", output.getvalue())
+        query_help = StringIO()
+        with self.assertRaises(SystemExit) as caught:
+            with patch("sys.stdout", query_help):
+                main(["query", "--help"])
+        self.assertEqual(caught.exception.code, 0)
+        text = query_help.getvalue()
+        self.assertIn("--index", text)
+        self.assertIn("--fusion", text)
+        self.assertIn("score", text)
+        self.assertIn("rrf", text)
 
 
 if __name__ == "__main__":

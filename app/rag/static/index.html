@@ -88,6 +88,7 @@
     .modes { display: flex; gap: 0.4rem; margin-top: 1rem; }
     .modes button[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
     .row { display: flex; gap: 0.75rem; align-items: end; flex-wrap: wrap; margin-top: 0.75rem; }
+    #index-wrap, #fusion-wrap { min-width: 9rem; }
     .check { display: flex; align-items: center; gap: 0.4rem; }
     .index-form { display: grid; gap: 0.75rem; }
     .index-form[hidden] { display: none; }
@@ -257,8 +258,21 @@
       <label id="prompt-label"><span id="prompt-caption">Question</span>
         <textarea id="prompt" placeholder="Where is the online application stored?"></textarea>
       </label>
-      <p class="hint" id="prompt-hint">Ask in your own words, or quote text to match it exactly. Inside quotes, [0-9]* matches any amount. under /features limits the directory. Ignore /features/support leaves that folder out.</p>
+      <p class="hint" id="prompt-hint">Ask in your own words, or quote text to match it exactly. Inside quotes, [0-9]* matches any amount. under /features limits the directory. Ignore /features/support leaves that folder out. Index chooses the text model, the code model, or both.</p>
       <div class="row">
+        <label id="index-wrap">Index
+          <select id="search-index" aria-label="Vector index">
+            <option value="text" selected>Text</option>
+            <option value="code">Code</option>
+            <option value="both">Both</option>
+          </select>
+        </label>
+        <label id="fusion-wrap">Keyword fusion
+          <select id="fusion" aria-label="Keyword fusion">
+            <option value="score" selected>Raw scores</option>
+            <option value="rrf">Reciprocal rank</option>
+          </select>
+        </label>
         <label id="k-wrap">Passages
           <input id="k" type="number" min="1" max="30" value="8">
         </label>
@@ -331,6 +345,9 @@
       prompt.style.minHeight = next === "query" ? "7rem" : "3.2rem";
       document.querySelector("#go").textContent = spec.button;
       document.querySelector("#k-wrap").hidden = !spec.k;
+      const retrieval = next === "query" || next === "search";
+      document.querySelector("#index-wrap").hidden = !retrieval;
+      document.querySelector("#fusion-wrap").hidden = !retrieval;
       document.querySelector("#prompt-hint").hidden = next !== "query";
       document.querySelector("#answer-wrap").hidden = !spec.answer;
       document.querySelectorAll(".modes button").forEach((button) => {
@@ -685,6 +702,8 @@
       else {
         payload.question = prompt.value;
         payload.k = Number(document.querySelector("#k").value);
+        payload.index = document.querySelector("#search-index").value;
+        payload.fusion = document.querySelector("#fusion").value;
       }
       if (spec.answer) payload.answer = document.querySelector("#answer").checked;
       try {
@@ -725,6 +744,13 @@
         scope.className = "scope";
         scope.textContent = body.repositories.map((repo) => `${repo.name} @ ${repo.commit_sha} (${repo.branch})`).join(", ");
         output.append(scope);
+      }
+      if (body.index) {
+        const chosen = document.createElement("p");
+        chosen.className = "scope";
+        const fusion = body.fusion === "score" ? "raw scores" : "reciprocal rank fusion";
+        chosen.textContent = `Index: ${body.index}. Keyword fusion: ${fusion}.`;
+        output.append(chosen);
       }
       if (body.answer_error) {
         const note = document.createElement("p");

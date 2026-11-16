@@ -43,6 +43,23 @@ _TOOLS = [
                 "repo": {"type": "string", "description": "owner/name. Omit to search every indexed repository."},
                 "k": {"type": "integer", "minimum": 1, "maximum": 30, "description": "How many passages to return. Defaults to 8."},
                 "answer": {"type": "boolean", "description": "When true, the app's own model also writes a reply."},
+                "index": {
+                    "type": "string",
+                    "enum": ["text", "code", "both"],
+                    "description": (
+                        "Vector index. text is the default and keeps the general-English model. "
+                        "code uses the code model. both merges the two rankings with reciprocal rank fusion."
+                    ),
+                },
+                "fusion": {
+                    "type": "string",
+                    "enum": ["rrf", "score"],
+                    "description": (
+                        "How keyword ranks join the vector ranking. "
+                        "score adds the raw cosine similarity to the keyword rank and is the default. "
+                        "rrf is reciprocal rank fusion, which gives the keyword list an equal vote."
+                    ),
+                },
             },
             "required": ["question"],
             "additionalProperties": False,
@@ -222,6 +239,8 @@ def _tool(name: object, arguments: dict) -> dict:
             arguments.get("repo"),
             _count(arguments.get("k", 8)),
             bool(arguments.get("answer", False)),
+            _choice(arguments.get("index"), ("text", "code", "both"), "Index"),
+            _choice(arguments.get("fusion"), ("rrf", "score"), "Fusion"),
         )
     if name == "search":
         return api.search(arguments.get("question", ""), arguments.get("repo"), _count(arguments.get("k", 8)))
@@ -240,6 +259,14 @@ def _tool(name: object, arguments: dict) -> dict:
 
 def _count(value: object) -> int:
     return 8 if value is None else value  # type: ignore[return-value]
+
+
+def _choice(value: object, allowed: tuple[str, ...], label: str) -> str | None:
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str) or value not in allowed:
+        raise api.RagError(f"{label} must be one of: {', '.join(allowed)}")
+    return value
 
 
 def _tool_result(text: str, *, error: bool = False) -> dict:

@@ -1,14 +1,29 @@
-"""Local embedding model. Loaded on first use so `repos` stays quick."""
+"""Local embedding models. Each model is loaded on first use so `repos` stays quick."""
 
 from __future__ import annotations
 
-from rag.config import EMBEDDING_DIM, EMBEDDING_MODEL, FASTEMBED_CACHE_PATH
+from rag.config import (
+    CODE_EMBEDDING_DIM,
+    CODE_EMBEDDING_MODEL,
+    FASTEMBED_CACHE_PATH,
+    TEXT_EMBEDDING_DIM,
+    TEXT_EMBEDDING_MODEL,
+)
 
 
 class Embedder:
-    _shared = None
+    """One FastEmbed model, shared across calls that name the same model."""
 
-    def __init__(self) -> None:
+    _shared: dict[str, object] = {}
+
+    def __init__(self, model_name: str | None = None, dim: int | None = None) -> None:
+        if model_name is None and dim is None:
+            model_name = TEXT_EMBEDDING_MODEL
+            dim = TEXT_EMBEDDING_DIM
+        elif model_name is None or dim is None:
+            raise ValueError("Pass the embedding model and its dimension together")
+        self.model_name = model_name
+        self.dim = dim
         self._model = None
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
@@ -34,24 +49,34 @@ class Embedder:
         return [vector.tolist() for vector in produced]
 
     def _load(self):
-        if Embedder._shared is None:
+        cached = Embedder._shared.get(self.model_name)
+        if cached is None:
             from fastembed import TextEmbedding
 
-            print(f"Loading embedding model {EMBEDDING_MODEL}", flush=True)
-            Embedder._shared = TextEmbedding(
-                model_name=EMBEDDING_MODEL,
+            print(f"Loading embedding model {self.model_name}", flush=True)
+            cached = TextEmbedding(
+                model_name=self.model_name,
                 cache_dir=FASTEMBED_CACHE_PATH,
                 threads=4,
                 enable_cpu_mem_arena=False,
             )
-        return Embedder._shared
+            Embedder._shared[self.model_name] = cached
+        return cached
 
-    @staticmethod
-    def _check_dim(vector: list[float]) -> None:
-        if len(vector) != EMBEDDING_DIM:
+    def _check_dim(self, vector: list[float]) -> None:
+        if len(vector) != self.dim:
             raise SystemExit(
-                f"Embedding model {EMBEDDING_MODEL} produced {len(vector)} dimensions, "
-                f"but this database expects {EMBEDDING_DIM}. "
-                "Keep EMBEDDING_MODEL and EMBEDDING_DIM together, and re-ingest into a fresh volume "
-                "if you change them (docker compose down -v)."
+                f"Embedding model {self.model_name} produced {len(vector)} dimensions, "
+                f"but this database expects {self.dim}. "
+                "Keep the model and its dimension together. "
+                "A change of model means removing the volume and ingesting again "
+                "(docker compose down -v)."
             )
+
+
+def text_embedder() -> Embedder:
+    return Embedder(TEXT_EMBEDDING_MODEL, TEXT_EMBEDDING_DIM)
+
+
+def code_embedder() -> Embedder:
+    return Embedder(CODE_EMBEDDING_MODEL, CODE_EMBEDDING_DIM)

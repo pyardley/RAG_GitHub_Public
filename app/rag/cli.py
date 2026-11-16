@@ -7,7 +7,7 @@ import sys
 
 from rag.answer import AnswerError, active_model, answer, configuration_hint, language_model_configured
 from rag.db import connect, list_repositories, resolve_repositories
-from rag.ingest import delete_repository, ingest_repository
+from rag.ingest import backfill_repository, delete_repository, ingest_repository
 from rag.log import configure_logging, logger
 from rag.search import Hit, impact, retrieve
 from rag.usage import Meter
@@ -40,6 +40,22 @@ def main(argv: list[str] | None = None) -> int:
         help="Print matching code only, even when a language model is configured",
     )
     query_parser.add_argument("--model", help="Language model for this question. Overrides the configured model")
+    query_parser.add_argument(
+        "--index",
+        choices=("text", "code", "both"),
+        help="Vector index. text is the default. both merges the two rankings with reciprocal rank fusion",
+    )
+    query_parser.add_argument(
+        "--fusion",
+        choices=("rrf", "score"),
+        help="How keyword ranks join the vector ranking. score (the default) adds the raw numbers. rrf uses reciprocal rank fusion",
+    )
+    query_parser.add_argument(
+        "--rrf-k",
+        type=int,
+        default=None,
+        help="Constant in reciprocal rank fusion. Defaults to 60",
+    )
 
     impact_parser = sub.add_parser(
         "impact",
@@ -51,6 +67,12 @@ def main(argv: list[str] | None = None) -> int:
     impact_parser.add_argument("--model", help="Language model for this question. Overrides the configured model")
 
     sub.add_parser("repos", help="List indexed repositories")
+
+    backfill_parser = sub.add_parser(
+        "backfill",
+        help="Fill missing embeddings without copying chunks",
+    )
+    backfill_parser.add_argument("repo", nargs="?", help="Limit the fill to owner/name")
 
     remove_parser = sub.add_parser("remove", help="Delete one repository index")
     remove_parser.add_argument("repo", help="owner/name or GitHub URL")
@@ -66,13 +88,18 @@ def main(argv: list[str] | None = None) -> int:
             return ingest_repository(args.repo, args.branch, args.force)
         if args.command == "repos":
             return _repos()
+        if args.command == "backfill":
+            return backfill_repository(args.repo)
         if args.command == "remove":
             return _remove(args.repo)
         if args.command == "serve":
             serve(args.host, args.port)
             return 0
         if args.command == "query":
-            return _query(args.question, args.repo, args.k, args.no_answer, args.model)
+            return _query(
+                args.question, args.repo, args.k, args.no_answer, args.model,
+                args.index, args.fusion, args.rrf_k,
+            )
         if args.command == "impact":
             return _impact(args.target, args.repo, args.no_answer, args.model)
     except (ValueError, RuntimeError) as exc:
@@ -111,13 +138,28 @@ def _repos() -> int:
     return 0
 
 
-def _query(question: str, repo: str | None, k: int, no_answer: bool, model: str | None) -> int:
+def _query(
+    question: str,
+    repo: str | None,
+    k: int,
+    no_answer: bool,
+    model: str | None,
+    index: str | None,
+    fusion: str | None,
+    rrf_k: int | None,
+) -> int:
+    from rag.config import resolve_fusion, resolve_index
+
     meter = Meter()
     conn = connect()
     try:
         repositories = resolve_repositories(conn, repo)
         _print_scope(repositories)
-        hits, queries, truncated = retrieve(conn, [item["id"] for item in repositories], question, k, meter)
+        print(f"Index {resolve_index(index)}. Keyword fusion {resolve_fusion(fusion)}.")
+        hits, queries, truncated = retrieve(
+            conn, [item["id"] for item in repositories], question, k, meter,
+            index=index, fusion=fusion, rrf_k=rrf_k,
+        )
     finally:
         conn.close()
     if len(queries) > 1:
