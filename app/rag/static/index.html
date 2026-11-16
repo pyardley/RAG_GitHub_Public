@@ -185,6 +185,10 @@
     .diagram-node.group rect { fill: var(--bg); stroke: var(--muted); }
     .diagram-node.group text:last-of-type { font-weight: 650; }
     .diagram-all { margin-bottom: 0.6rem; padding: 0.3rem 0.7rem; font-size: 0.85rem; }
+    .contents ul { margin: 0.2rem 0 0; padding-left: 1.2rem; }
+    .contents li.nested { margin-left: 1rem; }
+    .saved-banner { margin-bottom: 0.4rem; }
+    .saved-banner h1 { margin: 0 0 0.4rem; }
     .diagram-node:focus { outline: none; }
     .diagram-node:focus rect { stroke: var(--ink); stroke-width: 2; }
   </style>
@@ -287,6 +291,7 @@
     const prompt = document.querySelector("#prompt");
     const status = document.querySelector("#status");
     const results = document.querySelector("#results");
+    let output = results;
 
     document.querySelectorAll(".modes button").forEach((button) => {
       button.addEventListener("click", () => setMode(button.dataset.mode));
@@ -704,29 +709,40 @@
 
     function render(body, requested) {
       results.replaceChildren();
+      const save = document.createElement("button");
+      save.type = "button";
+      save.className = "secondary";
+      save.textContent = "Save as HTML";
+      save.addEventListener("click", () => downloadResult(body, requested, prompt.value));
+      results.append(save);
+      output = results;
+      fillResult(body, requested);
+    }
+
+    function fillResult(body, requested) {
       if (body.repositories) {
         const scope = document.createElement("p");
         scope.className = "scope";
         scope.textContent = body.repositories.map((repo) => `${repo.name} @ ${repo.commit_sha} (${repo.branch})`).join(", ");
-        results.append(scope);
+        output.append(scope);
       }
       if (body.answer_error) {
         const note = document.createElement("p");
         note.className = "answer";
         note.textContent = body.answer_error;
-        results.append(note);
+        output.append(note);
       } else if (body.answer) {
         const answer = document.createElement("div");
         answer.className = "answer";
         answer.append(renderMarkdown(body.answer));
-        results.append(answer);
+        output.append(answer);
       }
       if (requested === "impact") {
         if (body.truncated) {
           const note = document.createElement("p");
           note.className = "scope";
           note.textContent = "This name appears in more chunks than are shown here.";
-          results.append(note);
+          output.append(note);
         }
         renderDiagram(body.diagram);
         renderGroup("Definitions", body.definitions, body.definition_count);
@@ -736,7 +752,7 @@
           const note = document.createElement("p");
           note.className = "scope";
           note.textContent = callersLeftOut;
-          results.append(note);
+          output.append(note);
         }
         if ((body.gaps || []).length) renderGroup("Unresolved", body.gaps, body.gaps.length);
         renderGroup("Related", body.related, (body.related || []).length);
@@ -746,28 +762,194 @@
         const searched = document.createElement("p");
         searched.className = "scope";
         searched.textContent = `Searched: ${body.queries.join(" · ")}`;
-        results.append(searched);
+        output.append(searched);
       }
       if (body.truncated) {
         const limited = document.createElement("p");
         limited.className = "scope";
         limited.textContent = `More matches were found than the Passages limit of ${body.passage_limit}.`;
-        results.append(limited);
+        output.append(limited);
       }
       renderMatches(body.matches);
       if (!body.hits || !body.hits.length) {
         const empty = document.createElement("p");
         empty.className = "empty";
         empty.textContent = "No matching code.";
-        results.append(empty);
+        output.append(empty);
       } else {
         const group = document.createElement("div");
         group.className = "group";
-        for (const hit of body.hits) group.append(hitArticle(hit, mode === "search"));
-        results.append(group);
+        for (const hit of body.hits) group.append(hitArticle(hit, requested === "search"));
+        output.append(group);
       }
       renderUsage(body.usage);
     }
+
+    // A result is saved as one HTML file. Markdown cannot open and close the
+    // grouped boxes in the diagram, and this file can. The page builds it and
+    // the browser downloads it. Nothing is stored on the server.
+    function downloadResult(body, requested, asked) {
+      const saved = { mode: requested, asked: asked.trim(), body };
+      const host = document.createElement("div");
+      host.id = "results";
+      const previous = output;
+      output = host;
+      try {
+        fillResult(body, requested);
+      } finally {
+        output = previous;
+      }
+      savedHeadings(host);
+      host.prepend(contentsNav(host));
+      host.prepend(savedBanner(saved));
+      downloadText(resultFileName(saved), savedPage(saved, host), "text/html");
+    }
+
+    function resultFileName(saved) {
+      const day = new Date().toISOString().slice(0, 10);
+      const words = saved.asked.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/g, "");
+      return `code-rag-${saved.mode}-${day}${words ? `-${words}` : ""}.html`;
+    }
+
+    function downloadText(name, text, type) {
+      const blob = new Blob([text], { type: `${type};charset=utf-8` });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = name;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    function savedBanner(saved) {
+      const titles = { impact: "Impact", search: "Search", query: "Query" };
+      const labels = { impact: "Target", search: "Search", query: "Question" };
+      const box = document.createElement("header");
+      box.className = "saved-banner";
+      const heading = document.createElement("h1");
+      heading.textContent = titles[saved.mode] || "Query";
+      box.append(heading);
+      if (saved.asked) {
+        const line = document.createElement("p");
+        const strong = document.createElement("strong");
+        strong.textContent = `${labels[saved.mode] || "Question"}: `;
+        line.append(strong, saved.asked);
+        box.append(line);
+      }
+      return box;
+    }
+
+    function savedHeadings(root) {
+      const answer = root.querySelector(".answer");
+      if (answer) {
+        const heading = document.createElement("h2");
+        heading.textContent = "Answer";
+        answer.before(heading);
+      }
+      for (const group of root.querySelectorAll(".group")) {
+        if (!group.querySelector("h2") && group.querySelector("article")) {
+          const heading = document.createElement("h2");
+          heading.textContent = "Passages";
+          group.prepend(heading);
+        }
+      }
+    }
+
+    function contentsNav(root) {
+      const used = new Map();
+      const nav = document.createElement("nav");
+      nav.className = "contents";
+      const heading = document.createElement("h2");
+      heading.id = markdownSlug("Contents", used);
+      heading.textContent = "Contents";
+      const list = document.createElement("ul");
+      for (const item of root.querySelectorAll("h2, h3, article")) {
+        let label;
+        if (item.tagName === "ARTICLE") {
+          const symbol = item.querySelector(".symbol");
+          const path = item.querySelector(".path");
+          label = (symbol && symbol.textContent) || (path && path.textContent) || "Passage";
+        } else {
+          label = item.textContent;
+        }
+        const id = markdownSlug(label, used);
+        item.id = id;
+        const entry = document.createElement("li");
+        if (item.tagName !== "H2") entry.className = "nested";
+        const link = document.createElement("a");
+        link.href = `#${id}`;
+        link.textContent = label;
+        entry.append(link);
+        list.append(entry);
+      }
+      nav.append(heading, list);
+      return nav;
+    }
+
+    function savedPage(saved, host) {
+      const titles = { impact: "Impact", search: "Search", query: "Query" };
+      const title = `${titles[saved.mode] || "Query"}${saved.asked ? `: ${saved.asked}` : ""}`;
+      const style = document.querySelector("style").textContent.replace(/<\/style/gi, "<\\/style");
+      const diagram = saved.body.diagram;
+      const hasDiagram = Boolean(diagram && diagram.edges && diagram.edges.length);
+      const endScript = "<" + "/script>";
+      const data = hasDiagram
+        ? `<script type="application/json" id="diagram-data">${JSON.stringify(diagram).replace(/</g, "\\u003c")}${endScript}
+<script>
+${diagramScript().split(endScript).join("<\\" + "/script>")}
+${endScript}`
+        : "";
+      return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeText(title)}</title>
+<style>${style}</style>
+</head>
+<body>
+<main>
+${host.outerHTML}
+</main>
+${data}
+</body>
+</html>
+`;
+    }
+
+    function diagramScript() {
+      const source = [renderDiagram, diagramGroups, diagramView, drawDiagram, diagramNode, wrapLabel, openPassage]
+        .map((fn) => fn.toString())
+        .join("\n\n");
+      return [
+        "let output = document.querySelector('#results');",
+        `const DIAGRAM_GROUP_FROM = ${DIAGRAM_GROUP_FROM};`,
+        `const DIAGRAM_GROUP_SIZE = ${DIAGRAM_GROUP_SIZE};`,
+        source,
+        "const stored = document.getElementById('diagram-data');",
+        "if (stored) renderDiagram(JSON.parse(stored.textContent));"
+      ].join("\n\n");
+    }
+
+    function escapeText(text) {
+      return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
+
+    function markdownSlug(text, used) {
+      let slug = text.trim().toLowerCase()
+        .replace(/[^\p{L}\p{N}\s-]/gu, "")
+        .trim()
+        .replace(/\s+/g, "-")
+        .replace(/-+/g, "-");
+      if (!slug) slug = "section";
+      const count = used.get(slug) || 0;
+      used.set(slug, count + 1);
+      return count ? `${slug}-${count}` : slug;
+    }
+
 
     function renderMatches(matches) {
       if (!matches || !matches.length) return;
@@ -782,7 +964,7 @@
         list.append(item);
       }
       box.append(heading, list);
-      results.append(box);
+      output.append(box);
     }
 
     function renderUsage(usage) {
@@ -805,7 +987,7 @@
         list.append(item);
       }
       box.append(heading, total, list);
-      results.append(box);
+      output.append(box);
     }
 
     // The written answer is Markdown. It is built as elements and text nodes,
@@ -961,6 +1143,7 @@
       const section = document.createElement("section");
       section.className = "group";
       const heading = document.createElement("h2");
+      heading.id = "relationships";
       heading.textContent = "Relationships";
       const caption = document.createElement("p");
       caption.className = "hint";
@@ -1001,7 +1184,15 @@
         section.append(all);
       }
       section.append(frame);
-      results.append(section);
+      const existing = output.querySelector(".diagram-frame");
+      const previous = existing && existing.closest("section");
+      if (previous) {
+        const oldHeading = previous.querySelector("h2");
+        if (oldHeading && oldHeading.id) heading.id = oldHeading.id;
+        previous.replaceWith(section);
+      } else {
+        output.append(section);
+      }
     }
 
     // A large diagram shows one box for a file's callers until it is opened.
@@ -1238,7 +1429,7 @@
     }
 
     function openPassage(label) {
-      for (const article of results.querySelectorAll("article")) {
+      for (const article of output.querySelectorAll("article")) {
         const symbol = article.querySelector(".symbol");
         if (symbol && symbol.textContent === label) {
           article.scrollIntoView({ block: "nearest" });
@@ -1274,7 +1465,7 @@
       } else {
         for (const hit of hits) group.append(hitArticle(hit, false));
       }
-      results.append(group);
+      output.append(group);
     }
 
     function hitArticle(hit, showScore) {

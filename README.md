@@ -45,7 +45,7 @@ The first build downloads the embedding model (about 700 MB) and takes a few min
 docker compose up -d
 ```
 
-Open http://localhost:8080. Switch between Query, Impact, and Search, choose an indexed repository, and run it. Each passage links to those lines in the indexed commit on GitHub. Index another GitHub repository from the same page. A first index takes several minutes and the page shows its progress.
+Open http://localhost:8080. Switch between Query, Impact, and Search, choose an indexed repository, and run it. Each passage links to those lines in the indexed commit on GitHub. **Save as HTML** downloads that result as one file. It starts with a table of contents, then the question or target, the written answer, and each passage with its file, lines, and code. An impact result includes the same relationship diagram as the page, so a file's scenarios stay in one box until you choose it. A dashed arrow is a possible call. The file stays on your machine. The app does not keep a copy. Index another GitHub repository from the same page. A first index takes several minutes and the page shows its progress.
 
 When the page opens, it asks GitHub which commit each indexed branch is at. A repository whose branch has moved on is marked "branch has newer commits" in the list. Choose it to see both commits, and use **Update the index** to index the branch again. The app keeps GitHub's answer for ten minutes, and a branch that cannot be read is left unmarked.
 
