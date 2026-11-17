@@ -295,8 +295,7 @@ def search(
     chosen_k = resolve_rrf_k(rrf_k)
     embed_started = time.perf_counter()
     embeddings: dict[str, str] = {}
-    # The text model stays Embedder() so a query that does not ask for code
-    # never loads the larger model.
+    # Load only the indexes the query asks for. The default is code.
     if chosen_index in {"text", "both"}:
         embeddings["text"] = _vector_literal(Embedder().embed_query(question))
     if chosen_index in {"code", "both"}:

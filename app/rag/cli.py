@@ -43,12 +43,12 @@ def main(argv: list[str] | None = None) -> int:
     query_parser.add_argument(
         "--index",
         choices=("text", "code", "both"),
-        help="Vector index. text is the default. both merges the two rankings with reciprocal rank fusion",
+        help="Vector index. code is the default. both merges the two rankings with reciprocal rank fusion",
     )
     query_parser.add_argument(
         "--fusion",
         choices=("rrf", "score"),
-        help="How keyword ranks join the vector ranking. score (the default) adds the raw numbers. rrf uses reciprocal rank fusion",
+        help="How keyword ranks join the vector ranking. rrf (the default) uses reciprocal rank fusion. score adds the raw numbers; prefer score with --index both",
     )
     query_parser.add_argument(
         "--rrf-k",

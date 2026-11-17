@@ -1622,9 +1622,11 @@ class WebTest(unittest.TestCase):
             self.assertIn("let output = document.querySelector('#results');", page)
             self.assertIn("Remove this index", page)
             self.assertIn('id="search-index"', page)
+            self.assertIn('value="code" selected', page)
             self.assertIn('value="both"', page)
             self.assertIn('id="fusion"', page)
-            self.assertIn('value="rrf"', page)
+            self.assertIn('value="rrf" selected', page)
+            self.assertIn("pairFusionWithIndex", page)
             self.assertIn("Index chooses the text model, the code model, or both.", page)
             self.assertIn("This deletes that index and its checkout.", page)
             self.assertIn("remove-confirm", page)
@@ -2049,7 +2051,7 @@ class DualIndexTest(unittest.TestCase):
         self.assertEqual(raw_after_the_vector_merge[0][0], 3)
         self.assertGreater(raw_after_the_vector_merge[0][1], 0.5)
 
-    def test_the_default_index_is_text_and_only_that_model_is_loaded(self):
+    def test_the_default_index_is_code_and_only_that_model_is_loaded(self):
         from rag.config import (
             CODE_EMBEDDING_DIM,
             CODE_EMBEDDING_MODEL,
@@ -2059,11 +2061,11 @@ class DualIndexTest(unittest.TestCase):
             resolve_index,
         )
 
-        self.assertEqual(DEFAULT_INDEX, "text")
-        self.assertEqual(DEFAULT_FUSION, "score")
-        self.assertEqual(resolve_index(None), "text")
-        self.assertEqual(resolve_index(" CODE "), "code")
-        self.assertEqual(resolve_fusion(None), "score")
+        self.assertEqual(DEFAULT_INDEX, "code")
+        self.assertEqual(DEFAULT_FUSION, "rrf")
+        self.assertEqual(resolve_index(None), "code")
+        self.assertEqual(resolve_index(" TEXT "), "text")
+        self.assertEqual(resolve_fusion(None), "rrf")
         with self.assertRaises(ValueError):
             resolve_index("graph")
         with self.assertRaises(ValueError):
@@ -2090,8 +2092,8 @@ class DualIndexTest(unittest.TestCase):
             patch("rag.search._search_with_embedding", side_effect=fake_search),
         ):
             search(None, [1], "where is it saved", 4)
-            self.assertEqual(constructed, [(None, None)])
-            self.assertEqual(seen, {"keys": {"text"}, "index": "text", "fusion": "score"})
+            self.assertEqual(constructed, [(CODE_EMBEDDING_MODEL, CODE_EMBEDDING_DIM)])
+            self.assertEqual(seen, {"keys": {"code"}, "index": "code", "fusion": "rrf"})
             constructed.clear()
             search(None, [1], "where is it saved", 4, index="both", fusion="score")
         self.assertEqual(seen["index"], "both")

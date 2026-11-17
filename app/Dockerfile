@@ -18,8 +18,8 @@ ENV PYTHONUNBUFFERED=1 \
     EMBEDDING_DIM=384 \
     CODE_EMBEDDING_MODEL=jinaai/jina-embeddings-v2-base-code \
     CODE_EMBEDDING_DIM=768 \
-    RAG_INDEX=text \
-    RAG_FUSION=score \
+    RAG_INDEX=code \
+    RAG_FUSION=rrf \
     RRF_K=60 \
     REPOS_DIR=/data/repos
 

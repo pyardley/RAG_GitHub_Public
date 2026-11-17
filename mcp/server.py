@@ -47,8 +47,9 @@ _TOOLS = [
                     "type": "string",
                     "enum": ["text", "code", "both"],
                     "description": (
-                        "Vector index. text is the default and keeps the general-English model. "
-                        "code uses the code model. both merges the two rankings with reciprocal rank fusion."
+                        "Vector index. code is the default and uses the code model. "
+                        "text uses the general-English model. both merges the two rankings; "
+                        "pair both with fusion score."
                     ),
                 },
                 "fusion": {
@@ -56,8 +57,8 @@ _TOOLS = [
                     "enum": ["rrf", "score"],
                     "description": (
                         "How keyword ranks join the vector ranking. "
-                        "score adds the raw cosine similarity to the keyword rank and is the default. "
-                        "rrf is reciprocal rank fusion, which gives the keyword list an equal vote."
+                        "rrf is reciprocal rank fusion and is the default with a single index. "
+                        "score adds the raw cosine similarity to the keyword rank; prefer score with index both."
                     ),
                 },
             },

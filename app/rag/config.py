@@ -5,9 +5,8 @@ DATABASE_URL = os.environ.get(
     "DATABASE_URL", "postgresql://rag:rag@localhost:5433/rag"
 )
 REPOS_DIR = Path(os.environ.get("REPOS_DIR", "/data/repos"))
-# The text model is the one a query uses unless the caller asks for code or both.
 # EMBEDDING_MODEL remains the environment name so an existing deployment still
-# points at the text model.
+# points at the text model. Queries default to the code index; see DEFAULT_INDEX.
 TEXT_EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
 TEXT_EMBEDDING_DIM = int(os.environ.get("EMBEDDING_DIM", "384"))
 CODE_EMBEDDING_MODEL = os.environ.get(
@@ -26,12 +25,10 @@ FASTEMBED_CACHE_PATH = os.environ.get("FASTEMBED_CACHE_PATH", "/opt/fastembed")
 
 INDEX_CHOICES = ("text", "code", "both")
 FUSION_CHOICES = ("rrf", "score")
-# text keeps the previous single-index search. score keeps the previous sum of
-# cosine similarity and ts_rank_cd, so a query that sets neither flag ranks as
-# it did before the second index existed. rrf is there when the two lists
-# should have an equal vote instead.
-DEFAULT_INDEX = os.environ.get("RAG_INDEX", "text").strip().lower() or "text"
-DEFAULT_FUSION = os.environ.get("RAG_FUSION", "score").strip().lower() or "score"
+# code with rrf was the best overall Query setting in eval/FINDINGS.md.
+# score still adds cosine similarity to ts_rank_cd; prefer it when index is both.
+DEFAULT_INDEX = os.environ.get("RAG_INDEX", "code").strip().lower() or "code"
+DEFAULT_FUSION = os.environ.get("RAG_FUSION", "rrf").strip().lower() or "rrf"
 RRF_K = int(os.environ.get("RRF_K", "60"))
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "openai").strip().lower() or "openai"
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
