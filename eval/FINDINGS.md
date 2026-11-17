@@ -26,7 +26,12 @@ The questions are in this folder, one file per repository. Each expected path wa
 - **impact** (29): asks what calls a named method or class. The expected paths are the callers, not the definition.
 - **step** (13): a Gherkin step copied from a feature file. The expected path is the step definition file.
 
-`run_eval.py` searches each question once, without the question-planning model, and keeps the top 8 passages. Recall@8 is the share of expected files in those 8. MRR (mean reciprocal rank) is 1 divided by the rank of the first expected file, averaged over the questions. Reciprocal rank fusion used k = 60.
+`run_eval.py` searches each question once, without the question-planning model, and keeps the top 8 passages. Tables below report **Recall@8 / MRR**. Both scores run from **0 to 1; higher is better**.
+
+- **Recall@8**: share of the expected files that appear anywhere in those 8 passages (1.0 means every expected file was found; 0 means none were).
+- **MRR** (mean reciprocal rank): for each question, `1 / rank` of the first expected file (1.0 if it is first, 0.5 if second, 0 if missing), then averaged over the questions.
+
+Reciprocal rank fusion used k = 60.
 
 The text index is `BAAI/bge-small-en-v1.5`, which reads up to 512 tokens. The code index is `jinaai/jina-embeddings-v2-base-code`, which reads up to 2048 tokens of each chunk here, embedded in batches of 4. Text in a chunk beyond 2048 tokens is not seen by the code index.
 
