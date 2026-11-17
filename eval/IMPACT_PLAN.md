@@ -1,6 +1,8 @@
 # Plan: raise Impact caller recall toward 100%
 
-On 17 November 2026, Impact found **91%** of the expected callers across the 29 impact evaluation questions (25 targets perfect, 2 partial, 2 empty). Search found about 30%. This plan covers the four known misses, related patterns that will show up next, how to ship each change, and how to prove the score has moved.
+**Status (17 November 2026):** Items 1–3 are implemented in `app/rag/edges.py` (`_EDGE_VERSION` 10). `eval/run_impact.py` scores all 29 impact questions at **mean recall 1.00**. Item 4 (softened text mention) and item 5 (related shapes) were not needed for this set.
+
+On 17 November 2026, Impact first found **91%** of the expected callers across the 29 impact evaluation questions (25 targets perfect, 2 partial, 2 empty). Search found about 30%. This plan covers the four known misses, related patterns that will show up next, how to ship each change, and how to prove the score has moved.
 
 Impact finds callers in two ways:
 

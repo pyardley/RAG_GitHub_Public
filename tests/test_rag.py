@@ -730,6 +730,137 @@ end
         edges = extract_edges("app/models/fee.rb", chunks)
         self.assertIn("Fee#save", {edge.dst_symbol for _index, edge in edges})
 
+    def test_const_new_links_an_unprefixed_class_in_its_module(self):
+        from rag.edges import CallIndex, IndexedChunk, extract_edges
+
+        source = """module C100App
+  class ApplicationDecisionTree
+    def proceed_to_payment
+      PaymentsFlowControl.new(c100_application).payment_url
+    end
+  end
+end
+"""
+        chunks = chunk_source("ruby", source)
+        edges = extract_edges("app/services/c100_app/application_decision_tree.rb", chunks)
+        destinations = {edge.dst_symbol for _index, edge in edges}
+        self.assertIn("PaymentsFlowControl", destinations)
+        self.assertIn("PaymentsFlowControl#payment_url", destinations)
+        self.assertNotIn("Time", {
+            edge.dst_symbol
+            for _index, edge in extract_edges(
+                "app/models/fee.rb",
+                chunk_source("ruby", "class Fee\n  def at\n    Time.new\n  end\nend\n"),
+            )
+        })
+        target = IndexedChunk(
+            1, "app/services/c100_app/payments_flow_control.rb",
+            "C100App::PaymentsFlowControl", "class", "module C100App\n  class PaymentsFlowControl\n",
+        )
+        other = IndexedChunk(
+            2, "app/services/other/payments_flow_control.rb",
+            "Other::PaymentsFlowControl", "class", "module Other\n  class PaymentsFlowControl\n",
+        )
+        caller = IndexedChunk(
+            3, "app/services/c100_app/application_decision_tree.rb",
+            "C100App::ApplicationDecisionTree#proceed_to_payment", "method",
+            "def proceed_to_payment\n  PaymentsFlowControl.new(app).payment_url\nend\n",
+        )
+        calls = CallIndex([target, other, caller])
+        self.assertEqual(
+            calls.targets("PaymentsFlowControl", "C100App::ApplicationDecisionTree", caller.path),
+            ([1], True),
+        )
+        self.assertEqual(
+            calls.targets("PaymentsFlowControl", "Unrelated::Thing", "app/unrelated.rb"),
+            ([], True),
+        )
+
+    def test_chained_new_links_a_keyword_named_method(self):
+        from rag.edges import CallIndex, IndexedChunk, extract_edges
+
+        source = """class PartPaymentsController
+  def return_application
+    if ResolverService.new(part_payment, current_user).return
+      redirect_to root_path
+    end
+  end
+end
+"""
+        chunks = chunk_source("ruby", source)
+        edges = extract_edges("app/controllers/part_payments_controller.rb", chunks)
+        destinations = {edge.dst_symbol for _index, edge in edges}
+        self.assertIn("ResolverService#return", destinations)
+        self.assertIn("ResolverService", destinations)
+        bare = extract_edges(
+            "app/models/fee.rb",
+            chunk_source("ruby", "class Fee\n  def save\n    return value\n  end\nend\n"),
+        )
+        self.assertNotIn("return", {edge.dst_symbol for _index, edge in bare})
+        method = IndexedChunk(
+            5, "app/services/resolver_service.rb", "ResolverService#return", "method",
+            "def return\nend\n",
+        )
+        klass = IndexedChunk(
+            4, "app/services/resolver_service.rb", "ResolverService", "class", "class ResolverService\n",
+        )
+        calls = CallIndex([klass, method])
+        self.assertEqual(calls.targets("ResolverService#return"), ([5], True))
+        foo_edges = extract_edges(
+            "app/models/foo.rb",
+            chunk_source("ruby", "class Foo\n  def run\n    Bar.new.baz\n  end\nend\n"),
+        )
+        self.assertIn("Bar#baz", {edge.dst_symbol for _index, edge in foo_edges})
+
+    def test_a_page_accessor_links_to_the_page_class(self):
+        from rag.edges import CallIndex, IndexedChunk, extract_edges
+
+        step = """Given('I open responses') do
+  admin_pages.responses_page.load
+end
+"""
+        edges = extract_edges(
+            "features/step_definitions/et3_admin_responses_page.steps.rb",
+            chunk_source("ruby", step),
+        )
+        destinations = {edge.dst_symbol for _index, edge in edges}
+        self.assertIn("ResponsesPage", destinations)
+        self.assertIn("ResponsesPage#load", destinations)
+
+        existing = extract_edges(
+            "features/step_definitions/claimant_steps.rb",
+            chunk_source("ruby", "Given('x') do\n  claimant_page.fill_in_name\nend\n"),
+        )
+        self.assertIn("ClaimantPage#fill_in_name", {edge.dst_symbol for _index, edge in existing})
+
+        support = extract_edges(
+            "features/support/navigation_helper.rb",
+            chunk_source(
+                "ruby",
+                "def to_income_kind\n  dependent_page.submit_child_bands\n  contact_page.valid_email\nend\n",
+            ),
+        )
+        support_destinations = {edge.dst_symbol for _index, edge in support}
+        self.assertIn("DependentPage#submit_child_bands", support_destinations)
+        self.assertIn("ContactPage#valid_email", support_destinations)
+
+        app_edges = extract_edges(
+            "app/models/user.rb",
+            chunk_source("ruby", "class User\n  def save\n    user.update_page\n  end\nend\n"),
+        )
+        self.assertNotIn("UpdatePage", {edge.dst_symbol for _index, edge in app_edges})
+
+        page = IndexedChunk(
+            7, "features/support/page_objects/admin/responses_page.rb",
+            "EtFullSystem::Test::Admin::ResponsesPage", "class",
+            "module EtFullSystem\n  module Test\n    module Admin\n      class ResponsesPage\n",
+        )
+        calls = CallIndex([page])
+        self.assertEqual(
+            calls.targets("ResponsesPage", None, "features/step_definitions/x.rb"),
+            ([7], True),
+        )
+
     def test_a_feature_step_points_at_its_step_definition(self):
         from rag.edges import IndexedChunk, link_steps
 

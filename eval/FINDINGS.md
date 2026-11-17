@@ -8,7 +8,7 @@ Run on 17 November 2026. The question is how well the text index, the code index
 - Plain-English questions are where the indexes differ most, and the code index wins. The text index tends to return locale files such as `config/locales/en.yml`, because their English UI wording matches English questions.
 - Questions that name a method, class, or constant work with every setting.
 - A pasted Gherkin step needs the keyword ranking to carry real weight. Reciprocal rank fusion does that for the text or code index alone. With both indexes, the score sum works better.
-- Use the **Impact** button, not Query, to find callers. It found 91% of the expected callers. Search found about 30% with any setting.
+- Use the **Impact** button, not Query, to find callers. After the call-graph fixes in `IMPACT_PLAN.md`, it finds **100%** of the expected callers on the 29 impact questions (`eval/run_impact.py`). Search found about 30% with any setting.
 
 ## What was measured
 
@@ -87,14 +87,16 @@ Asked "what calls X", every search setting mostly returns the definition of X an
 
 ### The Impact button finds callers well
 
-The same 29 targets were sent to `POST /api/impact`, which follows the stored call edges and does not use either vector index. It found 91% of the expected callers. 25 targets found every expected caller, two found some, and two found none. All four misses are gaps in the call graph:
+The same 29 targets are scored with `eval/run_impact.py`, which calls the same Impact path as `POST /api/impact` (call edges, not the vector indexes). On 17 November 2026 the first run found **91%** of the expected callers. Four gaps in the call graph caused the misses:
 
-| Target | Found | Why callers were missed |
+| Target | Found then | Why callers were missed |
 |---|---|---|
-| `C100App::PaymentsFlowControl` (c100-application) | 3 of 4 | Inside `module C100App` the caller writes `PaymentsFlowControl.new` without the `C100App::` prefix, in `ApplicationDecisionTree#proceed_to_payment`. |
-| `C100App::OnlineSubmissionQueue` (c100-application) | 2 of 3 | The same unprefixed reference, in `PaymentsFlowControl#confirmation_url`. |
-| `ResolverService#return` (hwf-staffapp) | 0 of 3 | Callers write `ResolverService.new(...).return`, and `return` is also a Ruby keyword, so the call is not linked. |
-| `ResponsesPage` (et-full-system) | 0 of 2 | Steps reach the page object through the accessor `admin_pages.responses_page`, never by its class name. |
+| `C100App::PaymentsFlowControl` (c100-application) | 3 of 4 | Inside `module C100App` the caller writes `PaymentsFlowControl.new` without the `C100App::` prefix. |
+| `C100App::OnlineSubmissionQueue` (c100-application) | 2 of 3 | The same unprefixed reference. |
+| `ResolverService#return` (hwf-staffapp) | 0 of 3 | Callers write `ResolverService.new(...).return`, and `return` is also a Ruby keyword. |
+| `ResponsesPage` (et-full-system) | 0 of 2 | Steps reach the page through `admin_pages.responses_page`, never by its class name. |
+
+Those gaps are closed in `app/rag/edges.py` (see `IMPACT_PLAN.md`): `Const.new` links the class and resolves an unprefixed name from the caller's namespace; `Const.new(...).method` links even when the method is a Ruby keyword; SitePrism accessors such as `admin_pages.responses_page` and `dependent_page.submit_child_bands` link in any test file. A re-run of all 29 impact questions then scored **1.00** mean recall.
 
 ### Questions that name code work with any setting
 
@@ -105,7 +107,7 @@ Identifier questions scored 0.92 to 0.97 recall in every setting, usually with t
 1. Make `code` the default index for Query, and `rrf` the default fusion with it.
 2. If `both` is kept as an option, pair it with the score sum.
 3. Point users to the **Impact** button for "what calls X" or "what is affected" questions.
-4. Fix the call-graph gaps above: resolve an unprefixed constant from inside its own namespace, link a method called `return` when it has a receiver, and link SitePrism accessors such as `responses_page` to their page class.
+4. ~~Fix the call-graph gaps above~~ Done: unprefixed `Const.new`, chained `Const.new(...).method` (including keyword method names), and SitePrism page accessors. Re-score with `eval/run_impact.py`.
 
 ## Limits
 
@@ -119,6 +121,7 @@ Index the repositories one at a time, then run each file in the app image:
 
 ```powershell
 docker compose run --rm --no-deps -T --entrypoint python -v "${PWD}/eval:/eval" rag /eval/run_eval.py --questions /eval/hwf-staffapp.jsonl --repo hmcts/hwf-staffapp --details
+docker compose run --rm --no-deps -T --entrypoint python -v "${PWD}/eval:/eval" rag /eval/run_impact.py --questions /eval/hwf-staffapp.jsonl --repo hmcts/hwf-staffapp --details
 ```
 
-Replace the file and repository for `hwf-publicapp`, `et-full-system`, and `c100-application`.
+Replace the file and repository for `hwf-publicapp`, `et-full-system`, and `c100-application`. Impact questions need a `target` field naming the symbol to look up.

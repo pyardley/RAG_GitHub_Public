@@ -26,7 +26,7 @@ _FACTORY_TARGET = re.compile(
     rf"^(?:FactoryBot\s*(?:\.|::)\s*)?(?:{_FACTORY_VERBS})\s*\(\s*{_FACTORY_ARGS}(?P<rest>.*)\)\s*$"
 )
 # Bump when edge extraction changes so the next startup rebuilds stored edges.
-_EDGE_VERSION = "8"
+_EDGE_VERSION = "10"
 _FACTORY_VERB_NAMES = frozenset(_FACTORY_VERBS.split("|"))
 # A bare name that more methods than this define is left unlinked.
 _AMBIGUOUS_LIMIT = 5
@@ -40,8 +40,17 @@ _ALIAS = re.compile(
     r"(?m)^[ \t]*alias\s+([A-Za-z_]\w*[?!]?)\s+([A-Za-z_]\w*[?!]?)\s*$"
 )
 _CONST_CALL = re.compile(r"\b([A-Z][\w:]*)\.([a-z_][\w?!]*)")
+# Foo.new(...).bar or Foo.new.bar — the method after construction.
+_CHAINED_NEW_CALL = re.compile(
+    r"\b([A-Z][\w:]*)\.new(?:\([^.\n]*\))?\.([a-z_]\w*[?!]?)"
+)
 _RECEIVER_CALL = re.compile(r"\b([a-z_][\w]*)\.([a-z_][\w?!]*)")
+# admin_pages.responses_page.load → ResponsesPage and ResponsesPage#load
+_PAGE_CHAIN = re.compile(
+    r"\b([a-z_][\w]*)\.([a-z_][\w]*_(?:page|section))\.([a-z_][\w?!]*)"
+)
 _BARE_CALL = re.compile(r"(?m)^[ \t]*([a-z_][\w?!]*)\s*(?:\(|$)")
+_PAGE_ACCESSOR = re.compile(r"_(?:page|section)$")
 # Used to find a bare call that shares its line with other code.
 _HEREDOC = re.compile(r"(?ms)<<[~-]?['\"]?(\w+)['\"]?[^\n]*\n.*?^[ \t]*\1[ \t]*$")
 _STRING = re.compile(r'"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'')
@@ -166,10 +175,36 @@ def extract_edges(path: str, chunks: list) -> list[tuple[int, CallEdge]]:
             target = f"{owner}#{old_name}" if owner else old_name
             add(index, CallEdge(target, None, "alias", "high", f"alias {old_name}"))
         for receiver, method in _CONST_CALL.findall(chunk.content):
-            if receiver.split("::")[-1] in _SKIP_RECEIVERS or method in _SKIP_CALLS:
+            leaf = receiver.split("::")[-1]
+            if leaf in _SKIP_RECEIVERS:
+                continue
+            # Const.new is a use of the class, not a call named "new".
+            if method == "new":
+                add(index, CallEdge(receiver, None, "call", "high", f"{receiver}.new"))
+                continue
+            if method in _SKIP_CALLS:
                 continue
             symbol = f"{receiver}.{method}"
             add(index, CallEdge(symbol, None, "call", "high", symbol))
+        for receiver, method in _CHAINED_NEW_CALL.findall(chunk.content):
+            leaf = receiver.split("::")[-1]
+            if leaf in _SKIP_RECEIVERS or method in _SKIP_CALLS:
+                continue
+            symbol = f"{receiver}#{method}"
+            add(index, CallEdge(symbol, None, "call", "high", f"{receiver}.new.{method}"))
+        if _is_test(path):
+            for _container, accessor, method in _PAGE_CHAIN.findall(chunk.content):
+                class_name = "".join(
+                    part.capitalize() for part in accessor.split("_") if part
+                )
+                add(index, CallEdge(
+                    class_name, None, "call", "high", f"{_container}.{accessor}",
+                ))
+                if method not in _SKIP_CALLS:
+                    add(index, CallEdge(
+                        f"{class_name}#{method}", None, "call", "high",
+                        f"{_container}.{accessor}.{method}",
+                    ))
         for receiver, method in _RECEIVER_CALL.findall(chunk.content):
             if method in _SKIP_CALLS:
                 continue
@@ -177,9 +212,17 @@ def extract_edges(path: str, chunks: list) -> list[tuple[int, CallEdge]]:
             if section and method in elements.get(section, ()):
                 add(index, CallEdge(section, None, "call", "high", f"{receiver}.{method}"))
                 continue
-            if "step_definitions" in path.replace("\\", "/") and receiver.endswith("_page"):
+            # claimant_page.fill_in_name → ClaimantPage#fills_in_name (any test file).
+            if _is_test(path) and receiver.endswith("_page"):
                 symbol = page_symbol(receiver, method)
                 add(index, CallEdge(symbol, None, "call", "high", symbol))
+                continue
+            # admin_pages.responses_page → ResponsesPage (test helpers only).
+            if _is_test(path) and _PAGE_ACCESSOR.search(method):
+                class_name = "".join(
+                    part.capitalize() for part in method.split("_") if part
+                )
+                add(index, CallEdge(class_name, None, "call", "high", f"{receiver}.{method}"))
         # A bare name in a factory sets an attribute. It is not a call.
         if (getattr(chunk, "kind", "") or "").startswith("factory"):
             continue
@@ -494,9 +537,20 @@ class CallIndex:
 
         One reachable method of a bare name is certain, a few are each
         possible, and more than `_AMBIGUOUS_LIMIT` are left unlinked.
+        An unprefixed constant is resolved from the caller's namespace the
+        way Ruby resolves it.
         """
         if any(mark in dst_symbol for mark in ("#", " ", ".", ":")):
             found = self._by_symbol.get(dst_symbol.lower())
+            if found is not None:
+                return [found], True
+            resolved = self._resolve_qualified(dst_symbol, owner)
+            return ([resolved] if resolved is not None else []), True
+        if _CONSTANT.fullmatch(dst_symbol):
+            resolved = self._constant(dst_symbol, owner or "")
+            if resolved is None:
+                return [], True
+            found = self._by_symbol.get(resolved)
             return ([found] if found is not None else []), True
         name = dst_symbol.lower()
         family = self._family(owner)
@@ -555,6 +609,26 @@ class CallIndex:
                 break
             family.append(parent)
         return family
+
+    def _resolve_qualified(self, dst_symbol: str, owner: str | None) -> int | None:
+        """Resolve Class#method or Class.method when Class has no namespace prefix."""
+        for separator in ("#", "."):
+            if dst_symbol.count(separator) != 1 or " " in dst_symbol:
+                continue
+            const, method = dst_symbol.split(separator, 1)
+            if not _CONSTANT.fullmatch(const) or ":" in const:
+                continue
+            resolved = self._constant(const, owner or "")
+            if not resolved:
+                continue
+            key = f"{resolved}{separator}{method.lower()}"
+            found = self._method_ids.get(key)
+            if found is not None:
+                return found
+            found = self._by_symbol.get(key)
+            if found is not None:
+                return found
+        return None
 
     def _constant(self, name: str, inside: str) -> str | None:
         """Resolve a class name the way Ruby does from inside a namespace."""
