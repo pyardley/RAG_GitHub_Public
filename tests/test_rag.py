@@ -36,11 +36,16 @@ from unittest.mock import patch
 
 from rag.plan import parse_queries, question_needs_plan
 from rag.usage import Meter, token_counts
+from rag.intent import impact_target
 from rag.search import (
     Hit,
     _feature_files,
     asks_for_features,
     _each_path_first,
+    _hits_from_impact,
+    _is_locale_or_messaging,
+    _query_path_rank,
+    _rerank_query_hits,
     code_literals,
     merge_hits,
     postgres_pattern,
@@ -1626,7 +1631,9 @@ class WebTest(unittest.TestCase):
             self.assertIn('value="both"', page)
             self.assertIn('id="fusion"', page)
             self.assertIn('value="rrf" selected', page)
+            self.assertIn('value="12"', page)
             self.assertIn("pairFusionWithIndex", page)
+            self.assertIn('body.routed === "impact"', page)
             self.assertIn("Index chooses the text model, the code model, or both.", page)
             self.assertIn("This deletes that index and its checkout.", page)
             self.assertIn("remove-confirm", page)
@@ -1985,6 +1992,113 @@ class RemoveIndexTest(unittest.TestCase):
             web._ingest_state["repo"] = None
         self.assertEqual(status, 409)
         self.assertEqual(body["error"], "An ingest is already running")
+
+
+class IntentAndRankingTest(unittest.TestCase):
+    def test_impact_target_extracts_caller_questions(self):
+        self.assertEqual(
+            impact_target("What calls SavingsPassFailService, and what is affected if I change it?"),
+            "SavingsPassFailService",
+        )
+        self.assertEqual(
+            impact_target(
+                "Which step definitions and helpers call the DependentPage method submit_child_bands?"
+            ),
+            "DependentPage#submit_child_bands",
+        )
+        self.assertEqual(
+            impact_target("What calls et3_answer_saving_response, and what breaks if I change it?"),
+            "et3_answer_saving_response",
+        )
+        self.assertIsNone(
+            impact_target(
+                "Where is HelpWithFeesReferenceValidator with HWF_REFERENCE_REGEX defined, "
+                "and which form uses help_with_fees_reference: true on hwf_reference_number?"
+            )
+        )
+        self.assertIsNone(impact_target("How are fees calculated for a single applicant?"))
+
+    def test_locale_paths_are_demoted_and_logic_paths_preferred(self):
+        self.assertTrue(_is_locale_or_messaging("config/locales/en.yml"))
+        self.assertTrue(_is_locale_or_messaging("features/support/messaging/et1_en.yml"))
+        self.assertFalse(_is_locale_or_messaging("config/settings.yml"))
+        self.assertEqual(_query_path_rank("app/services/fee.rb")[1], 0)
+        self.assertEqual(_query_path_rank("config/locales/en.yml")[0], 1)
+        locale = _hit("config/locales/en.yml", None, "fee text", 0.9)
+        service = _hit("app/services/fee.rb", "FeeService", "def fee\nend", 0.5)
+        ranked = _rerank_query_hits([locale, service])
+        self.assertEqual([hit.path for hit in ranked], ["app/services/fee.rb", "config/locales/en.yml"])
+        same_file = [
+            _hit("app/models/a.rb", "A", "one", 0.9),
+            _hit("app/models/a.rb", "A#b", "two", 0.8),
+            _hit("app/models/b.rb", "B", "three", 0.7),
+        ]
+        self.assertEqual(
+            [hit.symbol for hit in _each_path_first(same_file)],
+            ["A", "B", "A#b"],
+        )
+
+    def test_hits_from_impact_prefer_references(self):
+        definition = Hit(1, "repo", "app/services/x.rb", 1, 2, "X", "class", "class X\nend", 0.0)
+        caller = Hit(2, "repo", "app/controllers/y.rb", 3, 4, "Y#go", "method", "X.new", 0.0)
+        related = Hit(3, "repo", "README.md", 1, 2, None, "file", "mentions X", 0.0)
+        hits = _hits_from_impact(
+            {"references": [caller], "definitions": [definition], "related": [related]},
+            k=2,
+        )
+        self.assertEqual([hit.path for hit in hits], [caller.path, definition.path])
+
+    def test_retrieve_routes_impact_questions(self):
+        seen: dict = {}
+
+        def fake_impact(_conn, _repos, target):
+            seen["target"] = target
+            return {
+                "references": [Hit(10, "repo", "app/controllers/a.rb", 1, 2, "A#go", "method", "call", 0.0)],
+                "definitions": [Hit(11, "repo", "app/services/b.rb", 1, 2, "B", "class", "class B", 0.0)],
+                "related": [],
+                "truncated": False,
+                "callers_omitted": 0,
+            }
+
+        with (
+            patch("rag.search.impact", side_effect=fake_impact),
+            patch("rag.search.log_retrieval"),
+        ):
+            hits, queries, truncated = retrieve(
+                None,
+                [1],
+                "What is affected if I change SavingsPassFailService?",
+                8,
+            )
+        self.assertEqual(seen["target"], "SavingsPassFailService")
+        self.assertEqual(queries, ["SavingsPassFailService"])
+        self.assertEqual(hits[0].path, "app/controllers/a.rb")
+        self.assertFalse(truncated)
+
+    def test_run_query_returns_an_impact_payload_when_routed(self):
+        found = {
+            "definitions": [],
+            "references": [],
+            "related": [],
+            "gaps": [],
+            "definition_count": 0,
+            "reference_count": 0,
+            "truncated": False,
+            "callers_omitted": 0,
+            "callers_capped": False,
+            "possible_count": 0,
+            "diagram": {"nodes": [], "edges": []},
+        }
+        with patch("rag.web.run_impact", return_value=(200, {**found, "answer": None, "answer_error": None, "model": {}, "repositories": []})) as impact_call:
+            status, body = run_query({
+                "question": "What calls ResolverService#return?",
+                "answer": False,
+            })
+        self.assertEqual(status, 200)
+        self.assertEqual(body["routed"], "impact")
+        self.assertEqual(body["target"], "ResolverService#return")
+        self.assertEqual(impact_call.call_args.args[0]["target"], "ResolverService#return")
 
 
 class DualIndexTest(unittest.TestCase):

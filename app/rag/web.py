@@ -25,12 +25,13 @@ from rag.answer import (
     language_model_configured,
     matching_lines,
 )
-from rag.config import LLM_PROVIDER, resolve_fusion, resolve_index
+from rag.config import DEFAULT_K, LLM_PROVIDER, resolve_fusion, resolve_index
 from rag.db import connect, list_repositories, resolve_repositories
 from rag.edges import POSSIBLE_ARROW, prepare_call_edges
 from rag.files import parse_repo
 from rag.gitrepo import list_branches, remote_commit
 from rag.ingest import delete_repository, ingest_lock_held, ingest_repository
+from rag.intent import impact_target
 from rag.log import logger
 from rag.plan import retrieval_model
 from rag.search import Hit, impact, retrieve
@@ -242,6 +243,13 @@ def public_status() -> tuple[int, dict]:
 
 def run_query(body: dict) -> tuple[int, dict]:
     question = _required_text(body, "question", "Enter a question")
+    target = impact_target(question)
+    if target:
+        status, payload = run_impact({**body, "target": target})
+        if status == 200:
+            payload["routed"] = "impact"
+            payload["target"] = target
+        return status, payload
     return _retrieve(body, question, written=_wants_answer(body), impact_mode=False)
 
 
@@ -573,7 +581,7 @@ def _wants_answer(body: dict) -> bool:
 
 
 def _passage_count(body: dict) -> int:
-    count = body.get("k", 8)
+    count = body.get("k", DEFAULT_K)
     if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 30:
         raise ValueError("Passages must be a number from 1 to 30")
     return count

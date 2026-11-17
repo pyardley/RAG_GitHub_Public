@@ -41,7 +41,7 @@ _TOOLS = [
             "properties": {
                 "question": {"type": "string", "description": "The question, in your own words."},
                 "repo": {"type": "string", "description": "owner/name. Omit to search every indexed repository."},
-                "k": {"type": "integer", "minimum": 1, "maximum": 30, "description": "How many passages to return. Defaults to 8."},
+                "k": {"type": "integer", "minimum": 1, "maximum": 30, "description": "How many passages to return. Defaults to 12."},
                 "answer": {"type": "boolean", "description": "When true, the app's own model also writes a reply."},
                 "index": {
                     "type": "string",
@@ -49,7 +49,7 @@ _TOOLS = [
                     "description": (
                         "Vector index. code is the default and uses the code model. "
                         "text uses the general-English model. both merges the two rankings; "
-                        "pair both with fusion score."
+                        "pair both with fusion score. Caller questions are routed to impact."
                     ),
                 },
                 "fusion": {
@@ -77,7 +77,7 @@ _TOOLS = [
             "properties": {
                 "question": {"type": "string", "description": "The text, identifier, or quoted phrase to find."},
                 "repo": {"type": "string", "description": "owner/name. Omit to search every indexed repository."},
-                "k": {"type": "integer", "minimum": 1, "maximum": 30, "description": "How many passages to return. Defaults to 8."},
+                "k": {"type": "integer", "minimum": 1, "maximum": 30, "description": "How many passages to return. Defaults to 12."},
             },
             "required": ["question"],
             "additionalProperties": False,
@@ -238,13 +238,13 @@ def _tool(name: object, arguments: dict) -> dict:
         return api.query(
             arguments.get("question", ""),
             arguments.get("repo"),
-            _count(arguments.get("k", 8)),
+            _count(arguments.get("k", 12)),
             bool(arguments.get("answer", False)),
             _choice(arguments.get("index"), ("text", "code", "both"), "Index"),
             _choice(arguments.get("fusion"), ("rrf", "score"), "Fusion"),
         )
     if name == "search":
-        return api.search(arguments.get("question", ""), arguments.get("repo"), _count(arguments.get("k", 8)))
+        return api.search(arguments.get("question", ""), arguments.get("repo"), _count(arguments.get("k", 12)))
     if name == "impact":
         return api.impact(arguments.get("target", ""), arguments.get("repo"), arguments.get("answer", False))
     if name == "default_branch":
@@ -259,7 +259,7 @@ def _tool(name: object, arguments: dict) -> dict:
 
 
 def _count(value: object) -> int:
-    return 8 if value is None else value  # type: ignore[return-value]
+    return 12 if value is None else value  # type: ignore[return-value]
 
 
 def _choice(value: object, allowed: tuple[str, ...], label: str) -> str | None:

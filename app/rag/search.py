@@ -11,6 +11,7 @@ import psycopg
 from rag.config import resolve_fusion, resolve_index, resolve_rrf_k
 from rag.edges import CALL_ARROW, POSSIBLE_ARROW, factory_symbols
 from rag.fusion import combine_rankings
+from rag.intent import impact_target
 from rag.log import log_retrieval, logger
 from rag.text import (
     has_declaration,
@@ -160,6 +161,21 @@ def retrieve(
         scope for scope in path_scopes(question)
         if not path_excluded(scope, excluded)
     ]
+    target = impact_target(question)
+    if target:
+        started = time.perf_counter()
+        found = impact(conn, repository_ids, target)
+        hits = _hits_from_impact(found, k)
+        truncated = bool(found.get("truncated")) or int(found.get("callers_omitted") or 0) > 0
+        if meter is not None:
+            meter.add(Stage("Plan the question", 0.0, note=f"Impact lookup for {target}."))
+            meter.add_search(0.0, time.perf_counter() - started)
+            meter.finish_retrieval(len(hits), embedded=False, direct="impact", skipped=excluded)
+        return _logged(
+            question, conn, repository_ids, k, "impact",
+            [target], [], scopes, excluded, truncated, hits,
+            index="-", fusion="-",
+        )
     literals = code_literals(question)
     phrases = quoted_phrases(question)
     terms = literals + [phrase for phrase in phrases if phrase not in literals]
@@ -207,6 +223,24 @@ def retrieve(
         queries, dropped, scopes, excluded, truncated, hits,
         index=chosen_index, fusion=chosen_fusion,
     )
+
+
+def _hits_from_impact(found: dict, k: int) -> list[Hit]:
+    """Callers first, then definitions and related code, capped at k."""
+    merged: list[Hit] = []
+    seen: set[int] = set()
+    for hit in (
+        list(found.get("references") or [])
+        + list(found.get("definitions") or [])
+        + list(found.get("related") or [])
+    ):
+        if hit.chunk_id in seen:
+            continue
+        seen.add(hit.chunk_id)
+        merged.append(hit)
+        if len(merged) >= k:
+            break
+    return merged
 
 
 def _logged(
@@ -383,7 +417,12 @@ def _search_with_embedding(
         hits = chosen[:k]
         chain: list[Hit] = []
     else:
+        hits = _rerank_query_hits(hits)
+        hits = _each_path_first(hits)
         chain = _feature_chain(conn, repository_ids, question, hits)
+        users = _definition_users(conn, repository_ids, hits)
+        if users:
+            hits = _with_follow(hits, users, max(k, len(hits)))
     conn.commit()
     return _drop_excluded(_with_chain(chain, hits, k), excluded or []), truncated
 
@@ -1040,6 +1079,85 @@ def _each_path_first(hits: list[Hit]) -> list[Hit]:
     first = [group[0] for group in grouped.values()]
     rest = [hit for group in grouped.values() for hit in group[1:]]
     return first + rest
+
+
+def _is_locale_or_messaging(path: str) -> bool:
+    lowered = path.replace("\\", "/").lower()
+    if "/locales/" in lowered or "/messaging/" in lowered:
+        return True
+    name = lowered.rsplit("/", 1)[-1]
+    return bool(re.fullmatch(r"[a-z]{2}(?:-[a-z]{2})?\.ya?ml", name))
+
+
+def _query_path_rank(path: str) -> tuple[int, int]:
+    """Lower is better. Locales last; app services and models first."""
+    lowered = path.replace("\\", "/").lower()
+    noise = 1 if _is_locale_or_messaging(lowered) else 0
+    if any(
+        part in lowered
+        for part in (
+            "/services/", "/lib/", "/models/", "/forms/", "/policies/",
+            "/presenters/", "/validators/", "/jobs/",
+        )
+    ):
+        logic = 0
+    elif lowered.startswith("app/"):
+        logic = 1
+    elif "/spec/" in lowered or "/test/" in lowered or lowered.endswith("_spec.rb"):
+        logic = 3
+    else:
+        logic = 2
+    return noise, logic
+
+
+def _rerank_query_hits(hits: list[Hit]) -> list[Hit]:
+    """Demote locales/messaging and prefer logic paths without discarding fusion order entirely."""
+    if not hits:
+        return hits
+    ordered = sorted(
+        enumerate(hits),
+        key=lambda item: (*_query_path_rank(item[1].path), item[0]),
+    )
+    return [hit for _index, hit in ordered]
+
+
+def _definition_users(conn, repository_ids: list[int], hits: list[Hit]) -> list[Hit]:
+    """After a class or module hit, pull callers and name mentions into the list."""
+    definitions = [
+        hit for hit in hits[:5]
+        if hit.kind in {"class", "module"}
+        or (
+            hit.symbol
+            and "#" not in hit.symbol
+            and hit.symbol[:1].isupper()
+            and has_declaration(hit.content, last_identifier(hit.symbol))
+        )
+    ]
+    if not definitions:
+        return []
+    seen = {hit.chunk_id for hit in hits}
+    callers, _gaps, _omitted, _capped = _callers_and_gaps(
+        conn, repository_ids, definitions, seen,
+    )
+    extra = list(callers.values())
+    for hit in definitions:
+        name = last_identifier(hit.symbol or "")
+        if len(name) < 4:
+            continue
+        try:
+            mentions, _seconds, _truncated = literal_hits(
+                conn, repository_ids, None, [name], 12, None,
+            )
+        except (ValueError, psycopg.Error):
+            continue
+        for mention in mentions:
+            if mention.chunk_id in seen:
+                continue
+            if _defines_target(mention, hit.symbol or name):
+                continue
+            seen.add(mention.chunk_id)
+            extra.append(mention)
+    return extra
 
 
 def is_regex_term(term: str) -> bool:

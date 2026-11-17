@@ -104,10 +104,11 @@ Identifier questions scored 0.92 to 0.97 recall in every setting, usually with t
 
 ## Recommendations
 
-1. Make `code` the default index for Query, and `rrf` the default fusion with it.
-2. If `both` is kept as an option, pair it with the score sum.
-3. Point users to the **Impact** button for "what calls X" or "what is affected" questions.
+1. ~~Make `code` the default index for Query, and `rrf` the default fusion with it.~~ Done.
+2. ~~If `both` is kept as an option, pair it with the score sum.~~ Done in the Query UI.
+3. ~~Point users to the **Impact** button for "what calls X" or "what is affected" questions.~~ Query now routes those questions to Impact; the Impact button remains available.
 4. ~~Fix the call-graph gaps above~~ Done: unprefixed `Const.new`, chained `Const.new(...).method` (including keyword method names), and SitePrism page accessors. Re-score with `eval/run_impact.py`.
+5. Ranking hygiene for concept questions: demote locales/messaging, prefer `app/services|lib|models|…`, diversify by path, and follow class hits to users. Re-score with `run_eval.py --query-path`.
 
 ## Limits
 
@@ -121,7 +122,8 @@ Index the repositories one at a time, then run each file in the app image:
 
 ```powershell
 docker compose run --rm --no-deps -T --entrypoint python -v "${PWD}/eval:/eval" rag /eval/run_eval.py --questions /eval/hwf-staffapp.jsonl --repo hmcts/hwf-staffapp --details
+docker compose run --rm --no-deps -T --entrypoint python -v "${PWD}/eval:/eval" rag /eval/run_eval.py --questions /eval/hwf-staffapp.jsonl --repo hmcts/hwf-staffapp --query-path --details
 docker compose run --rm --no-deps -T --entrypoint python -v "${PWD}/eval:/eval" rag /eval/run_impact.py --questions /eval/hwf-staffapp.jsonl --repo hmcts/hwf-staffapp --details
 ```
 
-Replace the file and repository for `hwf-publicapp`, `et-full-system`, and `c100-application`. Impact questions need a `target` field naming the symbol to look up.
+Replace the file and repository for `hwf-publicapp`, `et-full-system`, and `c100-application`. Impact questions need a `target` field naming the symbol to look up. `--query-path` scores the page's `retrieve()` path (planner, Impact routing, ranking hygiene) instead of raw `search()`.

@@ -3,6 +3,7 @@
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "app"))
@@ -50,6 +51,18 @@ class EvalMetricsTest(unittest.TestCase):
                 for question in questions:
                     self.assertFalse(question["example"])
                     self.assertTrue(all("\\" not in path for path in question["paths"]))
+
+    def test_query_path_flag_is_documented_in_help(self):
+        from io import StringIO
+
+        buffer = StringIO()
+        with self.assertRaises(SystemExit) as caught:
+            with patch("sys.stdout", buffer):
+                run_eval.main(["--help"])
+        self.assertEqual(caught.exception.code, 0)
+        text = buffer.getvalue()
+        self.assertIn("--query-path", text)
+        self.assertIn("retrieve", text.lower())
 
 
 if __name__ == "__main__":

@@ -30,6 +30,8 @@ FUSION_CHOICES = ("rrf", "score")
 DEFAULT_INDEX = os.environ.get("RAG_INDEX", "code").strip().lower() or "code"
 DEFAULT_FUSION = os.environ.get("RAG_FUSION", "rrf").strip().lower() or "rrf"
 RRF_K = int(os.environ.get("RRF_K", "60"))
+# Top-8 was tight once locales and second chunks from one file are demoted.
+DEFAULT_K = max(1, min(30, int(os.environ.get("RAG_K", "12"))))
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "openai").strip().lower() or "openai"
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 OPENAI_BASE_URL = os.environ.get(

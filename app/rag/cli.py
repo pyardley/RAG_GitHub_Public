@@ -6,6 +6,7 @@ import argparse
 import sys
 
 from rag.answer import AnswerError, active_model, answer, configuration_hint, language_model_configured
+from rag.config import DEFAULT_K
 from rag.db import connect, list_repositories, resolve_repositories
 from rag.ingest import backfill_repository, delete_repository, ingest_repository
 from rag.log import configure_logging, logger
@@ -33,7 +34,12 @@ def main(argv: list[str] | None = None) -> int:
     query_parser = sub.add_parser("query", help="Ask a question about indexed code")
     query_parser.add_argument("question", help="Question, in ordinary language")
     query_parser.add_argument("--repo", help="Limit the search to owner/name")
-    query_parser.add_argument("-k", type=int, default=8, help="Number of passages to retrieve")
+    query_parser.add_argument(
+        "-k",
+        type=int,
+        default=DEFAULT_K,
+        help=f"Number of passages to retrieve (default {DEFAULT_K})",
+    )
     query_parser.add_argument(
         "--no-answer",
         action="store_true",
