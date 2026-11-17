@@ -16,7 +16,7 @@ from rag.gitrepo import checkout, remote_commit, remove_checkout
 from rag.log import logger
 from rag.text import search_text
 
-_LOCK_KEY = 814263591
+INGEST_LOCK_KEY = 814263591
 _EMBED_BATCH = 32
 
 
@@ -28,12 +28,28 @@ class _PendingFile:
     chunks: list[Chunk]
 
 
+def ingest_lock_held(conn) -> bool:
+    """True while any process, including a command-line ingest, holds the ingest lock."""
+    row = conn.execute(
+        """
+        SELECT EXISTS (
+            SELECT 1 FROM pg_locks
+            WHERE locktype = 'advisory' AND granted
+              AND classid::bigint = 0 AND objid::bigint = %s AND objsubid = 1
+        )
+        """,
+        (INGEST_LOCK_KEY,),
+    ).fetchone()
+    conn.commit()
+    return bool(row[0])
+
+
 def delete_repository(repo: str) -> dict:
     """Delete one repository index and its checkout. Other repositories stay."""
     name, _url = parse_repo(repo)
     conn = connect()
     try:
-        acquired = conn.execute("SELECT pg_try_advisory_lock(%s)", (_LOCK_KEY,)).fetchone()[0]
+        acquired = conn.execute("SELECT pg_try_advisory_lock(%s)", (INGEST_LOCK_KEY,)).fetchone()[0]
         conn.commit()
         if not acquired:
             raise ValueError("An ingest is already running")
@@ -41,7 +57,7 @@ def delete_repository(repo: str) -> dict:
             removed = forget_repository(conn, name)
         finally:
             conn.rollback()
-            conn.execute("SELECT pg_advisory_unlock(%s)", (_LOCK_KEY,))
+            conn.execute("SELECT pg_advisory_unlock(%s)", (INGEST_LOCK_KEY,))
             conn.commit()
     finally:
         conn.close()
@@ -85,7 +101,7 @@ def backfill_repository(repo: str | None) -> int:
     """Fill embeddings that are still null. Chunks are updated, not copied."""
     conn = connect()
     try:
-        conn.execute("SELECT pg_advisory_lock(%s)", (_LOCK_KEY,))
+        conn.execute("SELECT pg_advisory_lock(%s)", (INGEST_LOCK_KEY,))
         conn.commit()
         try:
             repository_id = None
@@ -99,7 +115,7 @@ def backfill_repository(repo: str | None) -> int:
             filled = backfill_missing(conn, repository_id)
         finally:
             conn.rollback()
-            conn.execute("SELECT pg_advisory_unlock(%s)", (_LOCK_KEY,))
+            conn.execute("SELECT pg_advisory_unlock(%s)", (INGEST_LOCK_KEY,))
             conn.commit()
     finally:
         conn.close()
@@ -120,13 +136,13 @@ def ingest_repository(
     started = time.perf_counter()
     conn = connect()
     try:
-        conn.execute("SELECT pg_advisory_lock(%s)", (_LOCK_KEY,))
+        conn.execute("SELECT pg_advisory_lock(%s)", (INGEST_LOCK_KEY,))
         conn.commit()
         try:
             return _ingest(conn, name, url, branch, force, started, progress)
         finally:
             conn.rollback()
-            conn.execute("SELECT pg_advisory_unlock(%s)", (_LOCK_KEY,))
+            conn.execute("SELECT pg_advisory_unlock(%s)", (INGEST_LOCK_KEY,))
             conn.commit()
     finally:
         conn.close()

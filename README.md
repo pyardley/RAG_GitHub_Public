@@ -40,7 +40,11 @@ docker compose run --rm -T rag ingest https://github.com/hmcts/hwf-publicapp
 
 The first build downloads two embedding models and takes a few minutes. `BAAI/bge-small-en-v1.5` is about 67 MB on disk. `jinaai/jina-embeddings-v2-base-code` is about 640 MB. Together that is about 700 MB of model files. The text model needs a few hundred megabytes of RAM once it is loaded. The code model is larger: with both models loaded, allow about 2 GB to 4 GB of RAM, and more while a big repository is being embedded. A query that stays on the text index does not load the code model. The ONNX runtime is started with its memory arena off, which is what keeps this inside a laptop-sized Docker machine. If the process is killed during ingest, give the container more memory and run `backfill` again. It continues from the chunks that are still missing.
 
+The code model embeds 4 chunks at a time (`CODE_EMBED_BATCH`) and reads at most 2048 tokens of each (`CODE_EMBED_TOKENS`). A batch is padded to its longest chunk, and attention memory grows with the square of that length. With the model's own limit of 8192 tokens, four dense chunks, such as a lockfile or minified JSON, needed more than 6 GB and stopped Docker Desktop. With these limits the worst case is about 3 GB. Ruby code runs to about 3 or 4 characters a token, so 2048 tokens covers nearly all of a normal chunk. The text model embeds 32 at a time (`TEXT_EMBED_BATCH`) and stops at 512 tokens.
+
 The first ingest clones the repository and embeds every chunk with both models on CPU. Later ingests of the same commit return immediately once both embeddings are stored. If the code embeddings are missing, that ingest fills them in place instead of copying the chunks.
+
+Only one index is built at a time. That holds whether the ingest was started from the page, MCP, or the command line. While one is running, every open page disables **Index**, **Update the index**, and **Remove this index**, and the server turns away a second ingest. An ingest started from the command line shows on the page as "Another process is building an index".
 
 ## Web
 
@@ -354,6 +358,21 @@ python eval/run_eval.py --k 8 --repo pyardley/RAG_GitHub_Public --details
 ```
 
 Run that from this directory, with Postgres listening on `localhost:5433`. Recall@k is the share of the expected paths (and chunk ids) that appear in the top k. Mean reciprocal rank uses the first hit that matches any expected path or chunk id.
+
+`eval/hwf-publicapp.jsonl`, `eval/et-full-system.jsonl`, and `eval/c100-application.jsonl` hold 25 questions each for those repositories, and `eval/hwf-staffapp.jsonl` holds 20. Each question has a `category`, and the script prints one table per category after the overall table:
+
+- `concept` asks in plain English and names no code, such as how long an unfinished application is kept.
+- `identifier` names a method, class, or constant, or quotes a line of Ruby with no names in it.
+- `impact` asks what calls a named method or class. The expected paths are the callers, not the definition.
+- `step` is a Gherkin step copied from a feature file. The expected path is the step definition file.
+
+The **Impact** button does not use either vector index for its definitions and callers. Those come from symbol matching and the call edges. Only its **Related** list runs a search, on the text index. The `impact` questions measure how well a search finds callers.
+
+The host Python does not have the embedding models, so run these in the app image. The index for that repository has to be complete, or the expected files are not there to find:
+
+```powershell
+docker compose run --rm --no-deps --entrypoint python -v "${PWD}/eval:/eval" rag /eval/run_eval.py --questions /eval/c100-application.jsonl --repo ministryofjustice/c100-application --details
+```
 
 ## Tests
 

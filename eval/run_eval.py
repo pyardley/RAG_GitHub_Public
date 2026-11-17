@@ -43,6 +43,7 @@ def load_questions(path: Path) -> list[dict]:
             "paths": paths,
             "chunk_ids": chunk_ids,
             "example": bool(item.get("example")),
+            "category": str(item.get("category") or "").strip(),
         })
     if not questions:
         raise SystemExit(f"{path} has no questions")
@@ -100,11 +101,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Questions: {len(questions)}    k: {args.k}    RRF k: {rrf_k}")
         print()
         rows: list[tuple[str, str, float, float]] = []
+        by_category: dict[str, list[tuple[str, str, float, float]]] = {}
         details: list[str] = []
         for index in INDEXES:
             for fusion in FUSIONS:
                 recalls: list[float] = []
                 reciprocal: list[float] = []
+                category_scores: dict[str, tuple[list[float], list[float]]] = {}
                 for question in questions:
                     hits, _truncated = search(
                         conn,
@@ -117,25 +120,43 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     recalls.append(recall_at_k(hits, question, args.k))
                     reciprocal.append(reciprocal_rank(hits, question))
+                    if question["category"]:
+                        scores = category_scores.setdefault(question["category"], ([], []))
+                        scores[0].append(recalls[-1])
+                        scores[1].append(reciprocal[-1])
                     if args.details:
                         rank = _first_rank(hits, question)
                         top = hits[0].path if hits else "-"
                         details.append(
-                            f"{index:6} {fusion:6} {question['id']:16} "
+                            f"{index:6} {fusion:6} {question['id']:20} "
                             f"recall {recalls[-1]:.3f}  first {rank:4}  top {top}"
                         )
                 rows.append((index, fusion, _mean(recalls), _mean(reciprocal)))
+                for category, (category_recalls, category_reciprocal) in category_scores.items():
+                    by_category.setdefault(category, []).append(
+                        (index, fusion, _mean(category_recalls), _mean(category_reciprocal))
+                    )
     finally:
         conn.close()
-    header = f"{'index':<8} {'fusion':<8} {'recall@' + str(args.k):<12} {'MRR':<8}"
-    print(header)
-    print("-" * len(header))
-    for index, fusion, recall, mrr in rows:
-        print(f"{index:<8} {fusion:<8} {recall:<12.3f} {mrr:<8.3f}")
+    _print_table(rows, args.k)
+    if len(by_category) > 1:
+        for category, category_rows in by_category.items():
+            count = sum(1 for question in questions if question["category"] == category)
+            print()
+            print(f"{category} ({count} questions)")
+            _print_table(category_rows, args.k)
     if details:
         print()
         print("\n".join(details))
     return 0
+
+
+def _print_table(rows: list[tuple[str, str, float, float]], k: int) -> None:
+    header = f"{'index':<8} {'fusion':<8} {'recall@' + str(k):<12} {'MRR':<8}"
+    print(header)
+    print("-" * len(header))
+    for index, fusion, recall, mrr in rows:
+        print(f"{index:<8} {fusion:<8} {recall:<12.3f} {mrr:<8.3f}")
 
 
 def _first_rank(hits: list[Hit], question: dict) -> str:

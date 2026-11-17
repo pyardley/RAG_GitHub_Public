@@ -1549,10 +1549,52 @@ class WebTest(unittest.TestCase):
             server.server_close()
 
     def test_status_names_when_the_process_started(self):
-        with patch("rag.web._repository_rows", return_value=[]):
+        class Connection:
+            def close(self):
+                pass
+
+        with (
+            patch("rag.web.connect", return_value=Connection()),
+            patch("rag.web._repository_rows", return_value=[]),
+            patch("rag.web.ingest_lock_held", return_value=False),
+        ):
             status, body = public_status()
         self.assertEqual(status, 200)
         self.assertRegex(body["started"], r"\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC")
+        self.assertFalse(body["ingest"]["elsewhere"])
+
+    def test_an_ingest_in_another_process_blocks_a_new_one(self):
+        from rag import web
+
+        class Connection:
+            def close(self):
+                pass
+
+        with (
+            patch("rag.web.connect", return_value=Connection()),
+            patch("rag.web._repository_rows", return_value=[]),
+            patch("rag.web.ingest_lock_held", return_value=True),
+        ):
+            _status, body = public_status()
+            status, refused = web.start_ingest({"repo": "hmcts/hwf-publicapp"})
+        self.assertTrue(body["ingest"]["elsewhere"])
+        self.assertFalse(body["ingest"]["running"])
+        self.assertEqual(status, 409)
+        self.assertEqual(refused["error"], "Another process is building an index")
+        self.assertFalse(web._ingest_state["running"])
+
+    def test_the_schema_is_set_up_once_per_process(self):
+        import rag.db as db
+
+        calls = []
+        with (
+            patch.object(db, "_schema_ready", False),
+            patch("rag.db.ensure_schema", side_effect=lambda conn: calls.append("schema")),
+            patch("rag.db._prefer_iterative_scan", side_effect=lambda conn: calls.append("scan")),
+        ):
+            for _ in range(3):
+                db._ensure_schema_once(object())
+        self.assertEqual(calls, ["schema", "scan", "scan"])
 
     def test_an_index_behind_its_branch_is_reported_as_stale(self):
         import rag.web as web
@@ -2152,6 +2194,51 @@ class DualIndexTest(unittest.TestCase):
         self.assertNotIn("DELETE FROM chunks", " ".join(call[0] for call in calls))
         self.assertIn("def search", model.texts[0])
         self.assertEqual(updates[0][1][1], 9)
+
+    def test_the_code_model_embeds_in_small_batches(self):
+        from rag.embedder import Embedder, code_embedder, text_embedder
+
+        class Vector:
+            def tolist(self):
+                return [0.0] * 768
+
+        class FakeModel:
+            def __init__(self):
+                self.batch_sizes = []
+
+            def embed(self, texts, batch_size):
+                self.batch_sizes.append(batch_size)
+                return [Vector() for _ in texts]
+
+        code = code_embedder()
+        model = FakeModel()
+        with patch.dict(Embedder._shared, {code.model_name: model}):
+            code.embed_documents(["def a; end"] * 10)
+        self.assertEqual(model.batch_sizes, [4])
+        self.assertEqual(text_embedder().batch_size, 32)
+
+    def test_the_code_model_reads_at_most_2048_tokens(self):
+        import types
+
+        from rag.embedder import Embedder, code_embedder, text_embedder
+
+        class Tokenizer:
+            def __init__(self):
+                self.limits = []
+
+            def enable_truncation(self, max_length):
+                self.limits.append(max_length)
+
+        class FakeTextEmbedding:
+            def __init__(self, **kwargs):
+                self.model = types.SimpleNamespace(tokenizer=Tokenizer())
+
+        fastembed = types.SimpleNamespace(TextEmbedding=FakeTextEmbedding)
+        with patch.dict(sys.modules, {"fastembed": fastembed}), patch.dict(Embedder._shared, clear=True):
+            code_model = code_embedder()._load()
+            text_model = text_embedder()._load()
+        self.assertEqual(code_model.model.tokenizer.limits, [2048])
+        self.assertEqual(text_model.model.tokenizer.limits, [])
 
 
 def _schema_after(schema, statements):

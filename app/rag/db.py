@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -247,13 +248,31 @@ def connect():
             last_error = exc
             time.sleep(1)
             continue
-        ensure_schema(conn)
+        _ensure_schema_once(conn)
         return conn
     raise SystemExit(f"Could not connect to Postgres at {DATABASE_URL}: {last_error}")
 
 
+_SCHEMA_LOCK_KEY = 814263592
+_schema_lock = threading.Lock()
+_schema_ready = False
+
+
+def _ensure_schema_once(conn) -> None:
+    # The page polls status every second. Running the DDL on each of those
+    # connections made two of them wait on each other's table locks.
+    global _schema_ready
+    with _schema_lock:
+        if not _schema_ready:
+            ensure_schema(conn)
+            _schema_ready = True
+            return
+    _prefer_iterative_scan(conn)
+
+
 def ensure_schema(conn) -> None:
     with conn.cursor() as cur:
+        cur.execute("SELECT pg_advisory_xact_lock(%s)", (_SCHEMA_LOCK_KEY,))
         cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
         for statement in TABLE_STATEMENTS:
             cur.execute(statement)

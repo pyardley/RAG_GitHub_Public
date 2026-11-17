@@ -14,6 +14,12 @@ CODE_EMBEDDING_MODEL = os.environ.get(
     "CODE_EMBEDDING_MODEL", "jinaai/jina-embeddings-v2-base-code"
 )
 CODE_EMBEDDING_DIM = int(os.environ.get("CODE_EMBEDDING_DIM", "768"))
+# A batch is padded to its longest chunk, and attention memory grows with the
+# square of that length. The code model would read 8192 tokens, and four dense
+# 4700-token chunks need more memory than a laptop-sized Docker machine has.
+TEXT_EMBED_BATCH = max(1, int(os.environ.get("TEXT_EMBED_BATCH", "32")))
+CODE_EMBED_BATCH = max(1, int(os.environ.get("CODE_EMBED_BATCH", "4")))
+CODE_EMBED_TOKENS = max(128, int(os.environ.get("CODE_EMBED_TOKENS", "2048")))
 EMBEDDING_MODEL = TEXT_EMBEDDING_MODEL
 EMBEDDING_DIM = TEXT_EMBEDDING_DIM
 FASTEMBED_CACHE_PATH = os.environ.get("FASTEMBED_CACHE_PATH", "/opt/fastembed")

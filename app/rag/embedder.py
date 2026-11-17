@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from rag.config import (
+    CODE_EMBED_BATCH,
+    CODE_EMBED_TOKENS,
     CODE_EMBEDDING_DIM,
     CODE_EMBEDDING_MODEL,
     FASTEMBED_CACHE_PATH,
+    TEXT_EMBED_BATCH,
     TEXT_EMBEDDING_DIM,
     TEXT_EMBEDDING_MODEL,
 )
@@ -24,6 +27,7 @@ class Embedder:
             raise ValueError("Pass the embedding model and its dimension together")
         self.model_name = model_name
         self.dim = dim
+        self.batch_size = CODE_EMBED_BATCH if model_name == CODE_EMBEDDING_MODEL else TEXT_EMBED_BATCH
         self._model = None
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
@@ -45,7 +49,7 @@ class Embedder:
         else:
             # Stay in-process. A worker pool deadlocks under Docker, and the
             # ONNX runtime already uses its own threads.
-            produced = model.embed(texts, batch_size=32)
+            produced = model.embed(texts, batch_size=self.batch_size)
         return [vector.tolist() for vector in produced]
 
     def _load(self):
@@ -60,6 +64,8 @@ class Embedder:
                 threads=4,
                 enable_cpu_mem_arena=False,
             )
+            if self.model_name == CODE_EMBEDDING_MODEL:
+                cached.model.tokenizer.enable_truncation(max_length=CODE_EMBED_TOKENS)
             Embedder._shared[self.model_name] = cached
         return cached
 

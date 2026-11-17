@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, urlparse
 
+import psycopg
+
 from rag.answer import (
     AnswerError,
     active_model,
@@ -28,7 +30,7 @@ from rag.db import connect, list_repositories, resolve_repositories
 from rag.edges import POSSIBLE_ARROW, prepare_call_edges
 from rag.files import parse_repo
 from rag.gitrepo import list_branches, remote_commit
-from rag.ingest import delete_repository, ingest_repository
+from rag.ingest import delete_repository, ingest_lock_held, ingest_repository
 from rag.log import logger
 from rag.plan import retrieval_model
 from rag.search import Hit, impact, retrieve
@@ -222,13 +224,18 @@ def freshness_row(row: dict, remote_sha: str | None) -> dict:
 
 def public_status() -> tuple[int, dict]:
     try:
-        repositories = _repository_rows()
-    except (OSError, SystemExit, RuntimeError) as exc:
+        conn = connect()
+        try:
+            repositories = _repository_rows(conn)
+            elsewhere = ingest_lock_held(conn)
+        finally:
+            conn.close()
+    except (OSError, SystemExit, RuntimeError, psycopg.Error) as exc:
         return 503, {"error": _failure_text(exc), "ingest": _ingest_view(), "started": _STARTED_LABEL}
     return 200, {
         "repositories": repositories,
         "model": _model_view(),
-        "ingest": _ingest_view(),
+        "ingest": _ingest_view(elsewhere),
         "started": _STARTED_LABEL,
     }
 
@@ -293,6 +300,8 @@ def start_ingest(body: dict) -> tuple[int, dict]:
             raise ValueError("Branch must be text")
         branch = branch.strip() or None
     force = bool(body.get("force"))
+    if _ingest_elsewhere():
+        return 409, {"error": "Another process is building an index", "ingest": _ingest_view(True)}
     with _ingest_lock:
         busy = _ingest_state["running"]
         if not busy:
@@ -323,7 +332,7 @@ def remove_index(body: dict) -> tuple[int, dict]:
             "files": removed["files"],
             "chunks": removed["chunks"],
         },
-        "repositories": _repository_rows(),
+        "repositories": _repository_rows(None),
     }
 
 
@@ -407,12 +416,15 @@ def _run_ingest(repo: str, branch: str | None, force: bool) -> None:
             _ingest_state["error"] = error
 
 
-def _repository_rows() -> list[dict]:
-    conn = connect()
-    try:
+def _repository_rows(conn) -> list[dict]:
+    if conn is None:
+        own = connect()
+        try:
+            rows = list_repositories(own)
+        finally:
+            own.close()
+    else:
         rows = list_repositories(conn)
-    finally:
-        conn.close()
     published = []
     for row in rows:
         ingested = row["ingested_at"]
@@ -445,11 +457,29 @@ def _report_progress(update: dict) -> None:
         _ingest_state["progress"] = dict(update)
 
 
-def _ingest_view() -> dict:
+def _ingest_elsewhere() -> bool:
+    """True when another process, such as a command-line ingest, holds the ingest lock."""
+    with _ingest_lock:
+        if _ingest_state["running"]:
+            return False
+    try:
+        conn = connect()
+    except SystemExit:
+        return False
+    try:
+        return ingest_lock_held(conn)
+    except psycopg.Error:
+        return False
+    finally:
+        conn.close()
+
+
+def _ingest_view(elsewhere: bool = False) -> dict:
     with _ingest_lock:
         progress = _progress_view(_ingest_state["progress"])
         return {
             "running": _ingest_state["running"],
+            "elsewhere": bool(elsewhere) and not _ingest_state["running"],
             "repo": _ingest_state["repo"],
             "log": _ingest_state["log"],
             "error": _ingest_state["error"],

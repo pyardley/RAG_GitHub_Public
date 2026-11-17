@@ -38,6 +38,19 @@ class EvalMetricsTest(unittest.TestCase):
             self.assertTrue(question["paths"])
             self.assertTrue(question["question"])
 
+    def test_each_repository_file_covers_every_category(self):
+        for name in ("hwf-publicapp", "hwf-staffapp", "et-full-system", "c100-application"):
+            with self.subTest(name=name):
+                questions = run_eval.load_questions(ROOT / "eval" / f"{name}.jsonl")
+                self.assertGreaterEqual(len(questions), 20)
+                categories = {question["category"] for question in questions}
+                self.assertEqual(categories, {"concept", "identifier", "impact", "step"})
+                ids = [question["id"] for question in questions]
+                self.assertEqual(len(ids), len(set(ids)))
+                for question in questions:
+                    self.assertFalse(question["example"])
+                    self.assertTrue(all("\\" not in path for path in question["paths"]))
+
 
 if __name__ == "__main__":
     unittest.main()
