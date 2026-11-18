@@ -2100,6 +2100,31 @@ class IntentAndRankingTest(unittest.TestCase):
         self.assertEqual(body["target"], "ResolverService#return")
         self.assertEqual(impact_call.call_args.args[0]["target"], "ResolverService#return")
 
+    def test_definition_users_passes_empty_scopes_to_literal_hits(self):
+        from rag.search import _definition_users
+
+        definition = Hit(
+            1, "repo", "features/support/page_objects/et1/case_heard_by_page.rb",
+            5, 6, "CaseHeardByPage", "class", "class CaseHeardByPage < BasePage\nend\n", 0.9,
+        )
+        seen: dict = {}
+
+        def fake_literal(_conn, _repos, scopes, literals, k, excluded=None):
+            seen["scopes"] = scopes
+            seen["excluded"] = excluded
+            seen["literals"] = literals
+            return [], 0.0, False
+
+        with (
+            patch("rag.search._callers_and_gaps", return_value=({}, [], 0, False)),
+            patch("rag.search.literal_hits", side_effect=fake_literal),
+        ):
+            extra = _definition_users(None, [1], [definition])
+        self.assertEqual(extra, [])
+        self.assertEqual(seen["scopes"], [])
+        self.assertEqual(seen["excluded"], [])
+        self.assertEqual(seen["literals"], ["CaseHeardByPage"])
+
 
 class DualIndexTest(unittest.TestCase):
     def test_reciprocal_rank_fusion_uses_one_over_k_plus_rank(self):

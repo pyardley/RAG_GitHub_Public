@@ -1025,7 +1025,7 @@ def _gap_hits(conn, repository_ids: list[int], chunk_ids: set[int]) -> list[Hit]
 def literal_hits(
     conn,
     repository_ids: list[int],
-    scopes: list[str],
+    scopes: list[str] | None,
     literals: list[str],
     k: int,
     excluded: list[str] | None = None,
@@ -1035,6 +1035,8 @@ def literal_hits(
     The third value is true when more chunks matched than the passage limit.
     """
     started = time.perf_counter()
+    scopes = list(scopes or [])
+    excluded = list(excluded or [])
     pattern = postgres_pattern(literals)
     limited = (_PATH_SCOPE_SQL + " AND " + _PATH_EXCLUDE_SQL).replace("path", "c.path")
     sql = f"""
@@ -1056,7 +1058,7 @@ def literal_hits(
                     "scoped": bool(scopes),
                     "scopes": [scope.lower().strip("/") for scope in scopes] or [""],
                     "has_excluded": bool(excluded),
-                    "excluded": [item.lower().strip("/") for item in (excluded or [])] or [""],
+                    "excluded": [item.lower().strip("/") for item in excluded] or [""],
                     "pattern": pattern,
                 },
             )
@@ -1146,7 +1148,7 @@ def _definition_users(conn, repository_ids: list[int], hits: list[Hit]) -> list[
             continue
         try:
             mentions, _seconds, _truncated = literal_hits(
-                conn, repository_ids, None, [name], 12, None,
+                conn, repository_ids, [], [name], 12, [],
             )
         except (ValueError, psycopg.Error):
             continue

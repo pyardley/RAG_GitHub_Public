@@ -112,6 +112,10 @@ class Handler(BaseHTTPRequestHandler):
             logger.warning("POST %s rejected: %s", path, exc)
             self._json({"error": str(exc)}, 400)
             return
+        except Exception:
+            logger.exception("POST %s failed", path)
+            self._json({"error": "The request failed while running"}, 500)
+            return
         self._json(payload, status)
 
     def log_message(self, fmt: str, *args: Any) -> None:
