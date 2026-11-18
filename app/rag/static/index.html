@@ -1286,7 +1286,14 @@ ${data}
       const lineHeight = 15;
       const padY = 10;
       const rowGap = 36;
-      const columnGap = 48;
+      const sideLabel = (chart.edges || []).reduce((widest, edge) => {
+        if (edge.route !== "side" || !edge.label) return widest;
+        const source = (chart.nodes || []).find((node) => node.id === edge.from);
+        const target = (chart.nodes || []).find((node) => node.id === edge.to);
+        if (!source || !target || source.row !== target.row) return widest;
+        return Math.max(widest, edge.label.length);
+      }, 0);
+      const columnGap = Math.max(48, sideLabel * 7 + 24);
       const labelGutter = 176;
       const laneGap = 168;
       const marginY = 16;
@@ -1389,7 +1396,7 @@ ${data}
           const x1 = forward ? source.x + nodeWidth : source.x;
           const x2 = forward ? target.x : target.x + nodeWidth;
           const y = source.y + source.height / 2;
-          return { d: `M ${x1} ${y} L ${x2} ${y}`, labelX: (x1 + x2) / 2, labelY: y - 6, anchor: "middle" };
+          return { d: `M ${x1} ${y} L ${x2} ${y}`, labelX: (x1 + x2) / 2, labelY: y - 8, anchor: "middle" };
         }
         const mid = bottom[1] + Math.max(12, (top[1] - bottom[1]) / 2);
         return {

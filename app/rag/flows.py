@@ -1,11 +1,11 @@
 """End-to-end flow charts for an indexed checkout.
 
-The public Help with Fees application lists its questions in
-``config/settings.yml`` and chooses the next one in the navigation services.
-The staff application chooses the next page with ``redirect_to`` in each
-process controller. Both are read from the checkout of the indexed commit, so
-the chart stays with that commit. A box links to the file that implements the
-step.
+Two readers share one chart. An application that lists its questions in
+``config/settings.yml``, or sends the next page with ``redirect_to``, is read
+from those files. A test suite that describes screens as page objects is read
+from the page objects and the journey that clicks through them. Neither reader
+names a repository. Both use the checkout of the indexed commit, so the chart
+stays with that commit. A box links to the file that implements the step.
 """
 
 from __future__ import annotations
@@ -28,14 +28,11 @@ _SYMBOL = re.compile(r":([A-Za-z0-9_]+)")
 # Suffix ids that a question symbol must not collide with.
 _RESERVED = {"home", "checklist", "summary", "submit", "confirmation", "refund", "finish"}
 
-_UNMAPPED = (
-    "No end-to-end journey is mapped for this repository. "
-    "Flow charts are drawn for the Help with Fees public application and the staff application."
-)
+_UNMAPPED = "No end-to-end journey was found in this repository."
 
 
 def charts_for(root: Path) -> list[dict]:
-    """Flow charts found in a checkout. An empty list means nothing is mapped."""
+    """Flow charts found in a checkout. An empty list means nothing was found."""
     if not root.is_dir():
         return []
     charts: list[dict] = []
@@ -43,6 +40,10 @@ def charts_for(root: Path) -> list[dict]:
     if public:
         charts.append(public)
     charts.extend(staff_charts(root))
+    # Imported here so this module can finish loading before page flows import it back.
+    from rag.pageflows import page_object_charts
+
+    charts.extend(page_object_charts(root))
     return charts
 
 

@@ -2642,6 +2642,30 @@ class FlowTest(unittest.TestCase):
         self.assertIn(("accuracy", "summary", "Saved"), part_edges)
         self.assertNotIn("return_letter", {node["id"] for node in part["nodes"]})
 
+    def test_page_objects_follow_the_buttons_that_are_clicked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_page_checkout(root)
+            charts = charts_for(root)
+        self.assertEqual([chart["title"] for chart in charts], ["Make a claim"])
+        chart = charts[0]
+        self.assertIn("Complete and submit the form", chart["note"])
+        edges = {(edge["from"], edge["to"], edge["label"]) for edge in chart["edges"]}
+        self.assertIn(("apply_page", "saving_page", "Start a claim"), edges)
+        self.assertIn(("saving_page", "details_page", "Save and continue"), edges)
+        self.assertIn(("details_page", "extra_page", "Yes"), edges)
+        self.assertIn(("details_page", "done_page", "No"), edges)
+        self.assertIn(("extra_page", "done_page", "Save and continue"), edges)
+        self.assertIn(("apply_page", "return_page", "Return to a claim"), edges)
+        done = next(node for node in chart["nodes"] if node["id"] == "done_page")
+        returned = next(node for node in chart["nodes"] if node["id"] == "return_page")
+        start = next(node for node in chart["nodes"] if node["id"] == "apply_page")
+        self.assertEqual(done["kind"], "end")
+        self.assertEqual(done["path"], "features/pages/done_page.rb")
+        self.assertEqual(returned["row"], start["row"])
+        self.assertEqual(returned["column"], 1)
+        self.assertEqual(start["kind"], "choice")
+
     def test_an_unmapped_checkout_has_no_chart(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -2741,6 +2765,80 @@ def _write_public_checkout(root: Path) -> None:
         "  def create\n    redirect_to finish_session_path\n  end\nend\n"
     ))
     _write(root, "app/controllers/sessions_controller.rb", "class SessionsController\n  def finish\n  end\nend\n")
+
+
+def _write_page_checkout(root: Path) -> None:
+    _write(root, "config/locales/en.yml", (
+        "en:\n  claim:\n    header: Make a claim\n    about: Complete and submit the form\n"
+        "    start: Start a claim\n    return: Return to a claim\n    saving: Saving your claim\n"
+        "    details: Your details\n    extra: Extra question\n    done: Claim submitted\n"
+        "    back: Return to your claim\n    continue: Save and continue\n"
+    ))
+    _write(root, "features/pages/apply_page.rb", (
+        "class ApplyPage\n"
+        "  set_url config.url\n"
+        "  element :header, :main_header, 'claim.header'\n"
+        "  element :description, :element_with_text, 'claim.about'\n"
+        "  gds_submit_button :start_button, :'claim.start'\n"
+        "  gds_submit_button :return_button, :'claim.return'\n"
+        "  def start\n    start_button.click\n  end\n"
+        "  def return_to\n    return_button.click\n  end\n"
+        "end\n"
+    ))
+    _write(root, "features/pages/saving_page.rb", (
+        "class SavingPage\n"
+        "  element :page_header, :page_title, 'claim.saving'\n"
+        "  gds_submit_button :save_and_continue_button, :'claim.continue'\n"
+        "  def register\n    save_and_continue_button.submit\n  end\n"
+        "end\n"
+    ))
+    _write(root, "features/pages/details_page.rb", (
+        "class DetailsPage\n"
+        "  element :header, :content_header, 'claim.details'\n"
+        "  gds_submit_button :continue_button, :'claim.continue'\n"
+        "  def next\n    continue_button.click\n  end\n"
+        "end\n"
+    ))
+    _write(root, "features/pages/extra_page.rb", (
+        "class ExtraPage\n"
+        "  element :header, :content_header, 'claim.extra'\n"
+        "  gds_submit_button :continue_button, :'claim.continue'\n"
+        "  def next\n    continue_button.click\n  end\n"
+        "end\n"
+    ))
+    _write(root, "features/pages/done_page.rb", (
+        "class DonePage\n  element :header, :main_header, 'claim.done'\nend\n"
+    ))
+    _write(root, "features/pages/return_page.rb", (
+        "class ReturnPage\n  element :header, :main_header, 'claim.back'\nend\n"
+    ))
+    _write(root, "features/pages/only_start_page.rb", (
+        "class OnlyStartPage\n  set_url config.other\n"
+        "  element :header, :main_header, 'claim.header'\n"
+        "  gds_submit_button :start_button, :'claim.start'\n"
+        "  def start\n    start_button.click\n  end\n"
+        "end\n"
+    ))
+    _write(root, "features/support/pages.rb", (
+        "def apply_page\n  ApplyPage.new\nend\n"
+        "def saving_page\n  SavingPage.new\nend\n"
+        "def details_page\n  DetailsPage.new\nend\n"
+        "def extra_page\n  ExtraPage.new\nend\n"
+        "def done_page\n  DonePage.new\nend\n"
+        "def return_page\n  ReturnPage.new\nend\n"
+    ))
+    _write(root, "features/support/journey.rb", (
+        "def complete\n  begin_claim\n  saving_page.register\n  answer_details\n  done_page.open\nend\n"
+        "def begin_claim\n  apply_page.load\n  apply_page.start\nend\n"
+        "def answer_details\n"
+        "  if choice\n    details_page.choice.set(:yes)\n    details_page.next\n    extra_page.next\n"
+        "  else\n    details_page.next\n  end\n"
+        "end\n"
+    ))
+    _write(root, "features/step_definitions/return_steps.rb", (
+        "Given('the user returns') do\n  apply_page.return_to\nend\n"
+        "Then('the return page is shown') do\n  return_page.wait\nend\n"
+    ))
 
 
 def _write_staff_checkout(root: Path) -> None:
