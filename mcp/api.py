@@ -42,6 +42,7 @@ def query(
     answer: bool = False,
     index: str | None = None,
     fusion: str | None = None,
+    paths: list | None = None,
 ) -> dict:
     body = _lookup_body(question, "question", repo, k)
     body["answer"] = bool(answer)
@@ -49,7 +50,18 @@ def query(
         body["index"] = index
     if fusion:
         body["fusion"] = fusion
-    return _passages(_request("POST", "/api/query", body), include_queries=True)
+    if paths:
+        body["paths"] = [path.strip() for path in paths if isinstance(path, str) and path.strip()]
+    payload = _request("POST", "/api/query", body)
+    result = _passages(payload, include_queries=True)
+    if payload.get("journey"):
+        result["journey"] = True
+        result["scoped"] = bool(payload.get("scoped"))
+    if payload.get("branches"):
+        result["branches"] = payload["branches"]
+    if payload.get("message"):
+        result["message"] = payload["message"]
+    return result
 
 
 def search(question: str, repo: str | None = None, k: int = 8) -> dict:
@@ -95,24 +107,50 @@ def flow(repo: str | None = None, start: str | None = None) -> dict:
             "title": chart.get("title"),
             "repository": chart.get("repository"),
             "note": chart.get("note"),
-            "nodes": [
-                {
-                    "id": node.get("id"),
-                    "label": node.get("label"),
-                    "path": node.get("path"),
-                    "url": node.get("url"),
-                }
-                for node in chart.get("nodes") or []
-            ],
+            "nodes": [_flow_node(node) for node in chart.get("nodes") or []],
             "edges": [
                 {"from": edge.get("from"), "to": edge.get("to"), "label": edge.get("label") or ""}
                 for edge in chart.get("edges") or []
             ],
         })
+        if chart.get("changes"):
+            charts[-1]["changes"] = _flow_changes(chart["changes"])
     result = {"charts": charts, "repositories": payload.get("repositories") or []}
     if payload.get("message"):
         result["message"] = payload["message"]
     return result
+
+
+def _flow_node(node: dict) -> dict:
+    published = {
+        "id": node.get("id"),
+        "label": node.get("label"),
+        "path": node.get("path"),
+        "url": node.get("url"),
+    }
+    if node.get("visited"):
+        published["visited"] = True
+        published["visits"] = node.get("visits") or []
+    return published
+
+
+def _flow_changes(changes: dict) -> dict:
+    return {
+        "remote": changes.get("remote"),
+        "added": changes.get("added") or [],
+        "removed": changes.get("removed") or [],
+        "rewired": [
+            {
+                "label": item.get("label"),
+                "before": item.get("before") or [],
+                "after": item.get("after") or [],
+            }
+            for item in changes.get("rewired") or []
+            if isinstance(item, dict)
+        ],
+        "unchanged": bool(changes.get("unchanged")),
+        "unavailable": bool(changes.get("unavailable")),
+    }
 
 
 def default_branch(repo: str) -> dict:

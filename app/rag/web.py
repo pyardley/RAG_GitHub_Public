@@ -30,7 +30,8 @@ from rag.db import connect, list_repositories, resolve_repositories
 from rag.edges import POSSIBLE_ARROW, prepare_call_edges
 from rag.files import parse_repo
 from rag.flows import charts_for, unmapped_message
-from rag.gitrepo import checkout_dir, list_branches, remote_commit
+from rag.gitrepo import checkout_dir, list_branches, remote_commit, tip_checkout
+from rag.journey import apply_journey_diff, branch_answers, journey_scopes, mark_visits
 from rag.ingest import delete_repository, ingest_lock_held, ingest_repository
 from rag.intent import impact_target
 from rag.log import logger
@@ -249,14 +250,31 @@ def public_status() -> tuple[int, dict]:
 
 def run_query(body: dict) -> tuple[int, dict]:
     question = _required_text(body, "question", "Enter a question")
+    nodes, edges = _optional_chart(body)
+    if nodes and edges:
+        answers = branch_answers(nodes, edges, question)
+        if answers:
+            return 200, {"journey": True, "branches": answers, "hits": [], "queries": []}
+    scopes = _journey_scopes(body, nodes)
     target = impact_target(question)
-    if target:
+    if target and not nodes:
         status, payload = run_impact({**body, "target": target})
         if status == 200:
             payload["routed"] = "impact"
             payload["target"] = target
         return status, payload
-    return _retrieve(body, question, written=_wants_answer(body), impact_mode=False)
+    if nodes and not scopes:
+        return 200, {
+            "journey": True,
+            "scoped": True,
+            "hits": [],
+            "queries": [],
+            "message": "This journey has no files to search.",
+        }
+    return _retrieve(
+        body, question, written=_wants_answer(body), impact_mode=False,
+        scopes=scopes, journey=bool(nodes or scopes),
+    )
 
 
 def run_search(body: dict) -> tuple[int, dict]:
@@ -333,12 +351,14 @@ def run_flow(body: dict) -> tuple[int, dict]:
         for chart in built:
             if chart.pop("reader", None) == "decision":
                 followed = True
+            mark_visits(root, chart)
         if start and not followed:
             missed_start.append(item["name"])
         if not built:
             if not start:
                 unmapped.append(item["name"])
             continue
+        _compare_branch(item, built, start)
         sha = str(item["commit_sha"])
         for chart in built:
             chart["repository"] = item["name"]
@@ -353,6 +373,52 @@ def run_flow(body: dict) -> tuple[int, dict]:
         "charts": charts,
         "message": message,
     }
+
+
+def _compare_branch(item: dict, charts: list[dict], start: str | None) -> None:
+    """When the branch has moved, record how this journey differs at the tip."""
+    indexed = str(item.get("commit_sha") or "")
+    remote = _remote_sha(item)
+    if not remote or remote == indexed or indexed.startswith(remote) or remote.startswith(indexed):
+        return
+    try:
+        tip = tip_checkout(item["name"], str(item.get("branch") or ""), remote)
+    except (OSError, RuntimeError) as exc:
+        logger.warning("branch tip for %s was not fetched: %s", item.get("name"), exc)
+        return
+    if tip is None:
+        return
+    try:
+        later = charts_for(tip, start)
+    except (OSError, RuntimeError) as exc:
+        logger.warning("branch tip for %s could not be read: %s", item.get("name"), exc)
+        return
+    for chart in later:
+        chart.pop("reader", None)
+    apply_journey_diff(charts, later, remote)
+
+
+def _remote_sha(item: dict) -> str | None:
+    """The commit the indexed branch points at, reused from the freshness cache."""
+    key = (item["name"], item.get("branch"), str(item.get("commit_sha")))
+    with _freshness_lock:
+        known = _freshness.get(key)
+    if known and time.monotonic() - known[0] < _FRESHNESS_SECONDS:
+        return known[1]
+    url = item.get("url")
+    if not url:
+        try:
+            _name, url = parse_repo(item["name"])
+        except ValueError:
+            return None
+    try:
+        sha = remote_commit(url, item.get("branch"), timeout=_FRESHNESS_TIMEOUT)
+    except (ValueError, RuntimeError):
+        return None
+    if sha:
+        with _freshness_lock:
+            _freshness[key] = (time.monotonic(), sha)
+    return sha
 
 
 def _attach_flow_urls(chart: dict, repo: str, commit_sha: str) -> None:
@@ -390,6 +456,85 @@ def _flow_message(
     if not drew and not parts:
         parts.append(unmapped_message([]))
     return " ".join(parts)
+
+
+def _optional_chart(body: dict) -> tuple[list[dict], list[dict]]:
+    """Nodes and edges sent back with a question about the chart on screen."""
+    if "nodes" not in body and "edges" not in body:
+        return [], []
+    nodes = body.get("nodes")
+    edges = body.get("edges")
+    if not isinstance(nodes, list) or not isinstance(edges, list):
+        raise ValueError("Journey must be a chart")
+    if len(nodes) > 400 or len(edges) > 800:
+        raise ValueError("Journey is too large")
+    clean_nodes: list[dict] = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        node_id = str(node.get("id") or "").strip()
+        if not node_id or len(node_id) > 200 or ".." in node_id:
+            continue
+        url = str(node.get("url") or "")
+        clean_nodes.append({
+            "id": node_id,
+            "label": str(node.get("label") or "")[:200],
+            "path": _chart_path(node.get("path")),
+            "url": url if url.startswith("https://github.com/") else "",
+        })
+    clean_edges: list[dict] = []
+    for edge in edges:
+        if not isinstance(edge, dict):
+            continue
+        source = str(edge.get("from") or "").strip()
+        target = str(edge.get("to") or "").strip()
+        if not source or not target:
+            continue
+        clean_edges.append({
+            "from": source[:200],
+            "to": target[:200],
+            "label": str(edge.get("label") or "")[:200],
+        })
+    return clean_nodes, clean_edges
+
+
+def _journey_scopes(body: dict, nodes: list[dict]) -> list[str] | None:
+    if nodes:
+        repo = body.get("repo")
+        root = None
+        if isinstance(repo, str) and repo.strip():
+            try:
+                root = checkout_dir(parse_repo(repo)[0])
+            except ValueError:
+                root = None
+            if root is not None and not root.is_dir():
+                root = None
+        return journey_scopes(nodes, root)
+    raw = body.get("paths")
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        raise ValueError("Paths must be a list")
+    scopes: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        path = _chart_path(item)
+        if path and path not in scopes:
+            scopes.append(path)
+        if len(scopes) >= 400:
+            break
+    return scopes
+
+
+def _chart_path(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    relative = value.replace("\\", "/").strip().lstrip("/")
+    parts = relative.split("/")
+    if not relative or len(relative) > 300 or any(part in {"", ".", ".."} for part in parts):
+        return ""
+    return relative
 
 
 def _optional_start(body: dict) -> str | None:
@@ -446,7 +591,15 @@ def remove_index(body: dict) -> tuple[int, dict]:
     }
 
 
-def _retrieve(body: dict, question: str, *, written: bool, impact_mode: bool) -> tuple[int, dict]:
+def _retrieve(
+    body: dict,
+    question: str,
+    *,
+    written: bool,
+    impact_mode: bool,
+    scopes: list[str] | None = None,
+    journey: bool = False,
+) -> tuple[int, dict]:
     repo = _optional_repo(body)
     count = _passage_count(body)
     index = resolve_index(body["index"] if "index" in body else None)
@@ -460,7 +613,7 @@ def _retrieve(body: dict, question: str, *, written: bool, impact_mode: bool) ->
         repositories = resolve_repositories(conn, repo)
         hits, queries, truncated = retrieve(
             conn, [item["id"] for item in repositories], question, count, meter,
-            index=index, fusion=fusion,
+            index=index, fusion=fusion, scopes=scopes,
         )
     except SystemExit as exc:
         return 400, {"error": _failure_text(exc)}
@@ -469,7 +622,7 @@ def _retrieve(body: dict, question: str, *, written: bool, impact_mode: bool) ->
     text, answer_error = _written_answer(
         question, hits, impact_mode=impact_mode, enabled=written, meter=meter,
     )
-    return 200, {
+    payload = {
         "repositories": [_scope(item) for item in repositories],
         "queries": queries,
         "index": index,
@@ -486,6 +639,10 @@ def _retrieve(body: dict, question: str, *, written: bool, impact_mode: bool) ->
         "usage": meter.as_dict(),
         "model": _model_view(),
     }
+    if journey:
+        payload["journey"] = True
+        payload["scoped"] = bool(scopes)
+    return 200, payload
 
 
 def _written_answer(

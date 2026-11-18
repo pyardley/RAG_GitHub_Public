@@ -19,7 +19,8 @@ _INSTRUCTIONS = (
     "Code RAG searches indexed GitHub repositories. "
     "Use query for a question, search for exact text, impact for a class, method, "
     "file, or FactoryBot call such as FactoryBot.create(:claim), and flow for the "
-    "main journeys through a Help with Fees repository. "
+    "main journeys. A flow chart can also say which steps a feature visits and "
+    "what changed on the branch. "
     "Set repo to owner/name when more than one repository is indexed. "
     "The app must already be running."
 )
@@ -35,7 +36,8 @@ _TOOLS = [
         "description": (
             "Ask the indexed code a question and return the closest passages. "
             "Use this for how something works. Set repo to owner/name to stay in one repository. "
-            "Passages are shortened. Leave answer false so you read the passages yourself."
+            "Passages are shortened. Leave answer false so you read the passages yourself. "
+            "Pass paths to search only those files, such as the steps on a flow chart."
         ),
         "inputSchema": {
             "type": "object",
@@ -61,6 +63,11 @@ _TOOLS = [
                         "rrf is reciprocal rank fusion and is the default with a single index. "
                         "score adds the raw cosine similarity to the keyword rank; prefer score with index both."
                     ),
+                },
+                "paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional files or directories to search, such as the steps on a flow chart.",
                 },
             },
             "required": ["question"],
@@ -111,7 +118,9 @@ _TOOLS = [
             "Each node has the file it opens on GitHub. "
             "Set repo to owner/name when more than one repository is indexed. "
             "Set start to a step path such as /steps/opening/start_or_continue when the "
-            "application chooses the next screen in a decision tree."
+            "application chooses the next screen in a decision tree. "
+            "A visited node is named by a feature or step definition. "
+            "changes lists steps added, removed, or rewired since the indexed commit."
         ),
         "inputSchema": {
             "type": "object",
@@ -264,6 +273,7 @@ def _tool(name: object, arguments: dict) -> dict:
             bool(arguments.get("answer", False)),
             _choice(arguments.get("index"), ("text", "code", "both"), "Index"),
             _choice(arguments.get("fusion"), ("rrf", "score"), "Fusion"),
+            arguments.get("paths") if isinstance(arguments.get("paths"), list) else None,
         )
     if name == "search":
         return api.search(arguments.get("question", ""), arguments.get("repo"), _count(arguments.get("k", 12)))

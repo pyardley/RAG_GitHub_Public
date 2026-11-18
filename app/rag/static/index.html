@@ -204,6 +204,10 @@
     .flow-label { font: 11px "Segoe UI", "Helvetica Neue", sans-serif; fill: var(--muted); }
     .flow-node:focus { outline: none; }
     .flow-node:focus rect { stroke: var(--ink); stroke-width: 2; }
+    .journey-ask { display: grid; gap: 0.45rem; margin: 0.85rem 0; }
+    .journey-ask textarea { min-height: 4.5rem; }
+    .journey-ask .hint { margin: 0; }
+    .journey-result { display: grid; gap: 0.6rem; }
   </style>
 </head>
 <body>
@@ -308,7 +312,7 @@
         button: "Show",
         answer: false,
         k: false,
-        hint: "Leave this blank to draw journeys from a question list, redirects, or page objects. A path such as /steps/opening/start_or_continue starts where a decision tree chooses the next step. Each box opens that step in the indexed commit on GitHub."
+        hint: "Leave this blank to draw journeys from a question list, redirects, or page objects. A path such as /steps/opening/start_or_continue starts where a decision tree chooses the next step. Each box opens that step in the indexed commit on GitHub. Ask about this journey once the chart is drawn."
       }
     };
     const prompts = { query: "", impact: "", search: "", flow: "" };
@@ -1296,12 +1300,182 @@ ${data}
           note.textContent = chart.note;
           section.append(note);
         }
+        const changes = flowChanges(chart.changes);
+        if (changes) section.append(changes);
+        if (output === results) section.append(journeyAsk(chart));
         const frame = document.createElement("div");
         frame.className = "flow-frame";
         frame.append(drawFlow(chart));
         section.append(frame);
         output.append(section);
       }
+    }
+
+    let journeyAskCount = 0;
+
+    function flowChanges(changes) {
+      if (!changes) return null;
+      const note = document.createElement("p");
+      note.className = "scope";
+      if (changes.unavailable) {
+        note.textContent = `The branch is now at ${changes.remote}. Its journey could not be read, so this chart stays on the indexed commit.`;
+        return note;
+      }
+      if (changes.unchanged) {
+        note.textContent = `The branch is now at ${changes.remote}. This journey is the same.`;
+        return note;
+      }
+      const parts = [`The branch is now at ${changes.remote}.`];
+      if ((changes.added || []).length) {
+        const count = changes.added_count > changes.added.length ? ` (${changes.added_count})` : "";
+        parts.push(`Added${count}: ${changes.added.join(", ")}.`);
+      }
+      if ((changes.removed || []).length) {
+        const count = changes.removed_count > changes.removed.length ? ` (${changes.removed_count})` : "";
+        parts.push(`Removed${count}: ${changes.removed.join(", ")}.`);
+      }
+      if ((changes.rewired || []).length) {
+        const lines = changes.rewired.map((item) => {
+          const after = (item.after || []).join(", ");
+          return after ? `${item.label} (${after})` : item.label;
+        });
+        parts.push(`Rewired: ${lines.join("; ")}.`);
+      }
+      note.textContent = parts.join(" ");
+      return note;
+    }
+
+    function journeyAsk(chart) {
+      const form = document.createElement("form");
+      form.className = "journey-ask";
+      const caption = document.createElement("label");
+      const field = document.createElement("textarea");
+      const fieldId = `journey-ask-${journeyAskCount += 1}`;
+      caption.htmlFor = fieldId;
+      caption.textContent = "Ask about this journey";
+      field.id = fieldId;
+      field.placeholder = "What happens if the answer is no?";
+      const hint = document.createElement("p");
+      hint.className = "hint";
+      hint.textContent = "A question that names a step and an answer follows that arrow. Any other question searches only the files for these steps.";
+      const button = document.createElement("button");
+      button.type = "submit";
+      button.textContent = "Ask";
+      const result = document.createElement("div");
+      result.className = "journey-result";
+      form.append(caption, field, hint, button, result);
+      form.addEventListener("submit", (event) => askJourney(event, chart, field, button, result));
+      return form;
+    }
+
+    async function askJourney(event, chart, field, button, result) {
+      event.preventDefault();
+      const question = field.value.trim();
+      if (!question) return;
+      button.disabled = true;
+      result.replaceChildren();
+      const waiting = document.createElement("p");
+      waiting.className = "scope";
+      waiting.textContent = "Searching this journey…";
+      result.append(waiting);
+      try {
+        const response = await fetch("/api/query", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            question,
+            repo: chart.repository || repoSelect.value,
+            k: 8,
+            index: "code",
+            fusion: "rrf",
+            answer: false,
+            nodes: (chart.nodes || []).map((node) => ({
+              id: node.id, label: node.label, path: node.path, url: node.url
+            })),
+            edges: (chart.edges || []).map((edge) => ({
+              from: edge.from, to: edge.to, label: edge.label || ""
+            }))
+          })
+        });
+        const body = await response.json();
+        result.replaceChildren();
+        if (!response.ok) {
+          const error = document.createElement("p");
+          error.className = "empty";
+          error.textContent = body.error || "The request failed";
+          result.append(error);
+          return;
+        }
+        fillJourney(result, body);
+      } catch (error) {
+        result.replaceChildren();
+        const errorNote = document.createElement("p");
+        errorNote.className = "empty";
+        errorNote.textContent = "The request failed before a response arrived";
+        result.append(errorNote);
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    function fillJourney(result, body) {
+      if (body.branches && body.branches.length) {
+        const note = document.createElement("p");
+        note.className = "scope";
+        note.textContent = "Taken from the arrows on this journey.";
+        result.append(note, branchList(body.branches));
+        return;
+      }
+      if (body.message) {
+        const note = document.createElement("p");
+        note.className = "scope";
+        note.textContent = body.message;
+        result.append(note);
+      } else if (body.scoped) {
+        const note = document.createElement("p");
+        note.className = "scope";
+        note.textContent = "Searched the files on this journey.";
+        result.append(note);
+      }
+      if (body.answer) {
+        const answer = document.createElement("div");
+        answer.className = "answer";
+        answer.append(renderMarkdown(body.answer));
+        result.append(answer);
+      }
+      if (!body.hits || !body.hits.length) {
+        if (!body.message) {
+          const empty = document.createElement("p");
+          empty.className = "empty";
+          empty.textContent = "No matching code in the files on this journey.";
+          result.append(empty);
+        }
+        return;
+      }
+      const group = document.createElement("div");
+      group.className = "group";
+      for (const hit of body.hits) group.append(hitArticle(hit, false));
+      result.append(group);
+    }
+
+    function branchList(branches) {
+      const list = document.createElement("ul");
+      for (const item of branches) {
+        const line = document.createElement("li");
+        line.append(`${item.from}, ${item.label || "next"}: `);
+        if (item.url) {
+          const link = document.createElement("a");
+          link.href = item.url;
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+          link.textContent = item.to;
+          line.append(link);
+        } else {
+          line.append(item.to);
+        }
+        list.append(line);
+      }
+      return list;
     }
 
     function drawFlow(chart) {
@@ -1449,9 +1623,11 @@ ${data}
         link.setAttribute("target", "_blank");
         link.setAttribute("rel", "noopener noreferrer");
       }
-      link.setAttribute("aria-label", `${node.label}. ${node.path || ""}`);
+      const visited = node.visited ? " A feature names this step." : "";
+      link.setAttribute("aria-label", `${node.label}. ${node.path || ""}.${visited}`);
       const title = document.createElementNS(svgNs, "title");
-      title.textContent = node.detail || node.label;
+      const visits = (node.visits || []).join("\n");
+      title.textContent = visits ? `${node.detail || node.label}\n${visits}` : (node.detail || node.label);
       link.append(title);
       const rect = document.createElementNS(svgNs, "rect");
       rect.setAttribute("x", String(node.x));
@@ -1460,6 +1636,12 @@ ${data}
       rect.setAttribute("height", String(node.height));
       rect.setAttribute("rx", "8");
       link.append(rect);
+      if (node.visited) {
+        const mark = document.createElementNS(svgNs, "polygon");
+        mark.setAttribute("points", `${node.x},${node.y} ${node.x + 14},${node.y} ${node.x},${node.y + 14}`);
+        mark.setAttribute("fill", node.kind === "end" ? "#fffdf8" : "#1f4d3a");
+        link.append(mark);
+      }
       node.lines.forEach((line, index) => {
         const text = document.createElementNS(svgNs, "text");
         text.setAttribute("x", String(node.x + 12));

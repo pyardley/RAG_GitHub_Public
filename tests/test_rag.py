@@ -31,6 +31,7 @@ from rag.follow import (
     step_phrases,
 )
 from rag.gitrepo import branch_list, default_branch_name
+from rag.journey import branch_answers, diff_chart, journey_scopes, mark_visits
 from rag.flows import charts_for, parse_navigation, question_texts
 from rag.web import Handler, _progress_view, github_blob_url, public_status, run_flow, run_query, start_ingest
 from unittest.mock import patch
@@ -3167,6 +3168,235 @@ class CliTest(unittest.TestCase):
         self.assertIn("--fusion", text)
         self.assertIn("score", text)
         self.assertIn("rrf", text)
+
+
+class JourneyTest(unittest.TestCase):
+    def test_yes_or_no_follows_the_arrow(self) -> None:
+        nodes = [
+            {
+                "id": "miam/attended",
+                "label": "MIAM attended",
+                "path": "app/controllers/steps/miam/attended_controller.rb",
+            },
+            {
+                "id": "miam/exemption_claim",
+                "label": "MIAM exemption claim",
+                "path": "app/controllers/steps/miam/exemption_claim_controller.rb",
+                "url": "https://github.com/ministryofjustice/c100-application/blob/abc/exemption.rb#L3",
+            },
+            {
+                "id": "miam/certification",
+                "label": "MIAM certification",
+                "path": "app/controllers/steps/miam/certification_controller.rb",
+            },
+        ]
+        edges = [
+            {"from": "miam/attended", "to": "miam/exemption_claim", "label": "No"},
+            {"from": "miam/attended", "to": "miam/certification", "label": "Yes"},
+            {"from": "miam/certification", "to": "miam/exemption_claim", "label": "No"},
+        ]
+        found = branch_answers(nodes, edges, "What happens if the applicant says no to a MIAM?")
+        self.assertEqual(
+            [(item["from"], item["label"], item["to"]) for item in found],
+            [
+                ("MIAM attended", "No", "MIAM exemption claim"),
+                ("MIAM certification", "No", "MIAM exemption claim"),
+            ],
+        )
+        self.assertTrue(found[0]["url"].startswith("https://github.com/"))
+
+    def test_a_named_answer_uses_that_arrow(self) -> None:
+        nodes = [
+            {"id": "opening/start_or_continue", "label": "Start or continue an application"},
+            {"id": "opening/start", "label": "What you will need"},
+        ]
+        edges = [{
+            "from": "opening/start_or_continue",
+            "to": "opening/start",
+            "label": "Start a new application",
+        }]
+        found = branch_answers(nodes, edges, "Where does Start a new application go?")
+        self.assertEqual(found[0]["to"], "What you will need")
+
+    def test_a_question_without_an_answer_is_not_an_arrow(self) -> None:
+        nodes = [{"id": "miam/attended", "label": "MIAM attended"}]
+        edges = [{"from": "miam/attended", "to": "miam/exemption_claim", "label": "No"}]
+        self.assertEqual(branch_answers(nodes, edges, "Tell me about the MIAM"), [])
+
+    def test_scopes_include_the_view_and_leave_out_the_shared_locale(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locale = root / "config" / "locales" / "steps" / "opening" / "en.yml"
+            locale.parent.mkdir(parents=True)
+            locale.write_text("en: {}\n", encoding="utf-8")
+            (root / "config" / "locales" / "en.yml").write_text("en: {}\n", encoding="utf-8")
+            scopes = journey_scopes(
+                [{"path": "app/controllers/steps/opening/start_controller.rb"}],
+                root,
+            )
+        self.assertEqual(scopes, [
+            "app/controllers/steps/opening/start_controller.rb",
+            "app/views/steps/opening/start",
+            "config/locales/steps/opening/en.yml",
+        ])
+
+    def test_a_feature_marks_the_step_it_names(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            feature = root / "features" / "opening.feature"
+            feature.parent.mkdir()
+            feature.write_text(
+                "Feature: open\n  When I visit '/steps/opening/start_or_continue'\n"
+                "  And I visit '/steps/opening/start'\n",
+                encoding="utf-8",
+            )
+            steps = root / "features" / "step_definitions" / "apply_steps.rb"
+            steps.parent.mkdir(parents=True)
+            steps.write_text("apply_page.start_now\n", encoding="utf-8")
+            chart = {
+                "note": "The journey.",
+                "nodes": [
+                    {"id": "opening/start", "label": "Start", "path": "app/controllers/steps/opening/start_controller.rb"},
+                    {"id": "opening/start_or_continue", "label": "Continue", "path": "app/controllers/steps/opening/start_or_continue_controller.rb"},
+                    {"id": "opening/other", "label": "Other", "path": "app/controllers/steps/opening/other_controller.rb"},
+                    {"id": "apply_page", "label": "Apply", "path": "features/support/page_objects/et1/apply_page.rb"},
+                ],
+            }
+            mark_visits(root, chart)
+        self.assertTrue(chart["nodes"][0]["visited"])
+        self.assertEqual(chart["nodes"][0]["visits"], ["features/opening.feature"])
+        self.assertTrue(chart["nodes"][1]["visited"])
+        self.assertNotIn("visited", chart["nodes"][2])
+        self.assertTrue(chart["nodes"][3]["visited"])
+        self.assertIn("corner mark", chart["note"])
+
+    def test_diff_lists_added_removed_and_rewired_steps(self) -> None:
+        indexed = {
+            "nodes": [
+                {"id": "a", "label": "Start"},
+                {"id": "b", "label": "Middle"},
+                {"id": "c", "label": "Old end"},
+            ],
+            "edges": [
+                {"from": "a", "to": "b", "label": "No"},
+                {"from": "b", "to": "c", "label": "Yes"},
+            ],
+        }
+        tip = {
+            "nodes": [
+                {"id": "a", "label": "Start"},
+                {"id": "b", "label": "Middle"},
+                {"id": "d", "label": "New end"},
+            ],
+            "edges": [
+                {"from": "a", "to": "d", "label": "No"},
+                {"from": "b", "to": "d", "label": "Yes"},
+            ],
+        }
+        changes = diff_chart(indexed, tip, "abc123def4567890")
+        self.assertEqual(changes["remote"], "abc123def456")
+        self.assertEqual(changes["added"], ["New end"])
+        self.assertEqual(changes["removed"], ["Old end"])
+        self.assertEqual(changes["rewired"][0]["label"], "Start")
+        self.assertIn("no → New end", changes["rewired"][0]["after"])
+        self.assertFalse(changes["unchanged"])
+
+    def test_an_unchanged_journey_is_marked(self) -> None:
+        chart = {"nodes": [{"id": "a", "label": "Start"}], "edges": []}
+        self.assertTrue(diff_chart(chart, {"nodes": list(chart["nodes"]), "edges": []}, "abc")["unchanged"])
+
+    def test_a_question_about_the_chart_answers_from_the_arrow(self) -> None:
+        with patch("rag.web.connect", side_effect=AssertionError("database")):
+            status, payload = run_query({
+                "question": "What happens if the answer is no to a MIAM?",
+                "nodes": [
+                    {"id": "miam/attended", "label": "MIAM attended", "path": "app/controllers/steps/miam/attended_controller.rb"},
+                    {
+                        "id": "miam/exemption_claim",
+                        "label": "MIAM exemption claim",
+                        "path": "app/controllers/steps/miam/exemption_claim_controller.rb",
+                        "url": "https://github.com/ministryofjustice/c100-application/blob/abc/file.rb#L1",
+                    },
+                ],
+                "edges": [{"from": "miam/attended", "to": "miam/exemption_claim", "label": "No"}],
+            })
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["branches"][0]["to"], "MIAM exemption claim")
+        self.assertEqual(payload["hits"], [])
+
+    def test_a_journey_question_without_an_arrow_stays_in_the_chart_files(self) -> None:
+        seen: dict[str, list[str]] = {}
+
+        def fake_retrieve(*_args, **kwargs):
+            seen["scopes"] = kwargs.get("scopes") or []
+            return [], ["where is the fee calculated"], False
+
+        class Conn:
+            def close(self) -> None:
+                return None
+
+        with patch("rag.web.connect", return_value=Conn()), \
+             patch("rag.web.resolve_repositories", return_value=[{
+                 "id": 1, "name": "acme/app", "branch": "main", "commit_sha": "abc123def456",
+             }]), \
+             patch("rag.web.retrieve", fake_retrieve), \
+             patch("rag.web.checkout_dir", return_value=Path("missing-checkout")):
+            status, payload = run_query({
+                "question": "where is the fee calculated",
+                "repo": "acme/app",
+                "nodes": [{
+                    "id": "opening/start",
+                    "label": "Start",
+                    "path": "app/controllers/steps/opening/start_controller.rb",
+                }],
+                "edges": [],
+            })
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["scoped"])
+        self.assertIn("app/views/steps/opening/start", seen["scopes"])
+        self.assertEqual(payload["hits"], [])
+
+    def test_tip_checkout_fetches_the_branch_without_moving_the_indexed_commit(self) -> None:
+        import os
+
+        from rag import gitrepo
+
+        env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "Test",
+            "GIT_AUTHOR_EMAIL": "test@example.com",
+            "GIT_COMMITTER_NAME": "Test",
+            "GIT_COMMITTER_EMAIL": "test@example.com",
+        }
+
+        def git(*args: str, cwd: Path) -> str:
+            completed = subprocess.run(
+                ["git", *args], cwd=cwd, check=True, env=env, capture_output=True, text=True,
+            )
+            return completed.stdout.strip()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            origin = root / "origin"
+            origin.mkdir()
+            git("init", "-b", "main", cwd=origin)
+            (origin / "README").write_text("one\n", encoding="utf-8")
+            git("add", "README", cwd=origin)
+            git("commit", "-m", "one", cwd=origin)
+            first = git("rev-parse", "HEAD", cwd=origin)
+            clone = root / "repos" / "example" / "app"
+            clone.parent.mkdir(parents=True)
+            git("clone", "--depth", "1", "--branch", "main", str(origin), str(clone), cwd=root)
+            (origin / "README").write_text("two\n", encoding="utf-8")
+            git("add", "README", cwd=origin)
+            git("commit", "-m", "two", cwd=origin)
+            second = git("rev-parse", "HEAD", cwd=origin)
+            with patch.object(gitrepo, "REPOS_DIR", root / "repos"):
+                tip = gitrepo.tip_checkout("example/app", "main", second)
+            self.assertIsNotNone(tip)
+            assert tip is not None
+            self.assertEqual((tip / "README").read_text(encoding="utf-8"), "two\n")
+            self.assertEqual(git("rev-parse", "HEAD", cwd=clone), first)
 
 
 if __name__ == "__main__":

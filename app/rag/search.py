@@ -148,8 +148,13 @@ def retrieve(
     index: str | None = None,
     fusion: str | None = None,
     rrf_k: int | None = None,
+    scopes: list[str] | None = None,
 ) -> tuple[list[Hit], list[str], bool]:
-    """Search once, or once per query when a small model splits the question."""
+    """Search once, or once per query when a small model splits the question.
+
+    ``scopes`` limits the search to those files and directories. When it is
+    omitted, directories named in the question (``under /app``) are used.
+    """
     from rag.plan import search_queries
     from rag.usage import Stage
 
@@ -157,10 +162,13 @@ def retrieve(
     chosen_fusion = resolve_fusion(fusion)
     chosen_k = resolve_rrf_k(rrf_k)
     excluded = path_exclusions(question)
-    scopes = [
-        scope for scope in path_scopes(question)
-        if not path_excluded(scope, excluded)
-    ]
+    if scopes is None:
+        scopes = [
+            scope for scope in path_scopes(question)
+            if not path_excluded(scope, excluded)
+        ]
+    else:
+        scopes = [scope for scope in scopes if scope and not path_excluded(scope, excluded)]
     target = impact_target(question)
     if target:
         started = time.perf_counter()

@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 
 from rag.config import GITHUB_TOKEN, REPOS_DIR
+
+_tip_lock = threading.Lock()
 
 
 def checkout(name: str, url: str, branch: str | None) -> tuple[Path, str, str]:
@@ -104,6 +108,59 @@ def checkout_dir(name: str) -> Path:
     return _destination(name)
 
 
+def tip_checkout(name: str, branch: str, sha: str) -> Path | None:
+    """A detached checkout of a branch tip, leaving the indexed checkout where it is.
+
+    The indexed clone stays on the commit that was embedded. A later commit is
+    fetched into its own worktree so a journey can be compared without moving
+    that commit. ``sha`` is the tip the caller already read from the remote.
+    A worktree already at that commit is reused. None means the tip could not
+    be fetched.
+    """
+    if not _safe_branch(branch) or not re.fullmatch(r"[0-9a-fA-F]{7,40}", sha or ""):
+        return None
+    source = checkout_dir(name)
+    if not (source / ".git").exists():
+        return None
+    destination = _tip_dir(name, sha)
+    if _at_commit(destination, sha):
+        return destination
+    with _tip_lock:
+        if _at_commit(destination, sha):
+            return destination
+        try:
+            _run(
+                ["git", "-c", "safe.directory=*", "-C", str(source), "fetch", "--depth", "1", "origin", branch],
+                timeout=60,
+            )
+            fetched = _run(
+                ["git", "-c", "safe.directory=*", "-C", str(source), "rev-parse", "FETCH_HEAD"]
+            ).strip()
+        except RuntimeError:
+            return None
+        if fetched != sha and not fetched.startswith(sha) and not sha.startswith(fetched):
+            return None
+        if destination.exists():
+            shutil.rmtree(destination, ignore_errors=True)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            _run(
+                ["git", "-c", "safe.directory=*", "-C", str(source), "worktree", "prune"],
+                timeout=30,
+            )
+            _run(
+                [
+                    "git", "-c", "safe.directory=*", "-C", str(source),
+                    "worktree", "add", "--detach", str(destination), fetched,
+                ],
+                timeout=60,
+            )
+        except RuntimeError:
+            shutil.rmtree(destination, ignore_errors=True)
+            return None
+    return destination if _at_commit(destination, sha) else None
+
+
 def remove_checkout(name: str) -> bool:
     """Delete the local checkout for one repository. Missing checkouts are fine."""
     destination = _destination(name)
@@ -118,11 +175,31 @@ def remove_checkout(name: str) -> bool:
 
 
 def _destination(name: str) -> Path:
+    return _inside_repos(name)
+
+
+def _tip_dir(name: str, sha: str) -> Path:
+    return _inside_repos(".tips", name, sha)
+
+
+def _inside_repos(*parts: str) -> Path:
     root = REPOS_DIR.resolve()
-    destination = (root / name).resolve()
+    destination = root.joinpath(*parts).resolve()
     if root != destination and root not in destination.parents:
         raise RuntimeError(f"Refusing to write outside {root}")
     return destination
+
+
+def _at_commit(destination: Path, sha: str) -> bool:
+    if not destination.is_dir() or not (destination / ".git").exists():
+        return False
+    try:
+        current = _run(
+            ["git", "-c", "safe.directory=*", "-C", str(destination), "rev-parse", "HEAD"]
+        ).strip()
+    except RuntimeError:
+        return False
+    return current == sha or current.startswith(sha) or sha.startswith(current)
 
 
 def _run(args: list[str], timeout: float | None = None) -> str:
