@@ -936,6 +936,6 @@ def _ruby_files(root: Path):
     if not root.is_dir():
         return
     for path in root.rglob("*.rb"):
-        if any(part in _SKIP_DIRS for part in path.parts):
+        if any(part in _SKIP_DIRS for part in path.relative_to(root).parts):
             continue
         yield path

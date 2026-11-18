@@ -293,7 +293,7 @@ def _feature_files(root: Path) -> list[tuple[str, str]]:
             if path.stat().st_size > 1_000_000:
                 continue
             relative = path.relative_to(root).as_posix()
-            if any(part in {".git", "vendor", "node_modules"} for part in path.parts):
+            if any(part in {".git", "vendor", "node_modules"} for part in relative.split("/")):
                 continue
             try:
                 found.append((relative, path.read_text(encoding="utf-8", errors="replace")))

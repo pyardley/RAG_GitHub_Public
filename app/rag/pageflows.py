@@ -552,7 +552,7 @@ def _pages(root: Path) -> dict[str, Page]:
             buttons = {match.group(1): match.group(2) for match in _BUTTON.finditer(body)}
             header = _HEADER.search(body)
             field = _FIELD.search(body)
-            in_page_objects = "page_objects" in path.parts
+            in_page_objects = "page_objects" in path.relative_to(root).parts
             if not buttons and not header and not field and not in_page_objects:
                 continue
             full = "::".join([*modules, class_name])
@@ -741,7 +741,7 @@ def _scalar(value: str) -> str:
 def _locale_files(root: Path):
     paths = []
     for path in root.rglob("*.yml"):
-        if any(part in _SKIP_DIRS for part in path.parts):
+        if _skipped(root, path):
             continue
         name = path.name
         if ".cy." in name or name.endswith("_cy.yml"):
@@ -751,10 +751,15 @@ def _locale_files(root: Path):
     return sorted(paths)
 
 
+def _skipped(root: Path, path: Path) -> bool:
+    """A skipped directory inside the checkout, not an ancestor such as /tmp."""
+    return any(part in _SKIP_DIRS for part in path.relative_to(root).parts)
+
+
 def _ruby_files(root: Path):
     paths = []
     for path in root.rglob("*.rb"):
-        if any(part in _SKIP_DIRS for part in path.parts):
+        if _skipped(root, path):
             continue
         paths.append(path)
     return sorted(paths)

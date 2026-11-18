@@ -1848,7 +1848,8 @@ class WebTest(unittest.TestCase):
             self.assertEqual(body["answer"], "The threshold is 4250.")
             self.assertEqual(body["matches"], [])
             self.assertFalse(body["truncated"])
-            self.assertEqual(body["passage_limit"], 8)
+            from rag.config import DEFAULT_K
+            self.assertEqual(body["passage_limit"], DEFAULT_K)
             self.assertTrue(body["usage"]["stages"])
             self.assertIn(
                 "The values were matched directly, so nothing was embedded.",
