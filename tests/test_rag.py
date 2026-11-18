@@ -2666,6 +2666,39 @@ class FlowTest(unittest.TestCase):
         self.assertEqual(returned["column"], 1)
         self.assertEqual(start["kind"], "choice")
 
+    def test_a_decision_tree_starts_at_the_given_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_decision_checkout(root)
+            self.assertEqual(charts_for(root), [])
+            charts = charts_for(
+                root,
+                "https://apply-to-court-about-child-arrangements.service.justice.gov.uk/steps/opening/start_or_continue",
+            )
+        self.assertEqual([chart["title"] for chart in charts], ["Start or continue an application"])
+        chart = charts[0]
+        self.assertEqual(chart["reader"], "decision")
+        edges = {(edge["from"], edge["to"], edge["label"]) for edge in chart["edges"]}
+        self.assertIn(("opening/start_or_continue", "opening/start", "Start a new application"), edges)
+        self.assertIn(("opening/start_or_continue", "opening/continue_application", "Continue an application"), edges)
+        self.assertIn(("opening/start_or_continue", "opening/sign_in_or_create_account", "Yes"), edges)
+        self.assertIn(("opening/start_or_continue", "opening/no_court_found", "No court"), edges)
+        self.assertIn(("opening/start", "opening/consent_order", "Continue"), edges)
+        self.assertIn(("opening/consent_order", "opening/child_protection_cases", "No"), edges)
+        self.assertIn(("opening/consent_order", "opening/consent_order_upload", "Yes"), edges)
+        start = next(node for node in chart["nodes"] if node["id"] == "opening/start_or_continue")
+        needed = next(node for node in chart["nodes"] if node["id"] == "opening/start")
+        last = next(node for node in chart["nodes"] if node["id"] == "opening/child_protection_cases")
+        nowhere = next(node for node in chart["nodes"] if node["id"] == "opening/no_court_found")
+        self.assertEqual(start["label"], "Start or continue an application")
+        self.assertEqual(start["kind"], "choice")
+        self.assertEqual(start["path"], "app/controllers/steps/opening/start_or_continue_controller.rb")
+        self.assertEqual(needed["label"], "What you will need")
+        self.assertEqual(last["kind"], "end")
+        self.assertEqual(nowhere["kind"], "end")
+        self.assertGreater(last["row"], needed["row"])
+        self.assertGreater(needed["row"], start["row"])
+
     def test_an_unmapped_checkout_has_no_chart(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -2990,6 +3023,124 @@ module NavigationNiHelper
   end
 end
 """
+
+
+def _write_decision_checkout(root: Path) -> None:
+    _write(root, "config/routes.rb", """
+Rails.application.routes.draw do
+  namespace :steps do
+    namespace :opening do
+      edit_step :start_or_continue
+      show_step :start
+      edit_step :consent_order
+      edit_step :consent_order_upload
+      edit_step :child_protection_cases
+      edit_step :continue_application
+      edit_step :sign_in_or_create_account
+      show_step :no_court_found
+    end
+  end
+end
+""")
+    _write(root, "config/locales/en.yml", """
+en:
+  steps:
+    opening:
+      start_or_continue:
+        edit:
+          heading: Start or continue an application
+      start:
+        show:
+          heading: What you will need
+      consent_order:
+        edit:
+          heading: Is this a consent order?
+      no_court_found:
+        show:
+          heading: Sorry, you cannot apply online
+  helpers:
+    label:
+      steps_opening_start_or_continue_form:
+        start_or_continue_options:
+          new: Start a new application
+          continue: Continue an application
+""")
+    _write(root, "app/controllers/steps/opening_step_controller.rb", """
+class OpeningStepController < StepController
+  def decision_tree_class
+    C100App::OpeningDecisionTree
+  end
+end
+""")
+    _write(root, "app/services/c100_app/opening_decision_tree.rb", """
+module C100App
+  class OpeningDecisionTree < BaseDecisionTree
+    def destination
+      case step_name
+      when :start_or_continue
+        after_start_or_continue
+      when :consent_order
+        after_consent_order
+      else
+        raise InvalidStep
+      end
+    end
+
+    def after_start_or_continue
+      if question(:start_or_continue, c100_application, ApplicationIntent).new?
+        after_start
+      else
+        edit(:continue_application)
+      end
+    end
+
+    def after_start
+      if question(:is_legal_representative).yes?
+        edit(:sign_in_or_create_account)
+      else
+        check_court
+      end
+    end
+
+    def check_court
+      court = CourtPostcodeChecker.new.court_for(children_postcode)
+      return show(:no_court_found) unless court
+      show(:start)
+    end
+
+    def after_consent_order
+      if question(:consent_order).yes?
+        edit(:consent_order_upload)
+      else
+        edit(:child_protection_cases)
+      end
+    end
+  end
+end
+""")
+    for name in (
+        "start_or_continue",
+        "start",
+        "consent_order",
+        "consent_order_upload",
+        "child_protection_cases",
+        "continue_application",
+        "sign_in_or_create_account",
+        "no_court_found",
+    ):
+        class_name = "".join(part.capitalize() for part in name.split("_")) + "Controller"
+        action = "show" if name in {"start", "no_court_found"} else "edit"
+        _write(
+            root,
+            f"app/controllers/steps/opening/{name}_controller.rb",
+            f"module Steps\n  module Opening\n    class {class_name} < OpeningStepController\n"
+            f"      def {action}; end\n    end\n  end\nend\n",
+        )
+    _write(
+        root,
+        "app/views/steps/opening/start/show.html.erb",
+        "<%= link_button 'Continue', edit_steps_opening_consent_order_path %>\n",
+    )
 
 
 class CliTest(unittest.TestCase):

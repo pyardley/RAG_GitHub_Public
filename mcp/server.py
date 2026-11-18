@@ -107,14 +107,20 @@ _TOOLS = [
     {
         "name": "flow",
         "description": (
-            "Draw the main end-to-end journeys in an indexed Help with Fees repository. "
+            "Draw the main end-to-end journeys in an indexed repository. "
             "Each node has the file it opens on GitHub. "
-            "Set repo to owner/name when more than one repository is indexed."
+            "Set repo to owner/name when more than one repository is indexed. "
+            "Set start to a step path such as /steps/opening/start_or_continue when the "
+            "application chooses the next screen in a decision tree."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "repo": {"type": "string", "description": "owner/name. Omit to use every indexed repository."},
+                "start": {
+                    "type": "string",
+                    "description": "Optional first step, as a path or URL. Example: /steps/opening/start_or_continue.",
+                },
             },
             "additionalProperties": False,
         },
@@ -264,7 +270,7 @@ def _tool(name: object, arguments: dict) -> dict:
     if name == "impact":
         return api.impact(arguments.get("target", ""), arguments.get("repo"), arguments.get("answer", False))
     if name == "flow":
-        return api.flow(arguments.get("repo"))
+        return api.flow(arguments.get("repo"), arguments.get("start"))
     if name == "default_branch":
         return api.default_branch(arguments.get("repo", ""))
     if name == "branches":

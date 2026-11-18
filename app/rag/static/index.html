@@ -303,13 +303,12 @@
       impact: { label: "Class, method, or file", placeholder: "ApplicationController#online_application", button: "Analyse", answer: true, k: false },
       search: { label: "Search", placeholder: "calculation_scheme", button: "Search", answer: false, k: true },
       flow: {
-        label: "Journey",
-        placeholder: "",
+        label: "Start path",
+        placeholder: "/steps/opening/start_or_continue",
         button: "Show",
         answer: false,
         k: false,
-        prompt: false,
-        hint: "Draws the main journeys in the selected repository. Each box opens that step in the indexed commit on GitHub."
+        hint: "Leave this blank to draw journeys from a question list, redirects, or page objects. A path such as /steps/opening/start_or_continue starts where a decision tree chooses the next step. Each box opens that step in the indexed commit on GitHub."
       }
     };
     const prompts = { query: "", impact: "", search: "", flow: "" };
@@ -344,6 +343,10 @@
       hideRemoveConfirm();
       syncRemove();
       syncStale();
+      if (mode === "flow") {
+        prompts.flow = storedFlowStart();
+        prompt.value = prompts.flow;
+      }
     });
     document.querySelector("#index-repo").addEventListener("input", () => {
       clearTimeout(branchTimer);
@@ -359,9 +362,28 @@
       }
     });
 
+    function storedFlowStart() {
+      try {
+        return localStorage.getItem(`flow-start:${repoSelect.value}`) || "";
+      } catch (error) {
+        return "";
+      }
+    }
+
+    function rememberFlowStart(path) {
+      try {
+        const key = `flow-start:${repoSelect.value}`;
+        if (path) localStorage.setItem(key, path);
+        else localStorage.removeItem(key);
+      } catch (error) {
+        return;
+      }
+    }
+
     function setMode(next) {
       prompts[mode] = prompt.value;
       mode = next;
+      if (next === "flow" && !prompts[next]) prompts[next] = storedFlowStart();
       prompt.value = prompts[next] || "";
       const spec = modes[next];
       document.querySelector("#prompt-caption").textContent = spec.label;
@@ -775,7 +797,8 @@
         : spec.answer && document.querySelector("#answer").checked ? "Searching and writing an answer…" : "Searching the index…");
       const payload = { repo: repoSelect.value };
       if (mode === "impact") payload.target = prompt.value;
-      else if (mode !== "flow") {
+      else if (mode === "flow") payload.start = prompt.value.trim();
+      else {
         payload.question = prompt.value;
         payload.k = Number(document.querySelector("#k").value);
         payload.index = document.querySelector("#search-index").value;
@@ -793,6 +816,7 @@
           setStatus(body.error || "The request failed", true);
           return;
         }
+        if (requested === "flow") rememberFlowStart(prompt.value.trim());
         render(body, requested);
         setStatus("");
       } catch (error) {

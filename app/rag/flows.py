@@ -1,11 +1,13 @@
 """End-to-end flow charts for an indexed checkout.
 
-Two readers share one chart. An application that lists its questions in
+Three readers share one chart. An application that lists its questions in
 ``config/settings.yml``, or sends the next page with ``redirect_to``, is read
 from those files. A test suite that describes screens as page objects is read
-from the page objects and the journey that clicks through them. Neither reader
-names a repository. Both use the checkout of the indexed commit, so the chart
-stays with that commit. A box links to the file that implements the step.
+from the page objects and the journey that clicks through them. An application
+that chooses the next step in a decision tree is read from that tree, starting
+at the path it was given. None of the readers names a repository. Each uses
+the checkout of the indexed commit, so the chart stays with that commit. A box
+links to the file that implements the step.
 """
 
 from __future__ import annotations
@@ -31,8 +33,12 @@ _RESERVED = {"home", "checklist", "summary", "submit", "confirmation", "refund",
 _UNMAPPED = "No end-to-end journey was found in this repository."
 
 
-def charts_for(root: Path) -> list[dict]:
-    """Flow charts found in a checkout. An empty list means nothing was found."""
+def charts_for(root: Path, start: str | None = None) -> list[dict]:
+    """Flow charts found in a checkout. An empty list means nothing was found.
+
+    ``start`` is a step path such as ``/steps/opening/start_or_continue``. When
+    it names a screen whose controller has a decision tree, that journey is added.
+    """
     if not root.is_dir():
         return []
     charts: list[dict] = []
@@ -44,6 +50,12 @@ def charts_for(root: Path) -> list[dict]:
     from rag.pageflows import page_object_charts
 
     charts.extend(page_object_charts(root))
+    if start:
+        from rag.decisionflows import decision_chart
+
+        chart = decision_chart(root, start)
+        if chart:
+            charts.append(chart)
     return charts
 
 

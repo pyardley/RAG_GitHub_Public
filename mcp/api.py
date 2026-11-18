@@ -81,11 +81,13 @@ def impact(target: str, repo: str | None = None, answer: bool = False) -> dict:
     return result
 
 
-def flow(repo: str | None = None) -> dict:
+def flow(repo: str | None = None, start: str | None = None) -> dict:
     """Journeys for one repository, or every indexed repository when repo is omitted."""
     body: dict = {}
     if isinstance(repo, str) and repo.strip():
         body["repo"] = repo.strip()
+    if isinstance(start, str) and start.strip():
+        body["start"] = start.strip()
     payload = _request("POST", "/api/flow", body)
     charts = []
     for chart in payload.get("charts") or []:

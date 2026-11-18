@@ -308,6 +308,7 @@ def run_impact(body: dict) -> tuple[int, dict]:
 def run_flow(body: dict) -> tuple[int, dict]:
     """Draw the main journeys in the selected repositories."""
     repo = _optional_repo(body)
+    start = _optional_start(body)
     try:
         conn = connect()
     except SystemExit as exc:
@@ -321,14 +322,22 @@ def run_flow(body: dict) -> tuple[int, dict]:
     charts: list[dict] = []
     missing: list[str] = []
     unmapped: list[str] = []
+    missed_start: list[str] = []
     for item in repositories:
         root = checkout_dir(item["name"])
         if not root.is_dir():
             missing.append(item["name"])
             continue
-        built = charts_for(root)
+        built = charts_for(root, start)
+        followed = False
+        for chart in built:
+            if chart.pop("reader", None) == "decision":
+                followed = True
+        if start and not followed:
+            missed_start.append(item["name"])
         if not built:
-            unmapped.append(item["name"])
+            if not start:
+                unmapped.append(item["name"])
             continue
         sha = str(item["commit_sha"])
         for chart in built:
@@ -338,7 +347,7 @@ def run_flow(body: dict) -> tuple[int, dict]:
     if len(repositories) > 1:
         for chart in charts:
             chart["title"] = f"{chart['repository']} — {chart['title']}"
-    message = _flow_message(missing, unmapped, bool(charts))
+    message = _flow_message(missing, unmapped, missed_start, start, bool(charts))
     return 200, {
         "repositories": [_scope(item) for item in repositories],
         "charts": charts,
@@ -359,7 +368,13 @@ def _attach_flow_urls(chart: dict, repo: str, commit_sha: str) -> None:
             node["url"] = url
 
 
-def _flow_message(missing: list[str], unmapped: list[str], drew: bool) -> str:
+def _flow_message(
+    missing: list[str],
+    unmapped: list[str],
+    missed_start: list[str],
+    start: str | None,
+    drew: bool,
+) -> str:
     parts: list[str] = []
     if missing:
         names = ", ".join(missing)
@@ -367,11 +382,23 @@ def _flow_message(missing: list[str], unmapped: list[str], drew: bool) -> str:
             f"The checkout for {names} is not on disk, so its journey cannot be drawn. "
             "Index it again to restore the checkout."
         )
+    if missed_start and start:
+        names = ", ".join(missed_start)
+        parts.append(f"No step at {start} was found in {names}.")
     if unmapped:
         parts.append(unmapped_message(unmapped))
     if not drew and not parts:
         parts.append(unmapped_message([]))
     return " ".join(parts)
+
+
+def _optional_start(body: dict) -> str | None:
+    start = body.get("start")
+    if start is None:
+        return None
+    if not isinstance(start, str):
+        raise ValueError("Start path must be text")
+    return start.strip() or None
 
 
 def start_ingest(body: dict) -> tuple[int, dict]:
