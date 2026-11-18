@@ -201,7 +201,8 @@
     .flow-node.end text { fill: var(--accent-ink); }
     .flow-node text { font: 12px/1.25 "Segoe UI", "Helvetica Neue", sans-serif; fill: var(--ink); }
     .flow-edge { fill: none; stroke: var(--muted); stroke-width: 1.4; }
-    .flow-label { font: 11px "Segoe UI", "Helvetica Neue", sans-serif; fill: var(--muted); }
+    .flow-label { font: 11px "Segoe UI", "Helvetica Neue", sans-serif; fill: var(--muted); cursor: pointer; }
+    .flow-label:hover, .flow-label:focus { fill: var(--ink); }
     .flow-node:focus { outline: none; }
     .flow-node:focus rect { stroke: var(--ink); stroke-width: 2; }
     .journey-ask { display: grid; gap: 0.45rem; margin: 0.85rem 0; }
@@ -1294,10 +1295,11 @@ ${data}
         const heading = document.createElement("h2");
         heading.textContent = chart.title || "Journey";
         section.append(heading);
-        if (chart.note) {
+        if (chart.note || (chart.edges || []).some((edge) => edge.label)) {
           const note = document.createElement("p");
           note.className = "scope";
-          note.textContent = chart.note;
+          const hint = "Choose a label to move to the other end of that arrow. The label at that end brings you back.";
+          note.textContent = chart.note ? `${chart.note} ${hint}` : hint;
           section.append(note);
         }
         const changes = flowChanges(chart.changes);
@@ -1512,13 +1514,35 @@ ${data}
         svg.setAttribute("height", "0");
         return svg;
       }
+      const byId = new Map(nodes.map((node) => [node.id, node]));
+      const straightIndex = new Map();
+      const straightTotal = new Map();
+      for (const edge of chart.edges || []) {
+        if (edge.route !== "straight" || !edge.label) continue;
+        const source = byId.get(edge.from);
+        const target = byId.get(edge.to);
+        if (!source || !target || target.row !== source.row + 1 || source.column !== target.column) continue;
+        const key = `${source.column}:${source.row}`;
+        const index = straightTotal.get(key) || 0;
+        straightIndex.set(edge, index);
+        straightTotal.set(key, index + 1);
+      }
+      const gapAfter = (row) => {
+        let lines = 1;
+        for (const [key, count] of straightTotal) {
+          if (Number(key.slice(key.lastIndexOf(":") + 1)) === row) lines = Math.max(lines, count);
+        }
+        return Math.max(rowGap, lines * 16 + 14);
+      };
       const rows = [...new Set(nodes.map((node) => node.row))].sort((left, right) => left - right);
       let y = marginY;
+      let trailing = rowGap;
       const rowY = new Map();
       for (const row of rows) {
         rowY.set(row, y);
         const height = Math.max(...nodes.filter((node) => node.row === row).map((node) => node.height));
-        y += height + rowGap;
+        trailing = gapAfter(row);
+        y += height + trailing;
       }
       for (const node of nodes) {
         node.x = labelGutter + node.column * (nodeWidth + columnGap);
@@ -1528,7 +1552,7 @@ ${data}
       const laneCount = Math.max(0, ...(chart.edges || []).map((edge) => edge.route === "lane" ? (edge.lane || 0) + 1 : 0));
       const laneX = (lane) => right + 36 + lane * laneGap;
       const width = laneCount ? laneX(laneCount - 1) + laneGap : right + 24;
-      const height = y - rowGap + marginY;
+      const height = y - trailing + marginY;
       svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
       svg.setAttribute("width", String(width));
       svg.setAttribute("height", String(height));
@@ -1548,12 +1572,18 @@ ${data}
       marker.append(head);
       defs.append(marker);
       svg.append(defs);
-      const byId = new Map(nodes.map((node) => [node.id, node]));
+      const nodeElements = new Map(nodes.map((node) => [node.id, flowNode(svgNs, node, nodeWidth, lineHeight, padY)]));
       for (const edge of chart.edges || []) {
         const source = byId.get(edge.from);
         const target = byId.get(edge.to);
         if (!source || !target) continue;
         const route = flowRoute(edge, source, target, nodeWidth, laneX);
+        const stackKey = `${source.column}:${source.row}`;
+        const stacked = straightTotal.get(stackKey) || 0;
+        if (edge.route === "straight" && stacked > 1) {
+          const slot = (target.y - (source.y + source.height)) / stacked;
+          route.labelY = source.y + source.height + slot * straightIndex.get(edge) + slot * 0.7;
+        }
         const path = document.createElementNS(svgNs, "path");
         path.setAttribute("class", "flow-edge");
         path.setAttribute("d", route.d);
@@ -1565,16 +1595,49 @@ ${data}
         }
         svg.append(path);
         if (!edge.label) continue;
-        const text = document.createElementNS(svgNs, "text");
-        text.setAttribute("class", "flow-label");
-        text.setAttribute("x", String(route.labelX));
-        text.setAttribute("y", String(route.labelY));
-        text.setAttribute("text-anchor", route.anchor);
-        text.textContent = edge.label;
-        svg.append(text);
+        for (const spot of labelSpots(route, source, target, edge.route)) {
+          const text = document.createElementNS(svgNs, "text");
+          text.setAttribute("class", "flow-label");
+          text.setAttribute("x", String(spot.x));
+          text.setAttribute("y", String(spot.y));
+          text.setAttribute("text-anchor", route.anchor);
+          text.setAttribute("tabindex", "0");
+          text.setAttribute("role", "button");
+          text.setAttribute("aria-label", `${edge.label}. Show the other end of this arrow.`);
+          text.textContent = edge.label;
+          const showOtherEnd = (event) => {
+            if (event.type === "keydown" && event.key !== "Enter" && event.key !== " ") return;
+            event.preventDefault();
+            const sourceEl = nodeElements.get(edge.from);
+            const targetEl = nodeElements.get(edge.to);
+            if (!sourceEl || !targetEl) return;
+            const destination = viewDistance(targetEl) >= viewDistance(sourceEl) ? targetEl : sourceEl;
+            destination.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
+          };
+          text.addEventListener("click", showOtherEnd);
+          text.addEventListener("keydown", showOtherEnd);
+          svg.append(text);
+        }
       }
-      for (const node of nodes) svg.append(flowNode(svgNs, node, nodeWidth, lineHeight, padY));
+      for (const node of nodes) svg.append(nodeElements.get(node.id));
       return svg;
+    }
+
+    function labelSpots(route, source, target, kind) {
+      const spots = [{ x: route.labelX, y: route.labelY }];
+      if (kind === "straight") return spots;
+      const span = Math.abs((target.y + target.height / 2) - (source.y + source.height / 2));
+      if (span < 120) return spots;
+      const towardEnd = route.labelY <= (source.y + target.y) / 2;
+      const endY = towardEnd ? Math.max(source.y, target.y) + 18 : Math.min(source.y, target.y) + source.height - 4;
+      if (Math.abs(endY - route.labelY) < 28) return spots;
+      spots.push({ x: route.labelX, y: endY });
+      return spots;
+    }
+
+    function viewDistance(element) {
+      const box = element.getBoundingClientRect();
+      return Math.abs(box.top + box.height / 2 - window.innerHeight / 2);
     }
 
     function flowRoute(edge, source, target, nodeWidth, laneX) {
