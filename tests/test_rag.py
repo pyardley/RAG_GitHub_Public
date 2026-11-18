@@ -31,7 +31,8 @@ from rag.follow import (
     step_phrases,
 )
 from rag.gitrepo import branch_list, default_branch_name
-from rag.web import Handler, _progress_view, github_blob_url, public_status, run_query, start_ingest
+from rag.flows import charts_for, parse_navigation, question_texts
+from rag.web import Handler, _progress_view, github_blob_url, public_status, run_flow, run_query, start_ingest
 from unittest.mock import patch
 
 from rag.plan import parse_queries, question_needs_plan
@@ -1595,6 +1596,12 @@ class WebTest(unittest.TestCase):
             self.assertEqual(response.status, 200)
             self.assertIn("Impact", page)
             self.assertIn("Search", page)
+            self.assertIn('data-mode="flow"', page)
+            self.assertIn(">Flow</button>", page)
+            self.assertIn("function renderFlow", page)
+            self.assertIn("function drawFlow", page)
+            self.assertIn("Each box opens that step", page)
+            self.assertIn('setAttribute("target", "_blank")', page)
             self.assertIn("Resources", page)
             self.assertIn("renderUsage", page)
             self.assertIn('id="process"', page)
@@ -2534,6 +2541,357 @@ def _schema_after(schema, statements):
         elif statement.startswith("CREATE INDEX") and CODE_INDEX in statement:
             indexes.add(CODE_INDEX)
     return ChunkSchema(columns, frozenset(indexes))
+
+
+class FlowTest(unittest.TestCase):
+    def test_navigation_list_stops_at_the_next_key(self):
+        pages = parse_navigation(
+            "session:\n  expires_in_minutes: 60\n"
+            "navigation:\n  - :fee\n  - :form_name\n  # kept\n\n"
+            "feature_switching:\n  - feature_key: band\n"
+        )
+        self.assertEqual(pages, ["fee", "form_name"])
+
+    def test_question_text_is_the_heading(self):
+        labels = question_texts(
+            "en:\n  questions:\n    edit:\n      back_button: Back\n"
+            "    fee:\n      breadcrumb: Step\n      text: Have you already paid the fee?\n"
+            "    benefit:\n      text: 'Do you receive any of the following benefits?'\n"
+            "  other:\n    text: Not a question\n"
+        )
+        self.assertEqual(labels["fee"], "Have you already paid the fee?")
+        self.assertEqual(labels["benefit"], "Do you receive any of the following benefits?")
+        self.assertNotIn("edit", labels)
+        self.assertNotIn("other", labels)
+
+    def test_public_journey_branches_and_links_to_the_form(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_public_checkout(root)
+            chart = charts_for(root)[0]
+        edges = {(edge["from"], edge["to"], edge["label"]) for edge in chart["edges"]}
+        self.assertIn(("home", "checklist", "Start now"), edges)
+        self.assertIn(("checklist", "fee", "Continue"), edges)
+        self.assertIn(("applying_on_behalf", "legal_representative", "On behalf"), edges)
+        self.assertIn(("applying_on_behalf", "national_insurance", "For themselves"), edges)
+        self.assertNotIn(("applying_on_behalf", "legal_representative_detail", ""), edges)
+        self.assertIn(("over_16", "national_insurance", "16 or over"), edges)
+        self.assertIn(("over_16", "savings_and_investment", "Under 16"), edges)
+        self.assertIn(("national_insurance", "home_office", "No NI number"), edges)
+        self.assertIn(("national_insurance", "marital_status", "Has an NI number"), edges)
+        self.assertIn(("marital_status", "partner_national_insurance", "Married"), edges)
+        self.assertIn(("marital_status", "savings_and_investment", "Not married"), edges)
+        self.assertIn(("savings_and_investment", "savings_and_investment_extra", "Further savings"), edges)
+        self.assertIn(("savings_and_investment", "benefit", "No further savings"), edges)
+        self.assertIn(("benefit", "probate", "On a listed benefit"), edges)
+        self.assertIn(("benefit", "dependent", "Not on those benefits"), edges)
+        self.assertIn(("income_kind", "probate", "No income"), edges)
+        self.assertIn(("income_kind", "income_period", "Has income"), edges)
+        self.assertIn(("applicant_address", "apply_type", "Legal representative"), edges)
+        self.assertIn(("applicant_address", "contact", "Not a representative"), edges)
+        self.assertIn(("contact", "summary", "Refund"), edges)
+        self.assertIn(("contact", "apply_type", "Not a refund"), edges)
+        self.assertIn(("apply_type", "summary", ""), edges)
+        self.assertIn(("summary", "submit", "Sign and submit"), edges)
+        self.assertIn(("submit", "confirmation", "Accepted"), edges)
+        self.assertIn(("submit", "refund", "Refund accepted"), edges)
+        self.assertIn(("submit", "summary", "Could not submit"), edges)
+        benefit_lane = next(edge["lane"] for edge in chart["edges"] if edge["from"] == "benefit" and edge["to"] == "probate")
+        income_lane = next(edge["lane"] for edge in chart["edges"] if edge["from"] == "income_kind" and edge["to"] == "probate")
+        self.assertNotEqual(benefit_lane, income_lane)
+        fee = next(node for node in chart["nodes"] if node["id"] == "fee")
+        self.assertEqual(fee["path"], "app/models/forms/fee.rb")
+        self.assertEqual(fee["label"], "Have you already paid the fee?")
+        self.assertEqual(fee["start_line"], 2)
+        form_name = next(node for node in chart["nodes"] if node["id"] == "form_name")
+        self.assertEqual(form_name["path"], "config/settings.yml")
+        benefit = next(node for node in chart["nodes"] if node["id"] == "benefit")
+        self.assertEqual(benefit["kind"], "choice")
+        confirmation = next(node for node in chart["nodes"] if node["id"] == "confirmation")
+        refund = next(node for node in chart["nodes"] if node["id"] == "refund")
+        self.assertEqual(confirmation["kind"], "end")
+        self.assertEqual(refund["row"], confirmation["row"])
+        self.assertEqual(refund["column"], 1)
+        self.assertEqual(chart["title"], "Apply for help with fees")
+
+    def test_staff_paper_journey_follows_the_redirects(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_staff_checkout(root)
+            charts = charts_for(root)
+        titles = [chart["title"] for chart in charts]
+        paper = next(chart for chart in charts if chart["title"].startswith("Process"))
+        self.assertEqual(titles, ["Process a paper application", "Check evidence", "Check a part payment"])
+        edges = {(edge["from"], edge["to"], edge["label"]) for edge in paper["edges"]}
+        self.assertIn(("start", "fee_status", "Band calculation"), edges)
+        self.assertIn(("start", "personal", "No band calculation"), edges)
+        self.assertIn(("personal", "partner", "Partner details allowed"), edges)
+        self.assertIn(("personal", "details", "No partner details"), edges)
+        self.assertIn(("details", "approve", "Fee needs approval"), edges)
+        self.assertIn(("details", "summary", "No discretion"), edges)
+        self.assertIn(("savings", "declaration", "Savings over the limit"), edges)
+        self.assertIn(("benefits", "dependents", "Not on benefits"), edges)
+        self.assertIn(("summary", "confirmation", "Processed"), edges)
+        evidence = next(chart for chart in charts if chart["title"] == "Check evidence")
+        evidence_edges = {(edge["from"], edge["to"], edge["label"]) for edge in evidence["edges"]}
+        self.assertIn(("accuracy", "income", "Details match"), evidence_edges)
+        self.assertIn(("accuracy", "incorrect", "Details do not match"), evidence_edges)
+        self.assertIn(("result", "summary", "Next"), evidence_edges)
+        part = next(chart for chart in charts if chart["title"] == "Check a part payment")
+        part_edges = {(edge["from"], edge["to"], edge["label"]) for edge in part["edges"]}
+        self.assertIn(("accuracy", "summary", "Saved"), part_edges)
+        self.assertNotIn("return_letter", {node["id"] for node in part["nodes"]})
+
+    def test_an_unmapped_checkout_has_no_chart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "README.md").write_text("hello\n", encoding="utf-8")
+            self.assertEqual(charts_for(root), [])
+
+    def test_flow_links_use_the_indexed_commit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_public_checkout(root)
+            repo = {
+                "id": 1,
+                "name": "hmcts/hwf-publicapp",
+                "branch": "master",
+                "commit_sha": "abc123def456",
+            }
+
+            class Conn:
+                def close(self):
+                    return None
+
+            with (
+                patch("rag.web.connect", return_value=Conn()),
+                patch("rag.web.resolve_repositories", return_value=[repo]),
+                patch("rag.web.checkout_dir", return_value=root),
+            ):
+                status, payload = run_flow({"repo": "hmcts/hwf-publicapp"})
+        self.assertEqual(status, 200)
+        fee = next(node for node in payload["charts"][0]["nodes"] if node["id"] == "fee")
+        self.assertEqual(
+            fee["url"],
+            "https://github.com/hmcts/hwf-publicapp/blob/abc123def456/app/models/forms/fee.rb#L2",
+        )
+        self.assertEqual(payload["message"], "")
+
+    def test_a_missing_checkout_is_reported(self):
+        repo = {"id": 1, "name": "hmcts/hwf-publicapp", "branch": "master", "commit_sha": "abc123def456"}
+
+        class Conn:
+            def close(self):
+                return None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "gone"
+            with (
+                patch("rag.web.connect", return_value=Conn()),
+                patch("rag.web.resolve_repositories", return_value=[repo]),
+                patch("rag.web.checkout_dir", return_value=missing),
+            ):
+                status, payload = run_flow({})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["charts"], [])
+        self.assertIn("not on disk", payload["message"])
+        self.assertIn("hmcts/hwf-publicapp", payload["message"])
+
+
+def _write(root: Path, relative: str, text: str) -> None:
+    path = root / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def _write_public_checkout(root: Path) -> None:
+    pages = [
+        "fee", "form_name", "applying_on_behalf", "legal_representative",
+        "legal_representative_detail", "over_16", "national_insurance", "home_office",
+        "marital_status", "partner_national_insurance", "savings_and_investment",
+        "savings_and_investment_extra", "benefit", "dependent", "income_kind",
+        "income_period", "probate", "claim", "dob", "personal_detail",
+        "applicant_address", "contact", "apply_type",
+    ]
+    listed = "\n".join(f"  - :{page}" for page in pages)
+    _write(root, "config/settings.yml", f"navigation:\n{listed}\nfeature_switching:\n  - feature_key: band\n")
+    _write(root, "config/locales/en.yml", (
+        "en:\n  questions:\n    fee:\n      text: Have you already paid the fee?\n"
+        "    benefit:\n      text: Do you receive any of the following benefits?\n"
+    ))
+    _write(root, "config/routes.rb", "resource :submission, only: :create\n")
+    _write(root, "app/views/home/index.html.slim", "h1 Start\n= link_to checklist_path\n")
+    _write(root, "app/views/home/checklist/_checklist.html.slim", "= link_to start_session_path\n")
+    _write(root, "app/models/forms/fee.rb", "module Forms\n  class Fee\n  end\nend\n")
+    _write(root, "app/services/navigation.rb", (
+        "class Navigation\n  def next\n"
+        "    if last_question? || (@current_question == :contact && skip_apply_type?)\n"
+        "      summary_path\n    end\n  end\nend\n"
+    ))
+    _write(root, "app/services/navigation_helper.rb", _PUBLIC_HELPER)
+    _write(root, "app/services/navigation_ni_helper.rb", _PUBLIC_NI)
+    _write(root, "app/controllers/summaries_controller.rb", "class SummariesController\n  def show\n  end\nend\n")
+    _write(root, "app/controllers/submissions_controller.rb", (
+        "class SubmissionsController\n  def create\n  end\n"
+        "  def confirmation_route\n    refund_confirmation_path\n    confirmation_path\n  end\n"
+        "  def submit\n    redirect_to(summary_path)\n  end\nend\n"
+    ))
+    _write(root, "app/controllers/confirmations_controller.rb", (
+        "class ConfirmationsController\n  def show\n  end\n  def refund\n  end\n"
+        "  def create\n    redirect_to finish_session_path\n  end\nend\n"
+    ))
+    _write(root, "app/controllers/sessions_controller.rb", "class SessionsController\n  def finish\n  end\nend\n")
+
+
+def _write_staff_checkout(root: Path) -> None:
+    _write(root, "app/controllers/applications/process_controller.rb", (
+        "class ProcessController\n  def create\n  end\n  def first_page\n"
+        "    application_fee_status_path(@application)\n"
+        "    application_personal_informations_path(@application)\n  end\nend\n"
+    ))
+    _write(root, "app/controllers/applications/process/fee_status_controller.rb", "class Fee\n  def index\n    redirect_to application_personal_informations_path(application)\n  end\nend\n")
+    _write(root, "app/controllers/applications/process/personal_informations_controller.rb", (
+        "class Personal\n  def index\n  end\n  def path_to_next_page\n"
+        "    application_partner_informations_path(application)\n"
+        "    application_details_path(application)\n  end\nend\n"
+    ))
+    _write(root, "app/controllers/applications/process/partner_informations_controller.rb", (
+        "class Partner\n  def index\n  end\n  def create\n    redirect_to application_details_path(application)\n  end\nend\n"
+    ))
+    _write(root, "app/controllers/applications/process/details_controller.rb", (
+        "class Details\n  def index\n    DetailsRouter.new(application).approval_or_continue\n  end\n"
+        "  def approve\n  end\n  def approve_save\n    DetailsRouter.new(application).savings_or_summary\n  end\nend\n"
+    ))
+    _write(root, "app/services/details_router.rb", (
+        "class DetailsRouter\n  def approval_or_continue\n    application_approve_path(application)\n"
+        "    application_savings_investments_path(application)\n    application_summary_path(application)\n  end\nend\n"
+    ))
+    _write(root, "app/controllers/applications/process/savings_investments_controller.rb", (
+        "class Savings\n  def index\n  end\n  def saving_outcome_path\n"
+        "    application_declaration_path(application)\n    application_benefits_path(application)\n  end\nend\n"
+    ))
+    _write(root, "app/controllers/applications/process/benefits_controller.rb", (
+        "class Benefits\n  def index\n  end\n"
+        "  def benefit_check_and_redirect\n    application_dependents_path(application)\n"
+        "    application_declaration_path(application)\n"
+        "    application_benefit_override_paper_evidence_path(application)\n  end\nend\n"
+    ))
+    _write(root, "app/controllers/benefit_overrides_controller.rb", "class BenefitOverrides\n  def paper_evidence\n  end\nend\n")
+    _write(root, "app/controllers/applications/process/dependents_controller.rb", (
+        "class Dependents\n  def index\n  end\n  def path_to_next_page\n"
+        "    application_income_kind_applicants_path(application)\n"
+        "    application_summary_path(application)\n  end\nend\n"
+    ))
+    _write(root, "app/controllers/applications/process/declaration_controller.rb", (
+        "class Declaration\n  def index\n  end\n  def path_to_next_page\n"
+        "    application_representative_path(application)\n"
+        "    application_summary_path(application)\n  end\nend\n"
+    ))
+    _write(root, "app/controllers/applications/process/summary_controller.rb", (
+        "class Summary\n  def index\n  end\n  def create\n    application_confirmation_path(application.id, 'paper')\n  end\nend\n"
+    ))
+    _write(root, "app/controllers/applications/process/confirmation_controller.rb", "class Confirmation\n  def index\n  end\nend\n")
+    _write(root, "app/controllers/evidence_controller.rb", (
+        "class EvidenceController\n  def accuracy\n  end\n  def income\n  end\n  def result\n  end\n"
+        "  def summary\n  end\n  def confirmation\n  end\n"
+        "  def redirect_after_accuracy_save\n    income_evidence_path\n"
+        "    evidence_accuracy_incorrect_reason_path(evidence)\n  end\n"
+        "  def income_save\n    result_evidence_path\n  end\n"
+        "  def summary_save\n    confirmation_evidence_path\n  end\nend\n"
+    ))
+    _write(root, "app/views/evidence/result.html.slim", "= link_to 'Next', summary_evidence_path(@evidence)\n")
+    _write(root, "app/views/evidence/accuracy_incorrect_reason/show.html.slim", "h1 Details\n")
+    _write(root, "app/controllers/part_payments_controller.rb", (
+        "class PartPaymentsController\n  def accuracy\n  end\n  def summary\n  end\n  def confirmation\n  end\n"
+        "  def accuracy_save\n    redirect_to(summary_part_payment_path(part_payment))\n  end\n"
+        "  def summary_save\n    redirect_to(confirmation_part_payment_path(part_payment))\n  end\n"
+        "  def return_application\n    redirect_to return_letter_part_payment_path(part_payment)\n  end\nend\n"
+    ))
+
+
+_PUBLIC_HELPER = """
+module NavigationHelper
+  def next_question_id
+  end
+
+  def probate_or_claim
+    :probate
+  end
+
+  def skip_income?
+    @current_question == :benefit && @online_application.benefits?
+  end
+
+  def skip_income_range?
+    return false if @online_application.calculation_scheme == Rails.configuration.ucd_schema.to_s
+    @current_question == :income_kind && @online_application.income&.zero?
+  end
+
+  def skip_savings_and_investment_extra?
+    @current_question == :savings_and_investment &&
+      !@online_application.savings_and_investment_extra_required?
+  end
+
+  def skip_benefit?
+    @online_application.ho_number.present? || @online_application.over_16 == false
+  end
+
+  def skip_apply_type?
+    @online_application.refund?
+  end
+
+  def legal_representative?
+    next_pages = {
+      applying_on_behalf: @online_application.applying_on_behalf ? :legal_representative : :national_insurance,
+      applicant_address: @online_application.legal_representative ? :apply_type : :contact
+    }
+  end
+
+  def over_16?
+    return false if @current_question != :over_16
+
+    @next_page = if @online_application.over_16
+      :national_insurance
+    else
+      :savings_and_investment
+    end
+  end
+end
+"""
+
+_PUBLIC_NI = """
+module NavigationNiHelper
+  def no_ni_number_page
+    @online_application.ni_number_present == false ? :home_office : :marital_status
+  end
+
+  def ni_next_question
+    if @online_application.applying_on_behalf
+      :legal_representative
+    else
+      :national_insurance
+    end
+  end
+
+  def ni_related_question?
+    next_pages = {
+      applying_on_behalf: ni_next_question,
+      national_insurance: no_ni_number_page
+    }
+  end
+
+  def partner_ni_related_question?
+    case @current_question
+    when :marital_status
+      @partner_ni_next_page = if @online_application.married && @online_application.ni_number_present?
+        :partner_national_insurance
+      else
+        :savings_and_investment
+      end
+    end
+  end
+end
+"""
 
 
 class CliTest(unittest.TestCase):

@@ -99,6 +99,11 @@ def default_branch_name(output: str) -> str | None:
     return None
 
 
+def checkout_dir(name: str) -> Path:
+    """Local checkout for an indexed repository, whether or not it is still there."""
+    return _destination(name)
+
+
 def remove_checkout(name: str) -> bool:
     """Delete the local checkout for one repository. Missing checkouts are fine."""
     destination = _destination(name)

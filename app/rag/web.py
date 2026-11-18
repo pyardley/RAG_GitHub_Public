@@ -29,7 +29,8 @@ from rag.config import DEFAULT_K, LLM_PROVIDER, resolve_fusion, resolve_index
 from rag.db import connect, list_repositories, resolve_repositories
 from rag.edges import POSSIBLE_ARROW, prepare_call_edges
 from rag.files import parse_repo
-from rag.gitrepo import list_branches, remote_commit
+from rag.flows import charts_for, unmapped_message
+from rag.gitrepo import checkout_dir, list_branches, remote_commit
 from rag.ingest import delete_repository, ingest_lock_held, ingest_repository
 from rag.intent import impact_target
 from rag.log import logger
@@ -99,6 +100,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/query": run_query,
             "/api/search": run_search,
             "/api/impact": run_impact,
+            "/api/flow": run_flow,
             "/api/ingest": start_ingest,
             "/api/remove": remove_index,
         }
@@ -301,6 +303,75 @@ def run_impact(body: dict) -> tuple[int, dict]:
         "answer_error": answer_error,
         "model": _model_view(),
     }
+
+
+def run_flow(body: dict) -> tuple[int, dict]:
+    """Draw the main journeys in the selected repositories."""
+    repo = _optional_repo(body)
+    try:
+        conn = connect()
+    except SystemExit as exc:
+        return 503, {"error": _failure_text(exc)}
+    try:
+        repositories = resolve_repositories(conn, repo)
+    except SystemExit as exc:
+        return 400, {"error": _failure_text(exc)}
+    finally:
+        conn.close()
+    charts: list[dict] = []
+    missing: list[str] = []
+    unmapped: list[str] = []
+    for item in repositories:
+        root = checkout_dir(item["name"])
+        if not root.is_dir():
+            missing.append(item["name"])
+            continue
+        built = charts_for(root)
+        if not built:
+            unmapped.append(item["name"])
+            continue
+        sha = str(item["commit_sha"])
+        for chart in built:
+            chart["repository"] = item["name"]
+            _attach_flow_urls(chart, item["name"], sha)
+            charts.append(chart)
+    if len(repositories) > 1:
+        for chart in charts:
+            chart["title"] = f"{chart['repository']} — {chart['title']}"
+    message = _flow_message(missing, unmapped, bool(charts))
+    return 200, {
+        "repositories": [_scope(item) for item in repositories],
+        "charts": charts,
+        "message": message,
+    }
+
+
+def _attach_flow_urls(chart: dict, repo: str, commit_sha: str) -> None:
+    for node in chart.get("nodes") or []:
+        url = github_blob_url(
+            repo,
+            commit_sha,
+            str(node.get("path") or ""),
+            int(node.get("start_line") or 1),
+            int(node.get("end_line") or 1),
+        )
+        if url:
+            node["url"] = url
+
+
+def _flow_message(missing: list[str], unmapped: list[str], drew: bool) -> str:
+    parts: list[str] = []
+    if missing:
+        names = ", ".join(missing)
+        parts.append(
+            f"The checkout for {names} is not on disk, so its journey cannot be drawn. "
+            "Index it again to restore the checkout."
+        )
+    if unmapped:
+        parts.append(unmapped_message(unmapped))
+    if not drew and not parts:
+        parts.append(unmapped_message([]))
+    return " ".join(parts)
 
 
 def start_ingest(body: dict) -> tuple[int, dict]:

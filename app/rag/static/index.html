@@ -192,6 +192,18 @@
     .saved-banner h1 { margin: 0 0 0.4rem; }
     .diagram-node:focus { outline: none; }
     .diagram-node:focus rect { stroke: var(--ink); stroke-width: 2; }
+    .flow-frame { overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+    .flow-frame svg { display: block; }
+    .flow-node { cursor: pointer; }
+    .flow-node rect { fill: var(--paper); stroke: var(--line); }
+    .flow-node.choice rect { stroke: var(--accent); stroke-width: 1.6; }
+    .flow-node.end rect { fill: var(--accent); stroke: var(--accent); }
+    .flow-node.end text { fill: var(--accent-ink); }
+    .flow-node text { font: 12px/1.25 "Segoe UI", "Helvetica Neue", sans-serif; fill: var(--ink); }
+    .flow-edge { fill: none; stroke: var(--muted); stroke-width: 1.4; }
+    .flow-label { font: 11px "Segoe UI", "Helvetica Neue", sans-serif; fill: var(--muted); }
+    .flow-node:focus { outline: none; }
+    .flow-node:focus rect { stroke: var(--ink); stroke-width: 2; }
   </style>
 </head>
 <body>
@@ -252,6 +264,7 @@
       <button type="button" data-mode="query" aria-pressed="true">Query</button>
       <button type="button" data-mode="impact" aria-pressed="false">Impact</button>
       <button type="button" data-mode="search" aria-pressed="false">Search</button>
+      <button type="button" data-mode="flow" aria-pressed="false">Flow</button>
     </nav>
 
     <form class="ask" id="ask">
@@ -288,9 +301,19 @@
     const modes = {
       query: { label: "Question", placeholder: "look under /features for \"with income '[0-9]*' and average\"", button: "Ask", answer: true, k: true },
       impact: { label: "Class, method, or file", placeholder: "ApplicationController#online_application", button: "Analyse", answer: true, k: false },
-      search: { label: "Search", placeholder: "calculation_scheme", button: "Search", answer: false, k: true }
+      search: { label: "Search", placeholder: "calculation_scheme", button: "Search", answer: false, k: true },
+      flow: {
+        label: "Journey",
+        placeholder: "",
+        button: "Show",
+        answer: false,
+        k: false,
+        prompt: false,
+        hint: "Draws the main journeys in the selected repository. Each box opens that step in the indexed commit on GitHub."
+      }
     };
-    const prompts = { query: "", impact: "", search: "" };
+    const prompts = { query: "", impact: "", search: "", flow: "" };
+    const queryHint = document.querySelector("#prompt-hint").textContent;
     let mode = "query";
     let poll = null;
     let currentIngest = null;
@@ -349,7 +372,10 @@
       const retrieval = next === "query" || next === "search";
       document.querySelector("#index-wrap").hidden = !retrieval;
       document.querySelector("#fusion-wrap").hidden = !retrieval;
-      document.querySelector("#prompt-hint").hidden = next !== "query";
+      document.querySelector("#prompt-label").hidden = spec.prompt === false;
+      const hint = document.querySelector("#prompt-hint");
+      hint.hidden = next !== "query" && next !== "flow";
+      hint.textContent = next === "flow" ? spec.hint : queryHint;
       document.querySelector("#answer-wrap").hidden = !spec.answer;
       document.querySelectorAll(".modes button").forEach((button) => {
         button.setAttribute("aria-pressed", String(button.dataset.mode === next));
@@ -744,10 +770,12 @@
       const go = document.querySelector("#go");
       go.disabled = true;
       results.replaceChildren();
-      setStatus(spec.answer && document.querySelector("#answer").checked ? "Searching and writing an answer…" : "Searching the index…");
+      setStatus(mode === "flow"
+        ? "Drawing the journey…"
+        : spec.answer && document.querySelector("#answer").checked ? "Searching and writing an answer…" : "Searching the index…");
       const payload = { repo: repoSelect.value };
       if (mode === "impact") payload.target = prompt.value;
-      else {
+      else if (mode !== "flow") {
         payload.question = prompt.value;
         payload.k = Number(document.querySelector("#k").value);
         payload.index = document.querySelector("#search-index").value;
@@ -780,7 +808,7 @@
       save.type = "button";
       save.className = "secondary";
       save.textContent = "Save as HTML";
-      save.addEventListener("click", () => downloadResult(body, requested, prompt.value));
+      save.addEventListener("click", () => downloadResult(body, requested, requested === "flow" ? repoSelect.value : prompt.value));
       results.append(save);
       output = results;
       fillResult(body, requested);
@@ -792,6 +820,10 @@
         scope.className = "scope";
         scope.textContent = body.repositories.map((repo) => `${repo.name} @ ${repo.commit_sha} (${repo.branch})`).join(", ");
         output.append(scope);
+      }
+      if (requested === "flow") {
+        renderFlow(body);
+        return;
       }
       if (body.index) {
         const chosen = document.createElement("p");
@@ -904,8 +936,8 @@
     }
 
     function savedBanner(saved) {
-      const titles = { impact: "Impact", search: "Search", query: "Query" };
-      const labels = { impact: "Target", search: "Search", query: "Question" };
+      const titles = { impact: "Impact", search: "Search", query: "Query", flow: "Flow" };
+      const labels = { impact: "Target", search: "Search", query: "Question", flow: "Repository" };
       const box = document.createElement("header");
       box.className = "saved-banner";
       const heading = document.createElement("h1");
@@ -969,7 +1001,7 @@
     }
 
     function savedPage(saved, host) {
-      const titles = { impact: "Impact", search: "Search", query: "Query" };
+      const titles = { impact: "Impact", search: "Search", query: "Query", flow: "Flow" };
       const title = `${titles[saved.mode] || "Query"}${saved.asked ? `: ${saved.asked}` : ""}`;
       const style = document.querySelector("style").textContent.replace(/<\/style/gi, "<\\/style");
       const diagram = saved.body.diagram;
@@ -1216,6 +1248,195 @@ ${data}
         addLine(paragraph, line.trim());
       }
       return root;
+    }
+
+    let flowMarker = 0;
+
+    function renderFlow(body) {
+      if (body.message) {
+        const note = document.createElement("p");
+        note.className = body.charts && body.charts.length ? "scope" : "empty";
+        note.textContent = body.message;
+        output.append(note);
+      }
+      if (!body.charts || !body.charts.length) return;
+      for (const chart of body.charts) {
+        const section = document.createElement("section");
+        section.className = "group";
+        const heading = document.createElement("h2");
+        heading.textContent = chart.title || "Journey";
+        section.append(heading);
+        if (chart.note) {
+          const note = document.createElement("p");
+          note.className = "scope";
+          note.textContent = chart.note;
+          section.append(note);
+        }
+        const frame = document.createElement("div");
+        frame.className = "flow-frame";
+        frame.append(drawFlow(chart));
+        section.append(frame);
+        output.append(section);
+      }
+    }
+
+    function drawFlow(chart) {
+      const svgNs = "http://www.w3.org/2000/svg";
+      const nodeWidth = 230;
+      const lineHeight = 15;
+      const padY = 10;
+      const rowGap = 36;
+      const columnGap = 48;
+      const labelGutter = 176;
+      const laneGap = 168;
+      const marginY = 16;
+      const nodes = (chart.nodes || []).map((node) => {
+        const lines = wrapLabel(node.label, 32);
+        return {
+          ...node,
+          lines,
+          column: node.column || 0,
+          height: Math.max(44, lines.length * lineHeight + padY * 2)
+        };
+      });
+      const svg = document.createElementNS(svgNs, "svg");
+      svg.setAttribute("role", "img");
+      svg.setAttribute("aria-label", chart.title || "Journey");
+      if (!nodes.length) {
+        svg.setAttribute("width", "0");
+        svg.setAttribute("height", "0");
+        return svg;
+      }
+      const rows = [...new Set(nodes.map((node) => node.row))].sort((left, right) => left - right);
+      let y = marginY;
+      const rowY = new Map();
+      for (const row of rows) {
+        rowY.set(row, y);
+        const height = Math.max(...nodes.filter((node) => node.row === row).map((node) => node.height));
+        y += height + rowGap;
+      }
+      for (const node of nodes) {
+        node.x = labelGutter + node.column * (nodeWidth + columnGap);
+        node.y = rowY.get(node.row);
+      }
+      const right = Math.max(...nodes.map((node) => node.x + nodeWidth));
+      const laneCount = Math.max(0, ...(chart.edges || []).map((edge) => edge.route === "lane" ? (edge.lane || 0) + 1 : 0));
+      const laneX = (lane) => right + 36 + lane * laneGap;
+      const width = laneCount ? laneX(laneCount - 1) + laneGap : right + 24;
+      const height = y - rowGap + marginY;
+      svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+      svg.setAttribute("width", String(width));
+      svg.setAttribute("height", String(height));
+      const markerId = `flow-arrow-${flowMarker += 1}`;
+      const defs = document.createElementNS(svgNs, "defs");
+      const marker = document.createElementNS(svgNs, "marker");
+      marker.setAttribute("id", markerId);
+      marker.setAttribute("viewBox", "0 0 10 10");
+      marker.setAttribute("refX", "9");
+      marker.setAttribute("refY", "5");
+      marker.setAttribute("markerWidth", "7");
+      marker.setAttribute("markerHeight", "7");
+      marker.setAttribute("orient", "auto");
+      const head = document.createElementNS(svgNs, "path");
+      head.setAttribute("d", "M 0 0 L 10 5 L 0 10 z");
+      head.setAttribute("fill", "#5e574c");
+      marker.append(head);
+      defs.append(marker);
+      svg.append(defs);
+      const byId = new Map(nodes.map((node) => [node.id, node]));
+      for (const edge of chart.edges || []) {
+        const source = byId.get(edge.from);
+        const target = byId.get(edge.to);
+        if (!source || !target) continue;
+        const route = flowRoute(edge, source, target, nodeWidth, laneX);
+        const path = document.createElementNS(svgNs, "path");
+        path.setAttribute("class", "flow-edge");
+        path.setAttribute("d", route.d);
+        path.setAttribute("marker-end", `url(#${markerId})`);
+        if (edge.label) {
+          const title = document.createElementNS(svgNs, "title");
+          title.textContent = edge.label;
+          path.append(title);
+        }
+        svg.append(path);
+        if (!edge.label) continue;
+        const text = document.createElementNS(svgNs, "text");
+        text.setAttribute("class", "flow-label");
+        text.setAttribute("x", String(route.labelX));
+        text.setAttribute("y", String(route.labelY));
+        text.setAttribute("text-anchor", route.anchor);
+        text.textContent = edge.label;
+        svg.append(text);
+      }
+      for (const node of nodes) svg.append(flowNode(svgNs, node, nodeWidth, lineHeight, padY));
+      return svg;
+    }
+
+    function flowRoute(edge, source, target, nodeWidth, laneX) {
+      const bottom = [source.x + nodeWidth / 2, source.y + source.height];
+      const top = [target.x + nodeWidth / 2, target.y];
+      if (edge.route === "straight") {
+        return {
+          d: `M ${bottom[0]} ${bottom[1]} L ${top[0]} ${top[1]}`,
+          labelX: source.x - 8,
+          labelY: (bottom[1] + top[1]) / 2 + 4,
+          anchor: "end"
+        };
+      }
+      if (edge.route === "side") {
+        if (source.row === target.row) {
+          const forward = source.x < target.x;
+          const x1 = forward ? source.x + nodeWidth : source.x;
+          const x2 = forward ? target.x : target.x + nodeWidth;
+          const y = source.y + source.height / 2;
+          return { d: `M ${x1} ${y} L ${x2} ${y}`, labelX: (x1 + x2) / 2, labelY: y - 6, anchor: "middle" };
+        }
+        const mid = bottom[1] + Math.max(12, (top[1] - bottom[1]) / 2);
+        return {
+          d: `M ${bottom[0]} ${bottom[1]} L ${bottom[0]} ${mid} L ${top[0]} ${mid} L ${top[0]} ${top[1]}`,
+          labelX: (bottom[0] + top[0]) / 2,
+          labelY: mid - 4,
+          anchor: "middle"
+        };
+      }
+      const x = laneX(edge.lane || 0);
+      const y1 = source.y + source.height / 2;
+      const y2 = target.y + target.height / 2;
+      return {
+        d: `M ${source.x + nodeWidth} ${y1} L ${x} ${y1} L ${x} ${y2} L ${target.x + nodeWidth} ${y2}`,
+        labelX: x + 6,
+        labelY: Math.min(y1, y2) + 14,
+        anchor: "start"
+      };
+    }
+
+    function flowNode(svgNs, node, nodeWidth, lineHeight, padY) {
+      const link = document.createElementNS(svgNs, "a");
+      link.setAttribute("class", node.kind && node.kind !== "step" ? `flow-node ${node.kind}` : "flow-node");
+      if (node.url) {
+        link.setAttribute("href", node.url);
+        link.setAttribute("target", "_blank");
+        link.setAttribute("rel", "noopener noreferrer");
+      }
+      link.setAttribute("aria-label", `${node.label}. ${node.path || ""}`);
+      const title = document.createElementNS(svgNs, "title");
+      title.textContent = node.detail || node.label;
+      link.append(title);
+      const rect = document.createElementNS(svgNs, "rect");
+      rect.setAttribute("x", String(node.x));
+      rect.setAttribute("y", String(node.y));
+      rect.setAttribute("width", String(nodeWidth));
+      rect.setAttribute("height", String(node.height));
+      rect.setAttribute("rx", "8");
+      link.append(rect);
+      node.lines.forEach((line, index) => {
+        const text = document.createElementNS(svgNs, "text");
+        text.setAttribute("x", String(node.x + 12));
+        text.setAttribute("y", String(node.y + padY + 12 + index * lineHeight));
+        text.textContent = line;
+        link.append(text);
+      });
+      return link;
     }
 
     function renderDiagram(diagram) {

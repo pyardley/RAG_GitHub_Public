@@ -103,6 +103,26 @@ class _App(BaseHTTPRequestHandler):
         if path == "/api/remove":
             self._json({"error": "should not be called"}, 500)
             return
+        if path == "/api/flow":
+            self._json({
+                "repositories": [{"name": "hmcts/hwf-publicapp"}],
+                "charts": [{
+                    "title": "Apply for help with fees",
+                    "repository": "hmcts/hwf-publicapp",
+                    "note": "Each box opens the file",
+                    "nodes": [{
+                        "id": "fee",
+                        "label": "Fee",
+                        "path": "app/models/forms/fee.rb",
+                        "url": "https://github.com/hmcts/hwf-publicapp/blob/abc/app/models/forms/fee.rb#L4",
+                        "row": 2,
+                        "column": 0,
+                    }],
+                    "edges": [{"from": "checklist", "to": "fee", "label": "Continue", "route": "straight"}],
+                }],
+                "message": "",
+            })
+            return
         self._json({"error": "Not found"}, 404)
 
     def _record(self, method: str, path: str, body: dict | None) -> None:
@@ -147,7 +167,7 @@ class McpTest(unittest.TestCase):
         names = [tool["name"] for tool in listed["result"]["tools"]]
         self.assertEqual(
             names,
-            ["repositories", "query", "search", "impact", "default_branch", "branches", "ingest", "remove_index"],
+            ["repositories", "query", "search", "impact", "flow", "default_branch", "branches", "ingest", "remove_index"],
         )
 
     def test_branches_lists_the_default_first(self) -> None:
@@ -260,6 +280,26 @@ class McpTest(unittest.TestCase):
         self.assertTrue(reply["result"]["isError"])
         self.assertIn("confirm", reply["result"]["content"][0]["text"])
         self.assertEqual(len(_App.seen), before)
+
+    def test_flow_returns_the_journey_steps(self) -> None:
+        reply = server.handle({
+            "jsonrpc": "2.0",
+            "id": 11,
+            "method": "tools/call",
+            "params": {"name": "flow", "arguments": {"repo": "hmcts/hwf-publicapp"}},
+        })
+        text = json.loads(reply["result"]["content"][0]["text"])
+        self.assertEqual(text["charts"][0]["title"], "Apply for help with fees")
+        self.assertEqual(text["charts"][0]["nodes"], [{
+            "id": "fee",
+            "label": "Fee",
+            "path": "app/models/forms/fee.rb",
+            "url": "https://github.com/hmcts/hwf-publicapp/blob/abc/app/models/forms/fee.rb#L4",
+        }])
+        self.assertEqual(text["charts"][0]["edges"], [{"from": "checklist", "to": "fee", "label": "Continue"}])
+        self.assertNotIn("message", text)
+        self.assertEqual(_App.seen[-1][0:2], ("POST", "/api/flow"))
+        self.assertEqual(_App.seen[-1][2]["repo"], "hmcts/hwf-publicapp")
 
     def test_cursor_and_claude_code_start_the_same_server(self) -> None:
         root = Path(__file__).resolve().parents[1]

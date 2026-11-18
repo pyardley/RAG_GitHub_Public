@@ -81,6 +81,38 @@ def impact(target: str, repo: str | None = None, answer: bool = False) -> dict:
     return result
 
 
+def flow(repo: str | None = None) -> dict:
+    """Journeys for one repository, or every indexed repository when repo is omitted."""
+    body: dict = {}
+    if isinstance(repo, str) and repo.strip():
+        body["repo"] = repo.strip()
+    payload = _request("POST", "/api/flow", body)
+    charts = []
+    for chart in payload.get("charts") or []:
+        charts.append({
+            "title": chart.get("title"),
+            "repository": chart.get("repository"),
+            "note": chart.get("note"),
+            "nodes": [
+                {
+                    "id": node.get("id"),
+                    "label": node.get("label"),
+                    "path": node.get("path"),
+                    "url": node.get("url"),
+                }
+                for node in chart.get("nodes") or []
+            ],
+            "edges": [
+                {"from": edge.get("from"), "to": edge.get("to"), "label": edge.get("label") or ""}
+                for edge in chart.get("edges") or []
+            ],
+        })
+    result = {"charts": charts, "repositories": payload.get("repositories") or []}
+    if payload.get("message"):
+        result["message"] = payload["message"]
+    return result
+
+
 def default_branch(repo: str) -> dict:
     name = _required(repo, "Enter a GitHub repository")
     quoted = urllib.request.quote(name, safe="")

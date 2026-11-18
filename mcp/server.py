@@ -17,8 +17,9 @@ _PROTOCOL = "2024-11-05"
 _VERSION = re.compile(r"\d{4}-\d{2}-\d{2}")
 _INSTRUCTIONS = (
     "Code RAG searches indexed GitHub repositories. "
-    "Use query for a question, search for exact text, and impact for a class, method, "
-    "file, or FactoryBot call such as FactoryBot.create(:claim). "
+    "Use query for a question, search for exact text, impact for a class, method, "
+    "file, or FactoryBot call such as FactoryBot.create(:claim), and flow for the "
+    "main journeys through a Help with Fees repository. "
     "Set repo to owner/name when more than one repository is indexed. "
     "The app must already be running."
 )
@@ -100,6 +101,21 @@ _TOOLS = [
                 "answer": {"type": "boolean", "description": "When true, the app's own model also writes a reply."},
             },
             "required": ["target"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "flow",
+        "description": (
+            "Draw the main end-to-end journeys in an indexed Help with Fees repository. "
+            "Each node has the file it opens on GitHub. "
+            "Set repo to owner/name when more than one repository is indexed."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "repo": {"type": "string", "description": "owner/name. Omit to use every indexed repository."},
+            },
             "additionalProperties": False,
         },
     },
@@ -247,6 +263,8 @@ def _tool(name: object, arguments: dict) -> dict:
         return api.search(arguments.get("question", ""), arguments.get("repo"), _count(arguments.get("k", 12)))
     if name == "impact":
         return api.impact(arguments.get("target", ""), arguments.get("repo"), arguments.get("answer", False))
+    if name == "flow":
+        return api.flow(arguments.get("repo"))
     if name == "default_branch":
         return api.default_branch(arguments.get("repo", ""))
     if name == "branches":
