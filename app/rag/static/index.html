@@ -203,8 +203,13 @@
     .flow-edge { fill: none; stroke: var(--muted); stroke-width: 1.4; }
     .flow-label { font: 11px "Segoe UI", "Helvetica Neue", sans-serif; fill: var(--muted); cursor: pointer; }
     .flow-label:hover, .flow-label:focus { fill: var(--ink); }
+    .flow-node { scroll-margin: 1.5rem; }
     .flow-node:focus { outline: none; }
     .flow-node:focus rect { stroke: var(--ink); stroke-width: 2; }
+    .flow-unmarked { margin: 0 0 0.85rem; }
+    .flow-unmarked summary { cursor: pointer; color: var(--muted); }
+    .flow-unmarked ul { margin: 0.35rem 0 0; padding-left: 1.2rem; }
+    .flow-unmarked a { color: var(--accent); text-underline-offset: 0.18em; }
     .journey-ask { display: grid; gap: 0.45rem; margin: 0.85rem 0; }
     .journey-ask textarea { min-height: 4.5rem; }
     .journey-ask .hint { margin: 0; }
@@ -1305,9 +1310,12 @@ ${data}
         const changes = flowChanges(chart.changes);
         if (changes) section.append(changes);
         if (output === results) section.append(journeyAsk(chart));
+        const drawn = drawFlow(chart);
+        const unmarked = unmarkedList(drawn.nodes);
+        if (unmarked) section.append(unmarked);
         const frame = document.createElement("div");
         frame.className = "flow-frame";
-        frame.append(drawFlow(chart));
+        frame.append(drawn.svg);
         section.append(frame);
         output.append(section);
       }
@@ -1509,10 +1517,13 @@ ${data}
       const svg = document.createElementNS(svgNs, "svg");
       svg.setAttribute("role", "img");
       svg.setAttribute("aria-label", chart.title || "Journey");
+      const chartId = `flow-${flowMarker += 1}`;
+      const usedIds = new Set();
+      for (const node of nodes) node.domId = flowDomId(chartId, node, usedIds);
       if (!nodes.length) {
         svg.setAttribute("width", "0");
         svg.setAttribute("height", "0");
-        return svg;
+        return { svg, nodes };
       }
       const byId = new Map(nodes.map((node) => [node.id, node]));
       const straightIndex = new Map();
@@ -1556,7 +1567,7 @@ ${data}
       svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
       svg.setAttribute("width", String(width));
       svg.setAttribute("height", String(height));
-      const markerId = `flow-arrow-${flowMarker += 1}`;
+      const markerId = `${chartId}-arrow`;
       const defs = document.createElementNS(svgNs, "defs");
       const marker = document.createElementNS(svgNs, "marker");
       marker.setAttribute("id", markerId);
@@ -1620,7 +1631,53 @@ ${data}
         }
       }
       for (const node of nodes) svg.append(nodeElements.get(node.id));
-      return svg;
+      return { svg, nodes };
+    }
+
+    function flowDomId(chartId, node, usedIds) {
+      const slug = String(node.id || node.label || "step").replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+      const base = `${chartId}-${slug || "step"}`;
+      let id = base;
+      let count = 2;
+      while (usedIds.has(id)) {
+        id = `${base}-${count}`;
+        count += 1;
+      }
+      usedIds.add(id);
+      return id;
+    }
+
+    function unmarkedList(nodes) {
+      const missing = nodes
+        .filter((node) => !node.visited)
+        .sort((left, right) => (left.row - right.row) || ((left.column || 0) - (right.column || 0)) || String(left.label).localeCompare(String(right.label)));
+      if (!missing.length) return null;
+      const repeated = new Map();
+      for (const node of missing) repeated.set(node.label, (repeated.get(node.label) || 0) + 1);
+      const details = document.createElement("details");
+      details.className = "flow-unmarked";
+      const summary = document.createElement("summary");
+      summary.textContent = missing.length === 1
+        ? "1 step with no feature or step definition"
+        : `${missing.length} steps with no feature or step definition`;
+      const list = document.createElement("ul");
+      for (const node of missing) {
+        const item = document.createElement("li");
+        const link = document.createElement("a");
+        link.href = `#${node.domId}`;
+        link.textContent = repeated.get(node.label) > 1 && node.id ? `${node.label} (${node.id})` : (node.label || node.id);
+        link.addEventListener("click", (event) => {
+          const target = document.getElementById(node.domId);
+          if (!target) return;
+          event.preventDefault();
+          target.focus({ preventScroll: true });
+          target.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
+        });
+        item.append(link);
+        list.append(item);
+      }
+      details.append(summary, list);
+      return details;
     }
 
     function labelSpots(route, source, target, kind) {
@@ -1681,6 +1738,7 @@ ${data}
     function flowNode(svgNs, node, nodeWidth, lineHeight, padY) {
       const link = document.createElementNS(svgNs, "a");
       link.setAttribute("class", node.kind && node.kind !== "step" ? `flow-node ${node.kind}` : "flow-node");
+      if (node.domId) link.id = node.domId;
       if (node.url) {
         link.setAttribute("href", node.url);
         link.setAttribute("target", "_blank");
