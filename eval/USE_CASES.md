@@ -1,17 +1,17 @@
 # Ruby and Cucumber use cases
 
-Scored on 19 November 2026 against the four indexed repositories, at the same commits as `eval/FINDINGS.md`. Each query used the page path: code index, reciprocal rank fusion, and the question planner. Written answers used `gpt-4o-mini`.
+Scored on 19 November 2026 against the four indexed repositories, at the same commits as `eval/FINDINGS.md`. Query, Impact, and Search used the page path: code index, reciprocal rank fusion, and the question planner. Written answers used `gpt-4o-mini`. The two feature-writing scores were re-checked the same day on Features, after that button was added.
 
-The note being scored asks a retrieval system to write tests, explain behaviour, review the suite, diagnose failures, and onboard people. This app is a lookup over indexed Ruby and Cucumber. Documentation, a named feature trace, and Impact do that job. Writing a new feature, healing the suite from a description, and auditing it for smells do not.
+The note being scored asks a retrieval system to write tests, explain behaviour, review the suite, diagnose failures, and onboard people. This app is a lookup over indexed Ruby and Cucumber. Documentation, a named feature trace, and Impact do that job. Features finds an existing step, or the steps to reuse when writing a feature, and quotes only lines that are already in the suite. Healing the suite from a description, and auditing it for smells, remain outside what the page does.
 
-Overall: **5/10**.
+Overall: **6/10**.
 
-Recall figures below are from `eval/FINDINGS.md` (17 November 2026, 95 questions, top 8, planner off). They are the retrieval ceiling. The live notes are what the page returned with the planner on.
+Recall figures below are from `eval/FINDINGS.md` (17 November 2026, 95 questions, top 8, planner off). They are the retrieval ceiling for Query. The live notes for Query are what the page returned with the planner on. The feature-writing notes are from Features.
 
 | Use case | Score | What a live query did |
 |---|---|---|
-| Write a feature from plain English | 2/10 | Invented new steps and missed the existing fee scenarios |
-| Write a matching step definition | 3/10 | A pasted step missed `fee_steps.rb`; an exact phrase found it |
+| Write a feature from plain English | 7/10 | Features quotes the fee scenarios and says the refund request has no step |
+| Write a matching step definition | 7/10 | Features finds `fee_steps.rb` for Then, And, Given, and When |
 | Heal steps after a UI change | 5/10 | Naming `DobPage` listed the scenarios; describing the change did not |
 | Answer what the system does, and how it is tested | 7/10 | Date-of-birth rules landed on `Forms::Dob` and `DobPage` |
 | Trace a scenario down to Ruby | 8/10 | Naming the feature file reached the step file and `DobPage#valid_dob` |
@@ -24,41 +24,33 @@ Recall figures below are from `eval/FINDINGS.md` (17 November 2026, 95 questions
 
 ## 1. Natural language test generation and maintenance
 
-### Write a feature from plain English — 2/10
+### Write a feature from plain English — 7/10
 
-On `hmcts/hwf-publicapp`:
+On Features, against `hmcts/hwf-publicapp`:
 
 ```text
 Write a Cucumber feature for an applicant who already paid the fee and wants a refund. The payment date cannot be in the future or more than three months ago. Reuse existing step phrasing.
 ```
 
-The planner added the query `refund`. Passages were refund views, `Views::Summary#refund_text`, and `Forms::Fee#received_and_refund_data`. `features/fee.feature` was absent. The written answer then produced `Given the applicant has paid the fee on "2023-01-01"` and said the passages contained no existing phrasing to reuse. Those steps are not in the suite.
+The search that runs is “an applicant who already paid the fee and wants a refund. The payment date cannot be in the future or more than three months ago.” With 12 passages, every hit is under `features/`. The first is `features/fee.feature`, scenario “Date exceeding 3 months”, then `FeePage#submit_fee_yes` and `features/step_definitions/fee_steps.rb`. The written answer quotes those existing steps, including “Date within the last 3 months”, and says the suite has no Gherkin line for the refund request itself. It does not contain `Given the applicant has paid the fee`.
 
-The query that finds the scenarios worth copying:
+The same question on Query still plans down to `refund` and can miss `features/fee.feature`. Use Features for this request.
 
-```text
-Do existing Cucumber features cover the rule that a fee payment date cannot be in the future or more than three months ago?
-```
+### Write a matching step definition — 7/10
 
-First hit: `features/fee.feature`, scenario “Date exceeding 3 months”.
-
-### Write a matching step definition — 3/10
-
-Pasting the step as an ordinary question on `hmcts/hwf-publicapp`:
+On Features, against `hmcts/hwf-publicapp`, each of these returns the same passages:
 
 ```text
 Then I should see this date can't be in the future error message
 ```
 
-The planner added `error message` and `date future`. The top 8 were `FeePage#future_date`, the fee and probate scenarios, and the RSpec page specs. `features/step_definitions/fee_steps.rb` was outside that list. Unplanned, the same 13 pasted-step questions score Recall@8 **0.92** on the code index.
-
-Quoting the step finds both definition files:
-
 ```text
-look under /features for "this date can't be in the future"
+And I should see this date can't be in the future error message
 ```
 
-Hits: `features/fee.feature`, both probate features, `fee_steps.rb`, and `probate_steps.rb`.
+`Given` and `When` do the same. The keyword is not part of the match, so a second Then, Given, or When written as And is included. The passages are `features/fee.feature` (scenario “Date is in the future”), both probate features, and `features/step_definitions/fee_steps.rb`.
+
+Features finds the existing definition. It does not write a new step method. On Query, the same Then line is still planned into `error message` and `date future`, and `fee_steps.rb` can fall out of the top 8. Unplanned, the 13 pasted-step questions score Recall@8 **0.92** on the code index.
 
 ### Heal steps after a UI change — 5/10
 
@@ -192,65 +184,26 @@ Draft a short technical note of how an online application is submitted, from the
 
 The top passages were `QuestionsController#process_form_and_online_application` and `OnlineApplicationBuilder`. A note written from those would describe saving the form. `where is the application submitted`, then Impact on `SubmitApplication`, is the pair that reaches the post.
 
-## Plan: stop invented Cucumber steps
+## Features
 
-**Status:** implemented on the Features button. Query is unchanged, so a pasted step on Query is still planned. Features (`POST /api/features`) skips the planner, matches a Gherkin line under `features/`, searches a writing request as the behaviour sentence, and tells the answer model to quote only steps that appear in the passages.
+**Status:** implemented. Query is unchanged, so a pasted step or a “write a feature” request on Query is still planned. Features is the page button, `POST /api/features`, `rag features`, and the `features` MCP tool. The code is `app/rag/features.py`.
 
-Two requests failed for the same reason. The page searched the instruction, let a short planned query crowd the top 8, and the answer model wrote Gherkin that is not in the index.
+Two requests used to fail for the same reason. Query searched the instruction, a short planned query crowded the top 8, and the answer wrote Gherkin that is not in the index. A pasted Then step was planned into `error message` and `date future`, and `fee_steps.rb` fell out of the top 8. The refund question was planned into `refund`, `features/fee.feature` was absent, and the answer invented `Given the applicant has paid the fee on "2023-01-01"`.
 
-1. Pasted step `Then I should see this date can't be in the future error message`. `question_needs_plan` in `app/rag/plan.py` is true for an unquoted step, so the planner added `error message` and `date future`. `retrieve` in `app/rag/search.py` searches each planned query and merges them. `fee_steps.rb` fell out of the top 8. The same question, unplanned, is one of the 13 step questions at Recall@8 0.92. Quoting the text (`look under /features for "..."`) already takes the phrase path in `quoted_phrases` and finds `fee_steps.rb`.
-2. “Write a Cucumber feature … Reuse existing step phrasing.” The full sentence was searched, plus `refund`. `features/fee.feature` was absent. The answer instructions in `app/rag/answer.py` say not to invent behaviour, and the model still emitted three new scenarios. It also said the passages had no step phrasing, which was true of the passages it was given.
+Features does this instead:
 
-The quoted-phrase path and the feature-list path already skip the planner. A Gherkin line and a “write a feature” request should join them.
+1. A Gherkin line is matched under `features/` on the step text, then followed into its step definition. Given, When, Then, And, and But are the same step, so a second Then written as And is included.
+2. A request to write, draft, or generate a feature, or to reuse existing steps, drops that instruction and searches the behaviour sentence on the code index. Planning stays off.
+3. The written answer may quote a Gherkin line only when that line is in a passage. A requested check with no such line is named, and no substitute step is written.
+4. Paths that start with `features/` are listed before other directories. The order inside each group stays the relevance order.
 
-### Goal
+Checked on `hmcts/hwf-publicapp` after the app was restarted:
 
-- A pasted step is searched as that step. On the page path, `pub-step-1` in `eval/hwf-publicapp.jsonl` returns `features/step_definitions/fee_steps.rb` inside the top 8.
-- The refund feature request returns `features/fee.feature` inside the top 8. The written answer quotes a step line from a passage, or names the check that has no step. It does not contain `Given the applicant has paid the fee`.
-- That moves “write a feature from plain English” from 2/10 to about 6/10: the user gets the existing steps, and a scenario only where those steps exist.
+- `Then I should see this date can't be in the future error message`, and the same line with And, Given, or When, each return `features/fee.feature`, both probate features, and `features/step_definitions/fee_steps.rb`.
+- The refund question above returns `features/fee.feature` first (scenario “Date exceeding 3 months”). The first 12 passages are all under `features/`. The written answer quotes the fee scenarios and says the refund request has no step. It does not contain `Given the applicant has paid the fee`.
 
-### Work items
-
-Do these in order.
-
-#### 1. Treat a Gherkin line as an exact phrase
-
-**Why it fails today.** `quoted_phrases` only sees text the user has wrapped in quotes. A line that already starts with `Given`, `When`, `Then`, `And`, or `But` is planned like any other sentence. The extra queries are merged in `retrieve` and push the step definition down.
-
-**Change.**
-
-- Add a detector next to `quoted_phrases` that returns each Gherkin line in the question, keywords included, as a phrase.
-- In `question_needs_plan`, return false when that detector finds a line, the same way it already returns false for quotes, feature paths, and “which features”.
-- When those lines are present, search them with the phrase path, scoped under `features/`, and follow a matched step into its definition the way `follow_matched_steps` already does for a quoted step.
-
-**Prove it.** A unit test with the `pub-step-1` text asserts that planning is skipped and the phrase is the step line. Then:
-
-```powershell
-docker compose run --rm --no-deps -T --entrypoint python -v "${PWD}/eval:/eval" rag /eval/run_eval.py --questions /eval/hwf-publicapp.jsonl --repo hmcts/hwf-publicapp --query-path --details
-```
-
-`pub-step-1` must list `features/step_definitions/fee_steps.rb`. Step Recall@8 on that query-path run should stay at or above the unplanned **0.92**.
-
-#### 2. Search the behaviour, not the instruction to write a feature
-
-**Why it fails today.** The sentence begins with “Write a Cucumber feature” and ends with “Reuse existing step phrasing.” Those words are what the short planned query keeps (`refund`), and the embedding of the whole instruction does not surface `features/fee.feature`. The coverage question that states only the rule already hits that file first.
-
-**Change.**
-
-- Detect a drafting request: the question asks to write, draft, or generate a feature, or to reuse existing steps.
-- Drop that framing and search the remaining behaviour sentence on the code index, as one query, with planning left off.
-- Also run a feature-file phrase search for any quoted or Gherkin text inside the request, so a constraint that already has a scenario is not outvoted by a refund view.
-
-**Prove it.** A unit test on the refund question asserts the searched text keeps “payment date”, “future”, and “three months”, and drops “Write a Cucumber feature” and “Reuse existing step phrasing”. A query-path check against `hmcts/hwf-publicapp` must return `features/fee.feature` in the top 8.
-
-#### 3. Quote steps from passages, or say the step is missing
-
-**Why it fails today.** `_QUERY_INSTRUCTIONS` forbids inventing files, methods, or behaviour. A drafting question still gets a normal answer, and the model fills the gap with new Gherkin, then admits the steps were not retrieved.
-
-**Change.** When the detector from item 2 matches, append an instruction: a scenario line is allowed only when that line appears in a passage; quote it with the path and line number; if a requested check has no such line, name the check and stop. Do not write a substitute step.
-
-**Prove it.** Re-run the refund question through `POST /api/query` with `answer: true` on `hmcts/hwf-publicapp`. The reply must quote a line from `features/fee.feature` or say which check has no step. It must not contain `Given the applicant has paid the fee`.
+That is the move from 2/10 and 3/10 to 7/10. The remaining gap is that Features will not write a new step method, and a behaviour with no scenario comes back as a named gap.
 
 ### What this leaves alone
 
-Healing from a description, smell audits, and spec drafting stay at their scores above. Those need a different route: Impact for a named page, and a question that states the rule rather than the instruction to write. This plan covers the requests that currently invent a test suite.
+Healing from a description, smell audits, and spec drafting stay at their scores above. Those still need a different route: Impact for a named page, and a question that states the rule rather than the instruction to write.
