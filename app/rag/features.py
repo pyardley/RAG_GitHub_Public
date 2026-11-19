@@ -139,15 +139,19 @@ def retrieve_features(
     if drafting or not phrases:
         text = behaviour_text(question) if drafting else question.strip()
         if text:
+            # Ask for a deeper list so a feature file past the first page can
+            # still be lifted above application code.
             found, more = search(
-                conn, repository_ids, text, k, meter, index="code", fusion="rrf",
+                conn, repository_ids, text, max(k, 40), meter, index="code", fusion="rrf",
             )
             semantic = found
             truncated = truncated or more
             embedded = True
             queries.append(text)
 
-    hits = _prefer(phrase_hits, chain, semantic, k)
+    ordered = _prefer(phrase_hits, chain, semantic)
+    hits = ordered[:k]
+    truncated = truncated or len(ordered) > k
     if meter is not None:
         meter.finish_retrieval(
             len(hits),
@@ -172,13 +176,26 @@ def _quoted(phrases: list[str]) -> str:
     return " ".join('"' + phrase.replace('"', "'") + '"' for phrase in phrases)
 
 
+def _under_features(path: str) -> bool:
+    """True for the Cucumber features directory, not a spec path that contains the word."""
+    lowered = path.replace("\\", "/").lower().lstrip("/")
+    return lowered == "features" or lowered.startswith("features/")
+
+
+def _features_first(hits: list[Hit]) -> list[Hit]:
+    """Keep the retrieved order inside each group, and list features/ before the rest."""
+    return sorted(hits, key=lambda hit: 0 if _under_features(hit.path) else 1)
+
+
 def _prefer(
     phrase_hits: list[Hit],
     chain: list[Hit],
     semantic: list[Hit],
-    k: int,
 ) -> list[Hit]:
-    """Exact steps first, then the code that runs them, then the behaviour search."""
+    """Exact steps first, then the code that runs them, then the behaviour search.
+
+    Files under features/ stay above application code and specs.
+    """
     merged: list[Hit] = []
     seen: set[int] = set()
 
@@ -188,14 +205,10 @@ def _prefer(
         seen.add(hit.chunk_id)
         merged.append(hit)
 
-    reserve = len({hit.chunk_id for hit in chain})
-    room = max(k - reserve, 1) if chain else k
-    for hit in phrase_hits[:room]:
+    for hit in phrase_hits:
         add(hit)
     for hit in chain:
         add(hit)
     for hit in semantic:
         add(hit)
-        if len(merged) >= k:
-            break
-    return merged[:k]
+    return _features_first(merged)

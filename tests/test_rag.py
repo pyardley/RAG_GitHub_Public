@@ -1110,6 +1110,45 @@ class FeaturesTest(unittest.TestCase):
         self.assertEqual(seen["fusion"], "rrf")
         self.assertIn(seen["text"], queries)
 
+    def test_feature_files_are_listed_before_other_directories(self):
+        app = Hit(
+            1, "hmcts/hwf-publicapp", "app/models/forms/fee.rb", 45, 53,
+            "Forms::Fee#fee_dates_paid", "method", "def fee_dates_paid", 0.4,
+        )
+        feature = Hit(
+            2, "hmcts/hwf-publicapp", "features/fee.feature", 25, 28,
+            "Fee page / Date exceeding 3 months", "scenario", "Then the date is too old", 0.3,
+        )
+        spec = Hit(
+            3, "hmcts/hwf-publicapp", "spec/models/forms/fee_spec.rb", 34, 38,
+            None, "example", "it", 0.2,
+        )
+        feature_spec = Hit(
+            5, "hmcts/hwf-publicapp", "spec/features/pages/fee_question_spec.rb", 82, 90,
+            None, "example", "it", 0.25,
+        )
+        steps = Hit(
+            4, "hmcts/hwf-publicapp", "features/step_definitions/fee_steps.rb", 1, 20,
+            None, "file", "Then", 0.1,
+        )
+
+        def fake_search(_conn, _repos, _text, _k, _meter, **_options):
+            return [app, feature, feature_spec, spec, steps], False
+
+        with patch("rag.features.search", side_effect=fake_search):
+            hits, _queries, truncated, drafting = retrieve_features(None, [1], self.REFUND, 4, Meter())
+        self.assertTrue(drafting)
+        self.assertTrue(truncated)
+        self.assertEqual(
+            [hit.path for hit in hits],
+            [
+                "features/fee.feature",
+                "features/step_definitions/fee_steps.rb",
+                "app/models/forms/fee.rb",
+                "spec/features/pages/fee_question_spec.rb",
+            ],
+        )
+
 
 class PlanTest(unittest.TestCase):
     def test_parse_queries_keeps_words_from_the_question_and_drops_invented_names(self):

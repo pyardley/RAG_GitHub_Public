@@ -209,7 +209,7 @@ The factory `factory :claim` is listed under Definitions. Specs that build or cr
 
 ### Features
 
-Features skips the question planner. A pasted Gherkin line is matched under `features/` on the step text, then followed into the step definition. Given, When, Then, And, and But are the same step, so a second Then, Given, or When written as And still matches. A request to write a feature drops the instruction to write one and searches the behaviour that remains. The written answer quotes only steps that appear in the passages. A check with no such step is named and left unwritten.
+Features skips the question planner. A pasted Gherkin line is matched under `features/` on the step text, then followed into the step definition. Files under `features/` are listed before other directories. Given, When, Then, And, and But are the same step, so a second Then, Given, or When written as And still matches. A request to write a feature drops the instruction to write one and searches the behaviour that remains. The written answer quotes only steps that appear in the passages. A check with no such step is named and left unwritten.
 
 ```text
 Then I should see this date can't be in the future error message
