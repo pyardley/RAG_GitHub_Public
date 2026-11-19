@@ -8,7 +8,7 @@ import sys
 from rag.answer import AnswerError, active_model, answer, configuration_hint, language_model_configured
 from rag.config import DEFAULT_K
 from rag.db import connect, list_repositories, resolve_repositories
-from rag.features import gherkin_lines, retrieve_features
+from rag.features import matched_step_texts, retrieve_features
 from rag.ingest import backfill_repository, delete_repository, ingest_repository
 from rag.log import configure_logging, logger
 from rag.search import Hit, impact, retrieve
@@ -225,7 +225,7 @@ def _features(question: str, repo: str | None, k: int, no_answer: bool, model: s
     _print_hits(hits)
     status = _maybe_answer(
         question, hits, impact_mode=False, no_answer=no_answer, model=model, meter=meter,
-        draft=drafting, phrases=gherkin_lines(question),
+        draft=drafting, phrases=matched_step_texts(question),
     )
     _print_usage(meter)
     return status

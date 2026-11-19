@@ -209,13 +209,13 @@ The factory `factory :claim` is listed under Definitions. Specs that build or cr
 
 ### Features
 
-Features skips the question planner. A pasted Gherkin line is matched as that line under `features/`, then followed into the step definition. A request to write a feature drops the instruction to write one and searches the behaviour that remains. The written answer quotes only steps that appear in the passages. A check with no such step is named and left unwritten.
+Features skips the question planner. A pasted Gherkin line is matched under `features/` on the step text, then followed into the step definition. Given, When, Then, And, and But are the same step, so a second Then, Given, or When written as And still matches. A request to write a feature drops the instruction to write one and searches the behaviour that remains. The written answer quotes only steps that appear in the passages. A check with no such step is named and left unwritten.
 
 ```text
 Then I should see this date can't be in the future error message
 ```
 
-The step text, with `Then` kept. The passages are `features/fee.feature` (scenario “Date is in the future”), the same step in the probate features, and `features/step_definitions/fee_steps.rb`.
+`And I should see this date can't be in the future error message` finds the same passages. They are `features/fee.feature` (scenario “Date is in the future”), the same step in the probate features, and `features/step_definitions/fee_steps.rb`.
 
 ```text
 Write a Cucumber feature for an applicant who already paid the fee and wants a refund. The payment date cannot be in the future or more than three months ago. Reuse existing step phrasing.

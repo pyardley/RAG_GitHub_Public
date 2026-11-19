@@ -327,7 +327,7 @@
         button: "Find steps",
         answer: true,
         k: true,
-        hint: "Paste a Gherkin step, or describe a feature to write. A step is matched as written, under features. A request to write a feature searches the behaviour and quotes only steps already in the suite. The question planner is not used."
+        hint: "Paste a Gherkin step, or describe a feature to write. Given, When, Then, And, and But match the same step, so a second Then written as And is included. A request to write a feature searches the behaviour and quotes only steps already in the suite. The question planner is not used."
       }
     };
     const prompts = { query: "", impact: "", search: "", flow: "", features: "" };

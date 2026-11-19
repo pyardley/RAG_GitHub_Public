@@ -20,6 +20,7 @@ from rag.usage import Meter, Stage
 _STEP_LINE = re.compile(
     r"(?im)^[ \t]*((?:Given|When|Then|And|But)\s+\S.*?)\s*$"
 )
+_STEP_KEYWORD = re.compile(r"(?i)^(?:Given|When|Then|And|But)\s+")
 _DRAFTING = re.compile(
     r"(?i)(?:\b(?:write|draft|generate|create)\b(?:\s+\w+){0,6}\s+features?\b|\breuse existing steps?\b)"
 )
@@ -47,6 +48,29 @@ def gherkin_lines(question: str) -> list[str]:
         if len(line) < 12 or line in found:
             continue
         found.append(line)
+    return found
+
+
+def step_text(line: str) -> str:
+    """The step with its keyword removed.
+
+    Given, When, Then, And, and But are the same step. A scenario writes the
+    second Then, Given, or When as And, so the keyword is not part of the match.
+    """
+    return _STEP_KEYWORD.sub("", " ".join((line or "").split()), count=1).strip()
+
+
+def matched_step_texts(question: str) -> list[str]:
+    """Step texts to find. A Gherkin keyword on the line is ignored."""
+    found: list[str] = []
+    for line in gherkin_lines(question):
+        text = step_text(line)
+        if text and text not in found:
+            found.append(text)
+    for phrase in quoted_phrases(question):
+        text = step_text(phrase)
+        if text and text not in found:
+            found.append(text)
     return found
 
 
@@ -93,11 +117,7 @@ def retrieve_features(
             0.0,
             note="Features matches a Gherkin step as written, or searches the behaviour with the writing instruction removed.",
         ))
-    lines = gherkin_lines(question)
-    phrases = list(lines)
-    for phrase in quoted_phrases(question):
-        if phrase not in phrases:
-            phrases.append(phrase)
+    phrases = matched_step_texts(question)
     drafting = is_drafting_request(question)
     queries: list[str] = []
     phrase_hits: list[Hit] = []

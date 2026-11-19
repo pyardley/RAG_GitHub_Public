@@ -33,7 +33,7 @@ from rag.follow import (
 from rag.gitrepo import branch_list, default_branch_name
 from rag.journey import branch_answers, diff_chart, journey_scopes, mark_visits
 from rag.flows import charts_for, parse_navigation, question_texts
-from rag.features import behaviour_text, gherkin_lines, is_drafting_request, retrieve_features
+from rag.features import behaviour_text, gherkin_lines, is_drafting_request, matched_step_texts, retrieve_features
 from rag.web import Handler, _progress_view, github_blob_url, public_status, run_features, run_flow, run_query, start_ingest
 from unittest.mock import patch
 
@@ -1020,6 +1020,11 @@ class FeaturesTest(unittest.TestCase):
         with patch("rag.plan.retrieval_model", return_value="gpt-4o-mini"):
             self.assertTrue(question_needs_plan(self.STEP))
 
+    def test_and_given_when_and_but_match_the_same_step_text(self):
+        body = "I should see this date can't be in the future error message"
+        for keyword in ("Then", "And", "Given", "When", "But"):
+            self.assertEqual(matched_step_texts(f"{keyword} {body}"), [body])
+
     def test_a_feature_draft_drops_the_instruction_and_keeps_the_rule(self):
         self.assertTrue(is_drafting_request(self.REFUND))
         text = behaviour_text(self.REFUND)
@@ -1069,9 +1074,11 @@ class FeaturesTest(unittest.TestCase):
             hits, queries, truncated, drafting = retrieve_features(None, [1], self.STEP, 8, Meter())
         self.assertFalse(drafting)
         self.assertFalse(truncated)
+        body = "I should see this date can't be in the future error message"
         self.assertEqual(seen["scopes"], ["features"])
-        self.assertEqual(seen["literals"], [self.STEP])
-        self.assertIn(self.STEP, seen["quoted"])
+        self.assertEqual(seen["literals"], [body])
+        self.assertIn(body, seen["quoted"])
+        self.assertNotIn("Then ", seen["literals"][0])
         self.assertEqual(hits, [feature, step])
         self.assertTrue(queries[0].startswith("step:"))
 

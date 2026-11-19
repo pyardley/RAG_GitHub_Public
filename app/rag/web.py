@@ -28,7 +28,7 @@ from rag.answer import (
 from rag.config import DEFAULT_K, LLM_PROVIDER, resolve_fusion, resolve_index
 from rag.db import connect, list_repositories, resolve_repositories
 from rag.edges import POSSIBLE_ARROW, prepare_call_edges
-from rag.features import gherkin_lines, retrieve_features
+from rag.features import matched_step_texts, retrieve_features
 from rag.files import parse_repo
 from rag.flows import charts_for, unmapped_message
 from rag.gitrepo import checkout_dir, list_branches, remote_commit, tip_checkout
@@ -302,7 +302,7 @@ def run_features(body: dict) -> tuple[int, dict]:
         return 400, {"error": _failure_text(exc)}
     finally:
         conn.close()
-    phrases = gherkin_lines(question)
+    phrases = matched_step_texts(question)
     text, answer_error = _written_answer(
         question, hits, impact_mode=False, enabled=_wants_answer(body), meter=meter,
         draft=drafting, phrases=phrases,
