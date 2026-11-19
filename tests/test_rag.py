@@ -34,7 +34,8 @@ from rag.gitrepo import branch_list, default_branch_name
 from rag.journey import branch_answers, diff_chart, journey_scopes, mark_visits
 from rag.flows import charts_for, parse_navigation, question_texts
 from rag.features import behaviour_text, gherkin_lines, is_drafting_request, matched_step_texts, retrieve_features
-from rag.web import Handler, _progress_view, github_blob_url, public_status, run_features, run_flow, run_query, start_ingest
+from rag.testing import command_phrases, retrieve_testing
+from rag.web import Handler, _progress_view, github_blob_url, public_status, run_features, run_flow, run_query, run_testing, start_ingest
 from unittest.mock import patch
 
 from rag.plan import parse_queries, question_needs_plan
@@ -1150,6 +1151,115 @@ class FeaturesTest(unittest.TestCase):
         )
 
 
+class TestingTest(unittest.TestCase):
+    QUESTION = (
+        "How do I run the Cucumber suite, features/fee.feature, and one scenario, "
+        "and how do I debug a scenario I am writing?"
+    )
+
+    def test_command_phrases_include_a_named_tag(self):
+        phrases = command_phrases("how do I run @happy_path")
+        self.assertIn("bundle exec cucumber", phrases)
+        self.assertIn("SHOW_BROWSER", phrases)
+        self.assertIn("@happy_path", phrases)
+
+    def test_the_answer_quotes_only_commands_from_the_passages(self):
+        instructions = _query_instructions(self.QUESTION, [], testing=True)
+        self.assertIn("Do not say debugging is missing", instructions)
+        self.assertIn("not @wip", instructions)
+        self.assertIn("do not introduce byebug or pry", instructions)
+        self.assertIn("Do not describe RSpec", instructions)
+        self.assertIn("file:line", instructions)
+
+    def test_commands_are_looked_up_without_the_planner(self):
+        readme = Hit(
+            1, "hmcts/hwf-publicapp", "README.md", 90, 96,
+            None, "file", "CAPYBARA_SERVER_PORT=random bundle exec rake parallel:features", 0.0,
+        )
+        profile = Hit(
+            2, "hmcts/hwf-publicapp", "config/cucumber.yml", 6, 10,
+            None, "file", "wip: --tags @wip:3 --wip features", 0.0,
+        )
+        seen = {}
+
+        def fake_literal(_conn, _repos, scopes, literals, _k, excluded=None):
+            seen["scopes"] = scopes
+            seen["literals"] = literals
+            seen["excluded"] = excluded
+            return [readme, profile], 0.01, False
+
+        def fake_search(_conn, _repos, text, _k, _meter, **options):
+            seen["text"] = text
+            seen["index"] = options.get("index")
+            seen["fusion"] = options.get("fusion")
+            seen["search_excluded"] = options.get("excluded")
+            return [], False
+
+        with (
+            patch("rag.testing.literal_hits", side_effect=fake_literal),
+            patch("rag.testing.search", side_effect=fake_search),
+            patch("rag.plan.search_queries", side_effect=AssertionError("planner")),
+        ):
+            hits, queries, truncated = retrieve_testing(None, [1], "How do I run the Cucumber suite?", 8, Meter())
+        self.assertFalse(truncated)
+        self.assertEqual(seen["scopes"], [])
+        self.assertEqual(seen["excluded"], ["spec", "test", "app"])
+        self.assertIn("bundle exec cucumber", seen["literals"])
+        self.assertIn("parallel:features", seen["literals"])
+        self.assertEqual(seen["index"], "code")
+        self.assertEqual(seen["fusion"], "rrf")
+        self.assertEqual(seen["search_excluded"], ["spec", "test", "app"])
+        self.assertIn("debug a scenario", seen["text"])
+        self.assertEqual([hit.path for hit in hits], ["README.md", "config/cucumber.yml"])
+        self.assertTrue(any("bundle exec cucumber" in query for query in queries))
+
+    def test_a_named_feature_is_kept_and_other_features_are_not(self):
+        readme = Hit(
+            1, "ministryofjustice/c100-application", "README.md", 52, 67,
+            None, "file", "bundle exec cucumber features/miam.feature -t @happy_path", 0.0,
+        )
+        other = Hit(
+            2, "ministryofjustice/c100-application", "features/miam.feature", 1, 8,
+            None, "scenario", "Scenario: happy path", 0.2,
+        )
+        fee = Hit(
+            3, "hmcts/hwf-publicapp", "features/fee.feature", 25, 30,
+            "Fee page / Date exceeding 3 months", "scenario", "Scenario: Date exceeding 3 months", 0.0,
+        )
+        spec = Hit(
+            4, "hmcts/hwf-publicapp", "spec/models/fee_spec.rb", 1, 8,
+            None, "example", "bundle exec rspec", 0.4,
+        )
+        steps = Hit(
+            5, "hmcts/hwf-publicapp", "features/step_definitions/fee_steps.rb", 1, 10,
+            None, "file", "Then", 0.3,
+        )
+        calls = []
+
+        def fake_literal(_conn, _repos, scopes, _literals, _k, excluded=None):
+            calls.append(scopes)
+            if scopes:
+                return [fee], 0.01, False
+            return [spec, other, readme, steps], 0.01, False
+
+        def fake_search(*_args, **_kwargs):
+            return [other, spec], False
+
+        with (
+            patch("rag.testing.literal_hits", side_effect=fake_literal),
+            patch("rag.testing.search", side_effect=fake_search),
+            patch("rag.plan.search_queries", side_effect=AssertionError("planner")),
+        ):
+            hits, queries, _truncated = retrieve_testing(None, [1], self.QUESTION, 8, Meter())
+        self.assertEqual(calls[0], [])
+        self.assertEqual(calls[1], ["features/fee.feature"])
+        self.assertEqual(
+            [hit.path for hit in hits],
+            ["README.md", "features/fee.feature"],
+        )
+        self.assertTrue(any(query.startswith("feature:") for query in queries))
+
+
 class PlanTest(unittest.TestCase):
     def test_parse_queries_keeps_words_from_the_question_and_drops_invented_names(self):
         question = "Where does an applicant have too much in savings to get help with fees?"
@@ -1728,6 +1838,8 @@ class WebTest(unittest.TestCase):
             run_query({"question": "  "})
         with self.assertRaises(ValueError):
             run_features({"question": "  "})
+        with self.assertRaises(ValueError):
+            run_testing({"question": "  "})
 
     def test_ingest_rejects_a_repository_path_before_starting(self):
         with self.assertRaises(ValueError):
@@ -1748,7 +1860,11 @@ class WebTest(unittest.TestCase):
             self.assertIn(">Flow</button>", page)
             self.assertIn('data-mode="features"', page)
             self.assertIn(">Features</button>", page)
+            self.assertIn('data-mode="testing"', page)
+            self.assertIn(">Testing</button>", page)
             self.assertIn("quotes only steps already in the suite", page)
+            self.assertIn("RSpec, Minitest, and the question planner are not used.", page)
+            self.assertIn("Cucumber under features/ only.", page)
             self.assertIn("Existing steps only.", page)
             self.assertIn("function renderFlow", page)
             self.assertIn("function drawFlow", page)

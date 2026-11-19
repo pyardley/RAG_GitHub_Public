@@ -57,6 +57,30 @@ _DRAFT_INSTRUCTIONS = (
     "When a requested check has no Gherkin line in the passages, name that check "
     "and stop. Do not write a substitute step."
 )
+_TESTING_INSTRUCTIONS = (
+    " The question asks how to run or debug Cucumber under features/. "
+    "Cover the whole suite, a group, one scenario, and how to debug a scenario "
+    "that is being written. A group is a directory, a tag, or a Cucumber profile. "
+    "Quote only commands, tags, profiles, and environment variables that appear "
+    "in the passages, and cite the path and line of each. When the question names "
+    "a feature file, tag, or profile, use the command shape from the passages "
+    "with that name. The line number is the line shown for that Scenario. "
+    "Debugging a scenario that is being written means the commands in the "
+    "passages that narrow the run or show the browser: a line number on a "
+    "feature file, a @wip tag or wip profile, SHOW_BROWSER, or DRIVER. Quote "
+    "those when they appear. Matching lines are listed under the question. "
+    "Explain each listed line and do not replace it with a different command. "
+    "A profile line is quoted as written, including @wip:3 and --wip. Do not "
+    "rewrite a line that says not @wip into a command that runs @wip, and do "
+    "not add -p unless that exact command is one of the listed lines. Do not say "
+    "debugging is missing when one of those commands is in the passages, and "
+    "do not introduce byebug or pry. "
+    "When the passages come from more than one repository, give each repository "
+    "separately. Do not describe RSpec, Minitest, spec/, or test/, and do not "
+    "quote a command that runs those. Do not invent a file:line form or a "
+    "command the passages do not show. If a part has no command in the passages, "
+    "say what is missing."
+)
 _IMPACT_INSTRUCTIONS = (
     "You assess the impact of changing a named part of a software repository. "
     "Use only the retrieved passages. Organise the answer as: what it is, where "
@@ -108,6 +132,7 @@ def answer(
     meter: Meter | None = None,
     draft: bool = False,
     phrases: list[str] | None = None,
+    testing: bool = False,
 ) -> str | None:
     if not hits or not language_model_configured():
         return None
@@ -118,10 +143,12 @@ def answer(
         if LLM_PROVIDER == "ollama":
             text, body = _complete_ollama(
                 question, hits, impact=impact, model=chosen, draft=draft, phrases=phrases,
+                testing=testing,
             )
         else:
             text, body = _complete_openai(
                 question, hits, impact=impact, model=chosen, draft=draft, phrases=phrases,
+                testing=testing,
             )
         prompt, completion = token_counts(body)
         return _with_matches(question, hits, text, phrases)
@@ -164,6 +191,7 @@ def ollama_payload(
     num_ctx: int,
     draft: bool = False,
     phrases: list[str] | None = None,
+    testing: bool = False,
 ) -> dict:
     max_hits, per_passage, total_chars = passage_limits(num_ctx)
     return {
@@ -178,6 +206,7 @@ def ollama_payload(
             total_chars=total_chars,
             draft=draft,
             phrases=phrases,
+            testing=testing,
         ),
         "options": {"temperature": 0.1, "num_ctx": num_ctx, "num_predict": 1024},
     }
@@ -191,13 +220,14 @@ def _complete_openai(
     model: str,
     draft: bool = False,
     phrases: list[str] | None = None,
+    testing: bool = False,
 ) -> tuple[str, dict]:
     payload = {
         "model": model,
         "temperature": 0.1,
         "messages": _messages(
             question, hits, impact=impact, max_hits=12, per_passage=3500, total_chars=None,
-            draft=draft, phrases=phrases,
+            draft=draft, phrases=phrases, testing=testing,
         ),
     }
     request = urllib.request.Request(
@@ -225,10 +255,12 @@ def _complete_ollama(
     model: str,
     draft: bool = False,
     phrases: list[str] | None = None,
+    testing: bool = False,
 ) -> tuple[str, dict]:
     root = OLLAMA_BASE_URL[:-3] if OLLAMA_BASE_URL.endswith("/v1") else OLLAMA_BASE_URL
     payload = ollama_payload(
-        model, question, hits, impact=impact, num_ctx=OLLAMA_NUM_CTX, draft=draft, phrases=phrases,
+        model, question, hits, impact=impact, num_ctx=OLLAMA_NUM_CTX, draft=draft,
+        phrases=phrases, testing=testing,
     )
     request = urllib.request.Request(
         f"{root}/api/chat",
@@ -264,8 +296,13 @@ def _messages(
     total_chars: int | None,
     draft: bool = False,
     phrases: list[str] | None = None,
+    testing: bool = False,
 ) -> list[dict[str, str]]:
-    instructions = _IMPACT_INSTRUCTIONS if impact else _query_instructions(question, hits, draft=draft)
+    instructions = (
+        _IMPACT_INSTRUCTIONS
+        if impact
+        else _query_instructions(question, hits, draft=draft, testing=testing)
+    )
     passages = _format_passages(hits, max_hits=max_hits, per_passage=per_passage, total_chars=total_chars)
     listed = format_matching_lines(question, hits, phrases)
     found = f"Matching lines:\n{listed}\n\n" if listed else ""
@@ -328,7 +365,15 @@ def _phrase_pattern(phrase: str) -> re.Pattern[str]:
     return re.compile(body, re.IGNORECASE)
 
 
-def _query_instructions(question: str, hits: list[Hit], *, draft: bool = False) -> str:
+def _query_instructions(
+    question: str,
+    hits: list[Hit],
+    *,
+    draft: bool = False,
+    testing: bool = False,
+) -> str:
+    if testing:
+        return _QUERY_INSTRUCTIONS + _TESTING_INSTRUCTIONS
     if draft:
         return _QUERY_INSTRUCTIONS + _DRAFT_INSTRUCTIONS
     if quoted_phrases(question):

@@ -29,6 +29,7 @@ from rag.config import DEFAULT_K, LLM_PROVIDER, resolve_fusion, resolve_index
 from rag.db import connect, list_repositories, resolve_repositories
 from rag.edges import POSSIBLE_ARROW, prepare_call_edges
 from rag.features import matched_step_texts, retrieve_features
+from rag.testing import command_phrases, retrieve_testing
 from rag.files import parse_repo
 from rag.flows import charts_for, unmapped_message
 from rag.gitrepo import checkout_dir, list_branches, remote_commit, tip_checkout
@@ -104,6 +105,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/impact": run_impact,
             "/api/flow": run_flow,
             "/api/features": run_features,
+            "/api/testing": run_testing,
             "/api/ingest": start_ingest,
             "/api/remove": remove_index,
         }
@@ -313,6 +315,49 @@ def run_features(body: dict) -> tuple[int, dict]:
         "index": "code",
         "fusion": "rrf",
         "drafting": drafting,
+        "truncated": truncated,
+        "passage_limit": count,
+        "hits": [_hit(item, _indexed_commits(repositories)) for item in hits],
+        "matches": [
+            {"path": path, "line": line, "text": line_text}
+            for path, line, line_text in matching_lines(question, hits, phrases)
+        ],
+        "answer": text,
+        "answer_error": answer_error,
+        "usage": meter.as_dict(),
+        "model": _model_view(),
+    }
+
+
+def run_testing(body: dict) -> tuple[int, dict]:
+    question = _required_text(body, "question", "Enter a test to run or debug")
+    repo = _optional_repo(body)
+    count = _passage_count(body)
+    meter = Meter()
+    try:
+        conn = connect()
+    except SystemExit as exc:
+        return 503, {"error": _failure_text(exc)}
+    try:
+        repositories = resolve_repositories(conn, repo)
+        hits, queries, truncated = retrieve_testing(
+            conn, [item["id"] for item in repositories], question, count, meter,
+        )
+    except SystemExit as exc:
+        return 400, {"error": _failure_text(exc)}
+    finally:
+        conn.close()
+    phrases = command_phrases(question)
+    text, answer_error = _written_answer(
+        question, hits, impact_mode=False, enabled=_wants_answer(body), meter=meter,
+        phrases=phrases, testing=True,
+    )
+    return 200, {
+        "repositories": [_scope(item) for item in repositories],
+        "queries": queries,
+        "index": "code",
+        "fusion": "rrf",
+        "testing": True,
         "truncated": truncated,
         "passage_limit": count,
         "hits": [_hit(item, _indexed_commits(repositories)) for item in hits],
@@ -699,12 +744,14 @@ def _written_answer(
     meter: Meter | None = None,
     draft: bool = False,
     phrases: list[str] | None = None,
+    testing: bool = False,
 ) -> tuple[str | None, str | None]:
     if not enabled or not hits or not language_model_configured():
         return None, None
     try:
         return answer(
             question, hits, impact=impact_mode, meter=meter, draft=draft, phrases=phrases,
+            testing=testing,
         ), None
     except AnswerError as exc:
         logger.warning("answer failed: %s", str(exc)[:300])

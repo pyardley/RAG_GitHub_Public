@@ -52,7 +52,7 @@ Only one index is built at a time. That holds whether the ingest was started fro
 docker compose up -d
 ```
 
-Open http://localhost:8080. Switch between Query, Impact, Search, Flow, and Features, choose an indexed repository, and run it. Features finds an existing Cucumber step, or the steps to reuse when writing a feature. A pasted Gherkin line is matched as that line. A request to write a feature is searched as the behaviour, and the written answer quotes only steps that appear in the passages. Flow draws the main journeys it can find in the selected repository. Help with Fees comes from the application's question list or its redirects. A test suite comes from its page objects and the journey that clicks through them, which is how the Employment Tribunals claim and response are drawn. A start path such as `/steps/opening/start_or_continue` draws the journey an application chooses in its decision tree, which is how the C100 child arrangements application is drawn. Each box opens the file for that step on the indexed commit. A corner mark is a step a feature or step definition names. When the branch has newer commits, the chart lists steps added, removed, or rewired since the indexed commit. **Ask about this journey** follows an arrow when the question names a step and its answer, and otherwise searches only the files for the steps on that chart. Each passage links to those lines in the indexed commit on GitHub. **Save as HTML** downloads that result as one file. It starts with a table of contents, then the question or target, the written answer, and each passage with its file, lines, and code. An impact result includes the same relationship diagram as the page, so a file's scenarios stay in one box until you choose it. A dashed arrow is a possible call. The file stays on your machine. The app does not keep a copy. Index another GitHub repository from the same page. A first index takes several minutes and the page shows its progress.
+Open http://localhost:8080. Switch between Query, Impact, Search, Flow, Features, and Testing, choose an indexed repository, and run it. Features finds an existing Cucumber step, or the steps to reuse when writing a feature. Testing explains how to run the Cucumber suite under `features/`, a group of scenarios, or one scenario, and how to debug a scenario that is being written. The commands are quoted from that repository. RSpec and Minitest are left out. A pasted Gherkin line is matched as that line. A request to write a feature is searched as the behaviour, and the written answer quotes only steps that appear in the passages. Flow draws the main journeys it can find in the selected repository. Help with Fees comes from the application's question list or its redirects. A test suite comes from its page objects and the journey that clicks through them, which is how the Employment Tribunals claim and response are drawn. A start path such as `/steps/opening/start_or_continue` draws the journey an application chooses in its decision tree, which is how the C100 child arrangements application is drawn. Each box opens the file for that step on the indexed commit. A corner mark is a step a feature or step definition names. When the branch has newer commits, the chart lists steps added, removed, or rewired since the indexed commit. **Ask about this journey** follows an arrow when the question names a step and its answer, and otherwise searches only the files for the steps on that chart. Each passage links to those lines in the indexed commit on GitHub. **Save as HTML** downloads that result as one file. It starts with a table of contents, then the question or target, the written answer, and each passage with its file, lines, and code. An impact result includes the same relationship diagram as the page, so a file's scenarios stay in one box until you choose it. A dashed arrow is a possible call. The file stays on your machine. The app does not keep a copy. Index another GitHub repository from the same page. A first index takes several minutes and the page shows its progress.
 
 When the page opens, it asks GitHub which commit each indexed branch is at. A repository whose branch has moved on is marked "branch has newer commits" in the list. Choose it to see both commits, and use **Update the index** to index the branch again. The app keeps GitHub's answer for ten minutes, and a branch that cannot be read is left unmarked.
 
@@ -76,7 +76,7 @@ Claude Code, including the Claude extension for VS Code, does not read `.cursor/
 claude mcp get code-rag
 ```
 
-The tools are `repositories`, `query`, `search`, `features`, `impact`, `flow`, `default_branch`, `branches`, `ingest`, and `remove_index`. `features` matches a pasted Gherkin step, or searches a request to write a feature as the behaviour and quotes only steps already in the suite. `flow` returns the same journeys as the Flow button, with a GitHub URL on each step. `branches` lists a GitHub repository's branches with the default first, so the model can choose one for `ingest`. `query` returns the passages and leaves the app's own written answer off, so the calling model reads the code. Set `answer` to true when you also want that reply. `query` takes an optional `index` of `text`, `code`, or `both` (the default is `code`) and an optional `fusion` of `rrf` or `score` (the default is `rrf`; use `score` with `both`). `impact` returns the definitions, the callers, and the diagram. `FactoryBot.create(:claim)` is a valid impact target. `remove_index` deletes one index only when `confirm` is true. Passage text is shortened in the tool result. The page still shows the full chunk.
+The tools are `repositories`, `query`, `search`, `features`, `testing`, `impact`, `flow`, `default_branch`, `branches`, `ingest`, and `remove_index`. `features` matches a pasted Gherkin step, or searches a request to write a feature as the behaviour and quotes only steps already in the suite. `testing` explains how to run or debug the Cucumber suite under `features/`, and quotes only commands from that repository. `flow` returns the same journeys as the Flow button, with a GitHub URL on each step. `branches` lists a GitHub repository's branches with the default first, so the model can choose one for `ingest`. `query` returns the passages and leaves the app's own written answer off, so the calling model reads the code. Set `answer` to true when you also want that reply. `query` takes an optional `index` of `text`, `code`, or `both` (the default is `code`) and an optional `fusion` of `rrf` or `score` (the default is `rrf`; use `score` with `both`). `impact` returns the definitions, the callers, and the diagram. `FactoryBot.create(:claim)` is a valid impact target. `remove_index` deletes one index only when `confirm` is true. Passage text is shortened in the tool result. The page still shows the full chunk.
 
 On macOS or Linux the same commands work. `rag.ps1` and `rag.sh` are thin wrappers:
 
@@ -105,7 +105,7 @@ Search covers every indexed repository. Each repository is searched on its own, 
 
 ## Examples
 
-Paste a query into Query on the page, or pass the same text to `query`. Paste an impact target into Impact, or pass it to `impact`. Paste a Gherkin step, or a feature to write, into Features, or pass it to `features`. These are written for [hmcts/hwf-publicapp](https://github.com/hmcts/hwf-publicapp), except the claim factory, which is run against [hmcts/et-full-system](https://github.com/hmcts/et-full-system). On the command line, add `--repo hmcts/hwf-publicapp` when both Help with Fees repositories are indexed and the request should stay in one of them.
+Paste a query into Query on the page, or pass the same text to `query`. Paste an impact target into Impact, or pass it to `impact`. Paste a Gherkin step, or a feature to write, into Features, or pass it to `features`. Ask Testing, or `testing`, how to run or debug the Cucumber suite. These are written for [hmcts/hwf-publicapp](https://github.com/hmcts/hwf-publicapp), except the claim factory, which is run against [hmcts/et-full-system](https://github.com/hmcts/et-full-system). On the command line, add `--repo hmcts/hwf-publicapp` when both Help with Fees repositories are indexed and the request should stay in one of them.
 
 ### Queries
 
@@ -227,6 +227,22 @@ On the command line:
 
 ```powershell
 docker compose run --rm -T rag features "Then I should see this date can't be in the future error message" --repo hmcts/hwf-publicapp
+```
+
+### Testing
+
+Testing skips the question planner. It looks up the commands the repository documents for Cucumber under `features/`, including `cucumber.yml`, and leaves `spec/` and `test/` out. The written answer quotes those commands. It covers the suite, a group (a directory, a tag, or a profile), one scenario, and how to debug a scenario that is being written. A command that is not in the passages is not invented, so a `file:line` form is given only when the repository shows it.
+
+```text
+How do I run the Cucumber suite, features/fee.feature, and one scenario, and how do I debug a scenario I am writing?
+```
+
+On `hmcts/hwf-publicapp`, `features/README.md` shows `bundle exec cucumber features` for the suite, a feature file, and a line number for one scenario. The root README also shows `CAPYBARA_SERVER_PORT=random bundle exec rake parallel:features`. `config/cucumber.yml` includes the `wip` profile, and the features README sets `DRIVER` when a browser should be visible. On `ministryofjustice/c100-application` the README shows `bundle exec cucumber features`, `bundle exec cucumber features/miam.feature`, a tag with `-t @happy_path`, and `SHOW_BROWSER=1` when the browser should be visible while debugging.
+
+On the command line:
+
+```powershell
+docker compose run --rm -T rag testing "How do I run the Cucumber suite, features/fee.feature, and one scenario, and how do I debug a scenario I am writing?" --repo hmcts/hwf-publicapp
 ```
 
 ## Logs

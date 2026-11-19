@@ -79,6 +79,16 @@ def features(question: str, repo: str | None = None, k: int = 8, answer: bool = 
     return result
 
 
+def testing(question: str, repo: str | None = None, k: int = 8, answer: bool = False) -> dict:
+    """How to run or debug the Cucumber suite under features/."""
+    body = _lookup_body(question, "question", repo, k)
+    body["answer"] = bool(answer)
+    payload = _request("POST", "/api/testing", body)
+    result = _passages(payload, include_queries=True)
+    result["testing"] = bool(payload.get("testing"))
+    return result
+
+
 def impact(target: str, repo: str | None = None, answer: bool = False) -> dict:
     text = _required(target, "Enter a class, method, or file")
     body: dict = {"target": text, "answer": bool(answer)}

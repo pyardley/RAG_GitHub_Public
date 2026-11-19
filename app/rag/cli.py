@@ -9,6 +9,7 @@ from rag.answer import AnswerError, active_model, answer, configuration_hint, la
 from rag.config import DEFAULT_K
 from rag.db import connect, list_repositories, resolve_repositories
 from rag.features import matched_step_texts, retrieve_features
+from rag.testing import command_phrases, retrieve_testing
 from rag.ingest import backfill_repository, delete_repository, ingest_repository
 from rag.log import configure_logging, logger
 from rag.search import Hit, impact, retrieve
@@ -79,6 +80,21 @@ def main(argv: list[str] | None = None) -> int:
     features_parser.add_argument("--no-answer", action="store_true")
     features_parser.add_argument("--model", help="Language model for this question. Overrides the configured model")
 
+    testing_parser = sub.add_parser(
+        "testing",
+        help="Show how to run or debug the Cucumber suite under features",
+    )
+    testing_parser.add_argument("question", help="The suite, a group, a scenario, or a scenario to debug")
+    testing_parser.add_argument("--repo", help="Limit the search to owner/name")
+    testing_parser.add_argument(
+        "-k",
+        type=int,
+        default=DEFAULT_K,
+        help=f"Number of passages to retrieve (default {DEFAULT_K})",
+    )
+    testing_parser.add_argument("--no-answer", action="store_true")
+    testing_parser.add_argument("--model", help="Language model for this question. Overrides the configured model")
+
     impact_parser = sub.add_parser(
         "impact",
         help="Show where a class, method, or file is defined and referenced",
@@ -124,6 +140,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         if args.command == "features":
             return _features(args.question, args.repo, args.k, args.no_answer, args.model)
+        if args.command == "testing":
+            return _testing(args.question, args.repo, args.k, args.no_answer, args.model)
         if args.command == "impact":
             return _impact(args.target, args.repo, args.no_answer, args.model)
     except (ValueError, RuntimeError) as exc:
@@ -231,6 +249,36 @@ def _features(question: str, repo: str | None, k: int, no_answer: bool, model: s
     return status
 
 
+def _testing(question: str, repo: str | None, k: int, no_answer: bool, model: str | None) -> int:
+    meter = Meter()
+    conn = connect()
+    try:
+        repositories = resolve_repositories(conn, repo)
+        _print_scope(repositories)
+        hits, queries, truncated = retrieve_testing(
+            conn, [item["id"] for item in repositories], question, k, meter,
+        )
+    finally:
+        conn.close()
+    print("Index code. Keyword fusion rrf.")
+    print("Cucumber under features/ only. Commands are quoted from this repository.")
+    if queries:
+        print("Searched: " + " | ".join(queries))
+    if truncated:
+        print(f"More matches were found than the Passages limit of {k}.")
+    if not hits:
+        print("No matching code.")
+        _print_usage(meter)
+        return 0
+    _print_hits(hits)
+    status = _maybe_answer(
+        question, hits, impact_mode=False, no_answer=no_answer, model=model, meter=meter,
+        phrases=command_phrases(question), testing=True,
+    )
+    _print_usage(meter)
+    return status
+
+
 def _impact(target: str, repo: str | None, no_answer: bool, model: str | None) -> int:
     conn = connect()
     try:
@@ -269,6 +317,7 @@ def _maybe_answer(
     meter: Meter | None = None,
     draft: bool = False,
     phrases: list[str] | None = None,
+    testing: bool = False,
 ) -> int:
     if no_answer or not hits:
         return 0
@@ -281,7 +330,8 @@ def _maybe_answer(
     print(f"\nAsking {active_model(model)}...", flush=True)
     try:
         written = answer(
-            question, hits, impact=impact_mode, model=model, meter=meter, draft=draft, phrases=phrases,
+            question, hits, impact=impact_mode, model=model, meter=meter, draft=draft,
+            phrases=phrases, testing=testing,
         )
     except AnswerError as exc:
         print(f"\n{exc}", file=sys.stderr)

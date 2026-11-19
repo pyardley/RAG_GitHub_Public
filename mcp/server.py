@@ -18,7 +18,8 @@ _VERSION = re.compile(r"\d{4}-\d{2}-\d{2}")
 _INSTRUCTIONS = (
     "Code RAG searches indexed GitHub repositories. "
     "Use query for a question, search for exact text, features for a Cucumber step "
-    "or a feature to write from existing steps, impact for a class, method, "
+    "or a feature to write from existing steps, testing for how to run or debug "
+    "the Cucumber suite under features, impact for a class, method, "
     "file, or FactoryBot call such as FactoryBot.create(:claim), and flow for the "
     "main journeys. A flow chart can also say which steps a feature visits and "
     "what changed on the branch. "
@@ -104,6 +105,29 @@ _TOOLS = [
             "type": "object",
             "properties": {
                 "question": {"type": "string", "description": "A Gherkin step, or a feature to write."},
+                "repo": {"type": "string", "description": "owner/name. Omit to search every indexed repository."},
+                "k": {"type": "integer", "minimum": 1, "maximum": 30, "description": "How many passages to return. Defaults to 12."},
+                "answer": {"type": "boolean", "description": "When true, the app's own model also writes a reply."},
+            },
+            "required": ["question"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "testing",
+        "description": (
+            "Explain how to run the Cucumber suite under features, a group of scenarios, "
+            "or one scenario, and how to debug a scenario being written. "
+            "Commands are quoted from the repository. RSpec and Minitest are left out. "
+            "The question planner is not used."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": "The suite, a group, a scenario, or a scenario to debug.",
+                },
                 "repo": {"type": "string", "description": "owner/name. Omit to search every indexed repository."},
                 "k": {"type": "integer", "minimum": 1, "maximum": 30, "description": "How many passages to return. Defaults to 12."},
                 "answer": {"type": "boolean", "description": "When true, the app's own model also writes a reply."},
@@ -300,6 +324,13 @@ def _tool(name: object, arguments: dict) -> dict:
         return api.search(arguments.get("question", ""), arguments.get("repo"), _count(arguments.get("k", 12)))
     if name == "features":
         return api.features(
+            arguments.get("question", ""),
+            arguments.get("repo"),
+            _count(arguments.get("k", 12)),
+            bool(arguments.get("answer", False)),
+        )
+    if name == "testing":
+        return api.testing(
             arguments.get("question", ""),
             arguments.get("repo"),
             _count(arguments.get("k", 12)),

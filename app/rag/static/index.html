@@ -276,6 +276,7 @@
       <button type="button" data-mode="search" aria-pressed="false">Search</button>
       <button type="button" data-mode="flow" aria-pressed="false">Flow</button>
       <button type="button" data-mode="features" aria-pressed="false">Features</button>
+      <button type="button" data-mode="testing" aria-pressed="false">Testing</button>
     </nav>
 
     <form class="ask" id="ask">
@@ -328,9 +329,17 @@
         answer: true,
         k: true,
         hint: "Paste a Gherkin step, or describe a feature to write. Given, When, Then, And, and But match the same step, so a second Then written as And is included. A request to write a feature searches the behaviour and quotes only steps already in the suite. The question planner is not used."
+      },
+      testing: {
+        label: "Suite, group, or scenario",
+        placeholder: "How do I run the Cucumber suite, features/fee.feature, and one scenario, and how do I debug a scenario I am writing?",
+        button: "Advise",
+        answer: true,
+        k: true,
+        hint: "Ask how to run the Cucumber suite under features/, a group of scenarios, or one scenario, and how to debug a scenario you are writing. The answer quotes the commands in this repository. RSpec, Minitest, and the question planner are not used."
       }
     };
-    const prompts = { query: "", impact: "", search: "", flow: "", features: "" };
+    const prompts = { query: "", impact: "", search: "", flow: "", features: "", testing: "" };
     const queryHint = document.querySelector("#prompt-hint").textContent;
     let mode = "query";
     let poll = null;
@@ -407,7 +416,7 @@
       const spec = modes[next];
       document.querySelector("#prompt-caption").textContent = spec.label;
       prompt.placeholder = spec.placeholder;
-      prompt.style.minHeight = next === "query" || next === "features" ? "7rem" : "3.2rem";
+      prompt.style.minHeight = next === "query" || next === "features" || next === "testing" ? "7rem" : "3.2rem";
       document.querySelector("#go").textContent = spec.button;
       document.querySelector("#k-wrap").hidden = !spec.k;
       const retrieval = next === "query" || next === "search";
@@ -415,7 +424,7 @@
       document.querySelector("#fusion-wrap").hidden = !retrieval;
       document.querySelector("#prompt-label").hidden = spec.prompt === false;
       const hint = document.querySelector("#prompt-hint");
-      hint.hidden = next !== "query" && next !== "flow" && next !== "features";
+      hint.hidden = next !== "query" && next !== "flow" && next !== "features" && next !== "testing";
       hint.textContent = next === "query" ? queryHint : spec.hint;
       document.querySelector("#answer-wrap").hidden = !spec.answer;
       document.querySelectorAll(".modes button").forEach((button) => {
@@ -817,7 +826,7 @@
       const payload = { repo: repoSelect.value };
       if (mode === "impact") payload.target = prompt.value;
       else if (mode === "flow") payload.start = prompt.value.trim();
-      else if (mode === "features") {
+      else if (mode === "features" || mode === "testing") {
         payload.question = prompt.value;
         payload.k = Number(document.querySelector("#k").value);
       } else {
@@ -922,7 +931,13 @@
         drafted.textContent = "Existing steps only. A check with no step in these passages is named and left unwritten.";
         output.append(drafted);
       }
-      if (body.queries && (body.queries.length > 1 || requested === "features")) {
+      if (body.testing) {
+        const cucumber = document.createElement("p");
+        cucumber.className = "scope";
+        cucumber.textContent = "Cucumber under features/ only. Commands are quoted from this repository. RSpec and Minitest are left out.";
+        output.append(cucumber);
+      }
+      if (body.queries && (body.queries.length > 1 || requested === "features" || requested === "testing")) {
         const searched = document.createElement("p");
         searched.className = "scope";
         searched.textContent = `Searched: ${body.queries.join(" · ")}`;
