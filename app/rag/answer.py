@@ -51,6 +51,12 @@ _TRACE_INSTRUCTIONS = (
     "path and line numbers at each stage. If a stage is not in the passages, say so "
     "and stop."
 )
+_DRAFT_INSTRUCTIONS = (
+    " The question asks for a Cucumber feature. Quote only Gherkin lines that "
+    "appear in the passages. Cite the path and line number of each quoted line. "
+    "When a requested check has no Gherkin line in the passages, name that check "
+    "and stop. Do not write a substitute step."
+)
 _IMPACT_INSTRUCTIONS = (
     "You assess the impact of changing a named part of a software repository. "
     "Use only the retrieved passages. Organise the answer as: what it is, where "
@@ -100,6 +106,8 @@ def answer(
     impact: bool,
     model: str | None = None,
     meter: Meter | None = None,
+    draft: bool = False,
+    phrases: list[str] | None = None,
 ) -> str | None:
     if not hits or not language_model_configured():
         return None
@@ -108,11 +116,15 @@ def answer(
     prompt = completion = None
     try:
         if LLM_PROVIDER == "ollama":
-            text, body = _complete_ollama(question, hits, impact=impact, model=chosen)
+            text, body = _complete_ollama(
+                question, hits, impact=impact, model=chosen, draft=draft, phrases=phrases,
+            )
         else:
-            text, body = _complete_openai(question, hits, impact=impact, model=chosen)
+            text, body = _complete_openai(
+                question, hits, impact=impact, model=chosen, draft=draft, phrases=phrases,
+            )
         prompt, completion = token_counts(body)
-        return _with_matches(question, hits, text)
+        return _with_matches(question, hits, text, phrases)
     finally:
         if meter is not None:
             meter.add(Stage(
@@ -143,7 +155,16 @@ def passage_limits(num_ctx: int) -> tuple[int, int, int]:
     return 8, per_passage, total_chars
 
 
-def ollama_payload(model: str, question: str, hits: list[Hit], *, impact: bool, num_ctx: int) -> dict:
+def ollama_payload(
+    model: str,
+    question: str,
+    hits: list[Hit],
+    *,
+    impact: bool,
+    num_ctx: int,
+    draft: bool = False,
+    phrases: list[str] | None = None,
+) -> dict:
     max_hits, per_passage, total_chars = passage_limits(num_ctx)
     return {
         "model": model,
@@ -155,16 +176,29 @@ def ollama_payload(model: str, question: str, hits: list[Hit], *, impact: bool, 
             max_hits=max_hits,
             per_passage=per_passage,
             total_chars=total_chars,
+            draft=draft,
+            phrases=phrases,
         ),
         "options": {"temperature": 0.1, "num_ctx": num_ctx, "num_predict": 1024},
     }
 
 
-def _complete_openai(question: str, hits: list[Hit], *, impact: bool, model: str) -> tuple[str, dict]:
+def _complete_openai(
+    question: str,
+    hits: list[Hit],
+    *,
+    impact: bool,
+    model: str,
+    draft: bool = False,
+    phrases: list[str] | None = None,
+) -> tuple[str, dict]:
     payload = {
         "model": model,
         "temperature": 0.1,
-        "messages": _messages(question, hits, impact=impact, max_hits=12, per_passage=3500, total_chars=None),
+        "messages": _messages(
+            question, hits, impact=impact, max_hits=12, per_passage=3500, total_chars=None,
+            draft=draft, phrases=phrases,
+        ),
     }
     request = urllib.request.Request(
         f"{OPENAI_BASE_URL}/chat/completions",
@@ -183,9 +217,19 @@ def _complete_openai(question: str, hits: list[Hit], *, impact: bool, model: str
     return visible_answer(text) or text.strip(), body
 
 
-def _complete_ollama(question: str, hits: list[Hit], *, impact: bool, model: str) -> tuple[str, dict]:
+def _complete_ollama(
+    question: str,
+    hits: list[Hit],
+    *,
+    impact: bool,
+    model: str,
+    draft: bool = False,
+    phrases: list[str] | None = None,
+) -> tuple[str, dict]:
     root = OLLAMA_BASE_URL[:-3] if OLLAMA_BASE_URL.endswith("/v1") else OLLAMA_BASE_URL
-    payload = ollama_payload(model, question, hits, impact=impact, num_ctx=OLLAMA_NUM_CTX)
+    payload = ollama_payload(
+        model, question, hits, impact=impact, num_ctx=OLLAMA_NUM_CTX, draft=draft, phrases=phrases,
+    )
     request = urllib.request.Request(
         f"{root}/api/chat",
         data=json.dumps(payload).encode("utf-8"),
@@ -218,10 +262,12 @@ def _messages(
     max_hits: int,
     per_passage: int,
     total_chars: int | None,
+    draft: bool = False,
+    phrases: list[str] | None = None,
 ) -> list[dict[str, str]]:
-    instructions = _IMPACT_INSTRUCTIONS if impact else _query_instructions(question, hits)
+    instructions = _IMPACT_INSTRUCTIONS if impact else _query_instructions(question, hits, draft=draft)
     passages = _format_passages(hits, max_hits=max_hits, per_passage=per_passage, total_chars=total_chars)
-    listed = format_matching_lines(question, hits)
+    listed = format_matching_lines(question, hits, phrases)
     found = f"Matching lines:\n{listed}\n\n" if listed else ""
     return [
         {"role": "system", "content": instructions},
@@ -229,9 +275,13 @@ def _messages(
     ]
 
 
-def matching_lines(question: str, hits: list[Hit]) -> list[tuple[str, int, str]]:
-    """Lines in the retrieved passages that contain the quoted text."""
-    patterns = [_phrase_pattern(phrase) for phrase in quoted_phrases(question)]
+def matching_lines(
+    question: str,
+    hits: list[Hit],
+    phrases: list[str] | None = None,
+) -> list[tuple[str, int, str]]:
+    """Lines in the retrieved passages that contain a quoted or Gherkin step."""
+    patterns = [_phrase_pattern(phrase) for phrase in _match_phrases(question, phrases)]
     if not patterns:
         return []
     found: list[tuple[str, int, str]] = []
@@ -242,15 +292,35 @@ def matching_lines(question: str, hits: list[Hit]) -> list[tuple[str, int, str]]
     return found
 
 
-def format_matching_lines(question: str, hits: list[Hit]) -> str:
-    return "\n".join(f"{path}:{line}: {text}" for path, line, text in matching_lines(question, hits))
+def format_matching_lines(
+    question: str,
+    hits: list[Hit],
+    phrases: list[str] | None = None,
+) -> str:
+    return "\n".join(
+        f"{path}:{line}: {text}" for path, line, text in matching_lines(question, hits, phrases)
+    )
 
 
-def _with_matches(question: str, hits: list[Hit], text: str) -> str:
-    listed = format_matching_lines(question, hits)
+def _with_matches(
+    question: str,
+    hits: list[Hit],
+    text: str,
+    phrases: list[str] | None = None,
+) -> str:
+    listed = format_matching_lines(question, hits, phrases)
     if not listed:
         return text
     return f"Matches\n{listed}\n\n{text}"
+
+
+def _match_phrases(question: str, phrases: list[str] | None) -> list[str]:
+    found = list(quoted_phrases(question))
+    for phrase in phrases or []:
+        cleaned = " ".join(phrase.split())
+        if cleaned and cleaned not in found:
+            found.append(cleaned)
+    return found
 
 
 def _phrase_pattern(phrase: str) -> re.Pattern[str]:
@@ -258,7 +328,9 @@ def _phrase_pattern(phrase: str) -> re.Pattern[str]:
     return re.compile(body, re.IGNORECASE)
 
 
-def _query_instructions(question: str, hits: list[Hit]) -> str:
+def _query_instructions(question: str, hits: list[Hit], *, draft: bool = False) -> str:
+    if draft:
+        return _QUERY_INSTRUCTIONS + _DRAFT_INSTRUCTIONS
     if quoted_phrases(question):
         return _QUERY_INSTRUCTIONS + _PHRASE_INSTRUCTIONS
     if asks_for_features(question):

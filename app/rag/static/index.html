@@ -275,6 +275,7 @@
       <button type="button" data-mode="impact" aria-pressed="false">Impact</button>
       <button type="button" data-mode="search" aria-pressed="false">Search</button>
       <button type="button" data-mode="flow" aria-pressed="false">Flow</button>
+      <button type="button" data-mode="features" aria-pressed="false">Features</button>
     </nav>
 
     <form class="ask" id="ask">
@@ -319,9 +320,17 @@
         answer: false,
         k: false,
         hint: "Leave this blank to draw journeys from a question list, redirects, or page objects. A path such as /steps/opening/start_or_continue starts where a decision tree chooses the next step. Each box opens that step in the indexed commit on GitHub. Ask about this journey once the chart is drawn."
+      },
+      features: {
+        label: "Feature or step",
+        placeholder: "Write a Cucumber feature for a fee payment date that cannot be in the future or more than three months ago",
+        button: "Find steps",
+        answer: true,
+        k: true,
+        hint: "Paste a Gherkin step, or describe a feature to write. A step is matched as written, under features. A request to write a feature searches the behaviour and quotes only steps already in the suite. The question planner is not used."
       }
     };
-    const prompts = { query: "", impact: "", search: "", flow: "" };
+    const prompts = { query: "", impact: "", search: "", flow: "", features: "" };
     const queryHint = document.querySelector("#prompt-hint").textContent;
     let mode = "query";
     let poll = null;
@@ -398,7 +407,7 @@
       const spec = modes[next];
       document.querySelector("#prompt-caption").textContent = spec.label;
       prompt.placeholder = spec.placeholder;
-      prompt.style.minHeight = next === "query" ? "7rem" : "3.2rem";
+      prompt.style.minHeight = next === "query" || next === "features" ? "7rem" : "3.2rem";
       document.querySelector("#go").textContent = spec.button;
       document.querySelector("#k-wrap").hidden = !spec.k;
       const retrieval = next === "query" || next === "search";
@@ -406,8 +415,8 @@
       document.querySelector("#fusion-wrap").hidden = !retrieval;
       document.querySelector("#prompt-label").hidden = spec.prompt === false;
       const hint = document.querySelector("#prompt-hint");
-      hint.hidden = next !== "query" && next !== "flow";
-      hint.textContent = next === "flow" ? spec.hint : queryHint;
+      hint.hidden = next !== "query" && next !== "flow" && next !== "features";
+      hint.textContent = next === "query" ? queryHint : spec.hint;
       document.querySelector("#answer-wrap").hidden = !spec.answer;
       document.querySelectorAll(".modes button").forEach((button) => {
         button.setAttribute("aria-pressed", String(button.dataset.mode === next));
@@ -808,7 +817,10 @@
       const payload = { repo: repoSelect.value };
       if (mode === "impact") payload.target = prompt.value;
       else if (mode === "flow") payload.start = prompt.value.trim();
-      else {
+      else if (mode === "features") {
+        payload.question = prompt.value;
+        payload.k = Number(document.querySelector("#k").value);
+      } else {
         payload.question = prompt.value;
         payload.k = Number(document.querySelector("#k").value);
         payload.index = document.querySelector("#search-index").value;
@@ -904,7 +916,13 @@
         renderGroup("Related", body.related, (body.related || []).length);
         return;
       }
-      if (body.queries && body.queries.length > 1) {
+      if (body.drafting) {
+        const drafted = document.createElement("p");
+        drafted.className = "scope";
+        drafted.textContent = "Existing steps only. A check with no step in these passages is named and left unwritten.";
+        output.append(drafted);
+      }
+      if (body.queries && (body.queries.length > 1 || requested === "features")) {
         const searched = document.createElement("p");
         searched.className = "scope";
         searched.textContent = `Searched: ${body.queries.join(" · ")}`;

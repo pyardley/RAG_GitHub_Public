@@ -33,7 +33,8 @@ from rag.follow import (
 from rag.gitrepo import branch_list, default_branch_name
 from rag.journey import branch_answers, diff_chart, journey_scopes, mark_visits
 from rag.flows import charts_for, parse_navigation, question_texts
-from rag.web import Handler, _progress_view, github_blob_url, public_status, run_flow, run_query, start_ingest
+from rag.features import behaviour_text, gherkin_lines, is_drafting_request, retrieve_features
+from rag.web import Handler, _progress_view, github_blob_url, public_status, run_features, run_flow, run_query, start_ingest
 from unittest.mock import patch
 
 from rag.plan import parse_queries, question_needs_plan
@@ -1005,6 +1006,104 @@ class FilesTest(unittest.TestCase):
         self.assertFalse(any(path.startswith(".env") for path in found))
 
 
+class FeaturesTest(unittest.TestCase):
+    STEP = "Then I should see this date can't be in the future error message"
+    REFUND = (
+        "Write a Cucumber feature for an applicant who already paid the fee and wants a refund. "
+        "The payment date cannot be in the future or more than three months ago. "
+        "Reuse existing step phrasing."
+    )
+
+    def test_a_pasted_step_keeps_its_keyword(self):
+        self.assertEqual(gherkin_lines(self.STEP), [self.STEP])
+        self.assertFalse(is_drafting_request(self.STEP))
+        with patch("rag.plan.retrieval_model", return_value="gpt-4o-mini"):
+            self.assertTrue(question_needs_plan(self.STEP))
+
+    def test_a_feature_draft_drops_the_instruction_and_keeps_the_rule(self):
+        self.assertTrue(is_drafting_request(self.REFUND))
+        text = behaviour_text(self.REFUND)
+        self.assertNotIn("Write a Cucumber feature", text)
+        self.assertNotIn("Reuse existing", text)
+        lowered = text.lower()
+        self.assertIn("payment date", lowered)
+        self.assertIn("future", lowered)
+        self.assertIn("three months", lowered)
+        with patch("rag.plan.retrieval_model", return_value="gpt-4o-mini"):
+            self.assertTrue(question_needs_plan(self.REFUND))
+
+    def test_a_draft_answer_may_only_quote_steps_from_the_passages(self):
+        instructions = _query_instructions(self.REFUND, [], draft=True)
+        self.assertIn("Do not write a substitute step.", instructions)
+        self.assertIn("name that check", instructions)
+
+    def test_a_pasted_step_is_searched_as_that_line_under_features(self):
+        feature = Hit(
+            1, "hmcts/hwf-publicapp", "features/fee.feature", 30, 33,
+            "Fee page / Date is in the future", "scenario", self.STEP, 0.0,
+        )
+        step = Hit(
+            2, "hmcts/hwf-publicapp", "features/step_definitions/fee_steps.rb", 40, 44,
+            None, "file", "Then(/^I should see this date can't be in the future error message$/) do", 0.0,
+        )
+        seen = {}
+
+        def fake_literal(_conn, _repos, scopes, literals, _k, excluded=None):
+            seen["scopes"] = scopes
+            seen["literals"] = literals
+            return [feature], 0.01, False
+
+        def fake_follow(_conn, _repos, quoted, _hits):
+            seen["quoted"] = quoted
+            return [step]
+
+        def fake_search(*_args, **_kwargs):
+            raise AssertionError("a pasted step is not planned or embedded")
+
+        with (
+            patch("rag.features.literal_hits", side_effect=fake_literal),
+            patch("rag.features.follow_matched_steps", side_effect=fake_follow),
+            patch("rag.features.search", side_effect=fake_search),
+            patch("rag.plan.search_queries", side_effect=AssertionError("planner")),
+        ):
+            hits, queries, truncated, drafting = retrieve_features(None, [1], self.STEP, 8, Meter())
+        self.assertFalse(drafting)
+        self.assertFalse(truncated)
+        self.assertEqual(seen["scopes"], ["features"])
+        self.assertEqual(seen["literals"], [self.STEP])
+        self.assertIn(self.STEP, seen["quoted"])
+        self.assertEqual(hits, [feature, step])
+        self.assertTrue(queries[0].startswith("step:"))
+
+    def test_a_feature_draft_searches_the_behaviour_on_the_code_index(self):
+        scenario = Hit(
+            3, "hmcts/hwf-publicapp", "features/fee.feature", 25, 28,
+            "Fee page / Date exceeding 3 months", "scenario", "Then the date is too old", 0.2,
+        )
+        seen = {}
+
+        def fake_search(_conn, _repos, text, _k, _meter, **options):
+            seen["text"] = text
+            seen["index"] = options.get("index")
+            seen["fusion"] = options.get("fusion")
+            return [scenario], False
+
+        with (
+            patch("rag.features.search", side_effect=fake_search),
+            patch("rag.features.literal_hits", side_effect=AssertionError("no step to quote")),
+            patch("rag.plan.search_queries", side_effect=AssertionError("planner")),
+        ):
+            hits, queries, _truncated, drafting = retrieve_features(None, [1], self.REFUND, 8, Meter())
+        self.assertTrue(drafting)
+        self.assertEqual(hits, [scenario])
+        self.assertIn("payment date", seen["text"])
+        self.assertNotIn("Write a Cucumber feature", seen["text"])
+        self.assertNotIn("Reuse existing", seen["text"])
+        self.assertEqual(seen["index"], "code")
+        self.assertEqual(seen["fusion"], "rrf")
+        self.assertIn(seen["text"], queries)
+
+
 class PlanTest(unittest.TestCase):
     def test_parse_queries_keeps_words_from_the_question_and_drops_invented_names(self):
         question = "Where does an applicant have too much in savings to get help with fees?"
@@ -1581,6 +1680,8 @@ class WebTest(unittest.TestCase):
     def test_empty_question_is_rejected_before_the_database(self):
         with self.assertRaises(ValueError):
             run_query({"question": "  "})
+        with self.assertRaises(ValueError):
+            run_features({"question": "  "})
 
     def test_ingest_rejects_a_repository_path_before_starting(self):
         with self.assertRaises(ValueError):
@@ -1599,6 +1700,10 @@ class WebTest(unittest.TestCase):
             self.assertIn("Search", page)
             self.assertIn('data-mode="flow"', page)
             self.assertIn(">Flow</button>", page)
+            self.assertIn('data-mode="features"', page)
+            self.assertIn(">Features</button>", page)
+            self.assertIn("quotes only steps already in the suite", page)
+            self.assertIn("Existing steps only.", page)
             self.assertIn("function renderFlow", page)
             self.assertIn("function drawFlow", page)
             self.assertIn("Each box opens that step", page)

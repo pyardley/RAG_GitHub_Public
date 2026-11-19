@@ -17,7 +17,8 @@ _PROTOCOL = "2024-11-05"
 _VERSION = re.compile(r"\d{4}-\d{2}-\d{2}")
 _INSTRUCTIONS = (
     "Code RAG searches indexed GitHub repositories. "
-    "Use query for a question, search for exact text, impact for a class, method, "
+    "Use query for a question, search for exact text, features for a Cucumber step "
+    "or a feature to write from existing steps, impact for a class, method, "
     "file, or FactoryBot call such as FactoryBot.create(:claim), and flow for the "
     "main journeys. A flow chart can also say which steps a feature visits and "
     "what changed on the branch. "
@@ -86,6 +87,26 @@ _TOOLS = [
                 "question": {"type": "string", "description": "The text, identifier, or quoted phrase to find."},
                 "repo": {"type": "string", "description": "owner/name. Omit to search every indexed repository."},
                 "k": {"type": "integer", "minimum": 1, "maximum": 30, "description": "How many passages to return. Defaults to 12."},
+            },
+            "required": ["question"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "features",
+        "description": (
+            "Find Cucumber steps already in the suite. "
+            "Paste a Gherkin step to match that step under features, including its step definition. "
+            "Or ask to write a feature: the behaviour is searched, and a written answer quotes "
+            "only steps that appear in the passages. The question planner is not used."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "question": {"type": "string", "description": "A Gherkin step, or a feature to write."},
+                "repo": {"type": "string", "description": "owner/name. Omit to search every indexed repository."},
+                "k": {"type": "integer", "minimum": 1, "maximum": 30, "description": "How many passages to return. Defaults to 12."},
+                "answer": {"type": "boolean", "description": "When true, the app's own model also writes a reply."},
             },
             "required": ["question"],
             "additionalProperties": False,
@@ -277,6 +298,13 @@ def _tool(name: object, arguments: dict) -> dict:
         )
     if name == "search":
         return api.search(arguments.get("question", ""), arguments.get("repo"), _count(arguments.get("k", 12)))
+    if name == "features":
+        return api.features(
+            arguments.get("question", ""),
+            arguments.get("repo"),
+            _count(arguments.get("k", 12)),
+            bool(arguments.get("answer", False)),
+        )
     if name == "impact":
         return api.impact(arguments.get("target", ""), arguments.get("repo"), arguments.get("answer", False))
     if name == "flow":

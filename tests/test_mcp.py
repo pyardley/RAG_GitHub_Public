@@ -167,7 +167,7 @@ class McpTest(unittest.TestCase):
         names = [tool["name"] for tool in listed["result"]["tools"]]
         self.assertEqual(
             names,
-            ["repositories", "query", "search", "impact", "flow", "default_branch", "branches", "ingest", "remove_index"],
+            ["repositories", "query", "search", "features", "impact", "flow", "default_branch", "branches", "ingest", "remove_index"],
         )
 
     def test_branches_lists_the_default_first(self) -> None:

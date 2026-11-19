@@ -69,6 +69,16 @@ def search(question: str, repo: str | None = None, k: int = 8) -> dict:
     return _passages(_request("POST", "/api/search", body), include_queries=True)
 
 
+def features(question: str, repo: str | None = None, k: int = 8, answer: bool = False) -> dict:
+    """Existing Cucumber steps for a pasted step or a feature to write."""
+    body = _lookup_body(question, "question", repo, k)
+    body["answer"] = bool(answer)
+    payload = _request("POST", "/api/features", body)
+    result = _passages(payload, include_queries=True)
+    result["drafting"] = bool(payload.get("drafting"))
+    return result
+
+
 def impact(target: str, repo: str | None = None, answer: bool = False) -> dict:
     text = _required(target, "Enter a class, method, or file")
     body: dict = {"target": text, "answer": bool(answer)}

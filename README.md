@@ -52,7 +52,7 @@ Only one index is built at a time. That holds whether the ingest was started fro
 docker compose up -d
 ```
 
-Open http://localhost:8080. Switch between Query, Impact, Search, and Flow, choose an indexed repository, and run it. Flow draws the main journeys it can find in the selected repository. Help with Fees comes from the application's question list or its redirects. A test suite comes from its page objects and the journey that clicks through them, which is how the Employment Tribunals claim and response are drawn. A start path such as `/steps/opening/start_or_continue` draws the journey an application chooses in its decision tree, which is how the C100 child arrangements application is drawn. Each box opens the file for that step on the indexed commit. A corner mark is a step a feature or step definition names. When the branch has newer commits, the chart lists steps added, removed, or rewired since the indexed commit. **Ask about this journey** follows an arrow when the question names a step and its answer, and otherwise searches only the files for the steps on that chart. Each passage links to those lines in the indexed commit on GitHub. **Save as HTML** downloads that result as one file. It starts with a table of contents, then the question or target, the written answer, and each passage with its file, lines, and code. An impact result includes the same relationship diagram as the page, so a file's scenarios stay in one box until you choose it. A dashed arrow is a possible call. The file stays on your machine. The app does not keep a copy. Index another GitHub repository from the same page. A first index takes several minutes and the page shows its progress.
+Open http://localhost:8080. Switch between Query, Impact, Search, Flow, and Features, choose an indexed repository, and run it. Features finds an existing Cucumber step, or the steps to reuse when writing a feature. A pasted Gherkin line is matched as that line. A request to write a feature is searched as the behaviour, and the written answer quotes only steps that appear in the passages. Flow draws the main journeys it can find in the selected repository. Help with Fees comes from the application's question list or its redirects. A test suite comes from its page objects and the journey that clicks through them, which is how the Employment Tribunals claim and response are drawn. A start path such as `/steps/opening/start_or_continue` draws the journey an application chooses in its decision tree, which is how the C100 child arrangements application is drawn. Each box opens the file for that step on the indexed commit. A corner mark is a step a feature or step definition names. When the branch has newer commits, the chart lists steps added, removed, or rewired since the indexed commit. **Ask about this journey** follows an arrow when the question names a step and its answer, and otherwise searches only the files for the steps on that chart. Each passage links to those lines in the indexed commit on GitHub. **Save as HTML** downloads that result as one file. It starts with a table of contents, then the question or target, the written answer, and each passage with its file, lines, and code. An impact result includes the same relationship diagram as the page, so a file's scenarios stay in one box until you choose it. A dashed arrow is a possible call. The file stays on your machine. The app does not keep a copy. Index another GitHub repository from the same page. A first index takes several minutes and the page shows its progress.
 
 When the page opens, it asks GitHub which commit each indexed branch is at. A repository whose branch has moved on is marked "branch has newer commits" in the list. Choose it to see both commits, and use **Update the index** to index the branch again. The app keeps GitHub's answer for ten minutes, and a branch that cannot be read is left unmarked.
 
@@ -76,7 +76,7 @@ Claude Code, including the Claude extension for VS Code, does not read `.cursor/
 claude mcp get code-rag
 ```
 
-The tools are `repositories`, `query`, `search`, `impact`, `flow`, `default_branch`, `branches`, `ingest`, and `remove_index`. `flow` returns the same journeys as the Flow button, with a GitHub URL on each step. `branches` lists a GitHub repository's branches with the default first, so the model can choose one for `ingest`. `query` returns the passages and leaves the app's own written answer off, so the calling model reads the code. Set `answer` to true when you also want that reply. `query` takes an optional `index` of `text`, `code`, or `both` (the default is `code`) and an optional `fusion` of `rrf` or `score` (the default is `rrf`; use `score` with `both`). `impact` returns the definitions, the callers, and the diagram. `FactoryBot.create(:claim)` is a valid impact target. `remove_index` deletes one index only when `confirm` is true. Passage text is shortened in the tool result. The page still shows the full chunk.
+The tools are `repositories`, `query`, `search`, `features`, `impact`, `flow`, `default_branch`, `branches`, `ingest`, and `remove_index`. `features` matches a pasted Gherkin step, or searches a request to write a feature as the behaviour and quotes only steps already in the suite. `flow` returns the same journeys as the Flow button, with a GitHub URL on each step. `branches` lists a GitHub repository's branches with the default first, so the model can choose one for `ingest`. `query` returns the passages and leaves the app's own written answer off, so the calling model reads the code. Set `answer` to true when you also want that reply. `query` takes an optional `index` of `text`, `code`, or `both` (the default is `code`) and an optional `fusion` of `rrf` or `score` (the default is `rrf`; use `score` with `both`). `impact` returns the definitions, the callers, and the diagram. `FactoryBot.create(:claim)` is a valid impact target. `remove_index` deletes one index only when `confirm` is true. Passage text is shortened in the tool result. The page still shows the full chunk.
 
 On macOS or Linux the same commands work. `rag.ps1` and `rag.sh` are thin wrappers:
 
@@ -105,7 +105,7 @@ Search covers every indexed repository. Each repository is searched on its own, 
 
 ## Examples
 
-Paste a query into Query on the page, or pass the same text to `query`. Paste an impact target into Impact, or pass it to `impact`. These are written for [hmcts/hwf-publicapp](https://github.com/hmcts/hwf-publicapp), except the claim factory, which is run against [hmcts/et-full-system](https://github.com/hmcts/et-full-system). On the command line, add `--repo hmcts/hwf-publicapp` when both Help with Fees repositories are indexed and the request should stay in one of them.
+Paste a query into Query on the page, or pass the same text to `query`. Paste an impact target into Impact, or pass it to `impact`. Paste a Gherkin step, or a feature to write, into Features, or pass it to `features`. These are written for [hmcts/hwf-publicapp](https://github.com/hmcts/hwf-publicapp), except the claim factory, which is run against [hmcts/et-full-system](https://github.com/hmcts/et-full-system). On the command line, add `--repo hmcts/hwf-publicapp` when both Help with Fees repositories are indexed and the request should stay in one of them.
 
 ### Queries
 
@@ -206,6 +206,28 @@ docker compose run --rm -T rag impact "FactoryBot.create(:claim)" --repo hmcts/e
 ```
 
 The factory `factory :claim` is listed under Definitions. Specs that build or create a claim are references, including `build(:claim)` and `create_list(:claim, …)`. Each reference shows the path back to the factory.
+
+### Features
+
+Features skips the question planner. A pasted Gherkin line is matched as that line under `features/`, then followed into the step definition. A request to write a feature drops the instruction to write one and searches the behaviour that remains. The written answer quotes only steps that appear in the passages. A check with no such step is named and left unwritten.
+
+```text
+Then I should see this date can't be in the future error message
+```
+
+The step text, with `Then` kept. The passages are `features/fee.feature` (scenario “Date is in the future”), the same step in the probate features, and `features/step_definitions/fee_steps.rb`.
+
+```text
+Write a Cucumber feature for an applicant who already paid the fee and wants a refund. The payment date cannot be in the future or more than three months ago. Reuse existing step phrasing.
+```
+
+The search that runs is “an applicant who already paid the fee and wants a refund. The payment date cannot be in the future or more than three months ago.” `features/fee.feature` is in the passages, including the scenarios “Date exceeding 3 months” and “Date within the last 3 months”. The written answer quotes those steps. It also says the suite has no Gherkin line for the refund request itself.
+
+On the command line:
+
+```powershell
+docker compose run --rm -T rag features "Then I should see this date can't be in the future error message" --repo hmcts/hwf-publicapp
+```
 
 ## Logs
 
