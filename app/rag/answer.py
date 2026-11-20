@@ -63,8 +63,13 @@ _TESTING_INSTRUCTIONS = (
     "that is being written. A group is a directory, a tag, or a Cucumber profile. "
     "Quote only commands, tags, profiles, and environment variables that appear "
     "in the passages, and cite the path and line of each. When the question names "
-    "a feature file, tag, or profile, use the command shape from the passages "
-    "with that name. The line number is the line shown for that Scenario. "
+    "a feature file, run it with bundle exec cucumber and the full path of that "
+    "file from the passages, including every directory under features/. A Feature "
+    "path line gives that path. Do not drop a directory, and do not write cucumber "
+    "a second time. A passage that repeats it, such as bundle exec cucumber "
+    "cucumber features/summary.feature, is the same command. A tag or profile uses "
+    "the command shape from the passages with that name. The line number is the "
+    "line shown for that Scenario, written on the full feature path. "
     "Debugging a scenario that is being written means the commands in the "
     "passages that narrow the run or show the browser: a line number on a "
     "feature file, a @wip tag or wip profile, SHOW_BROWSER, or DRIVER. Quote "
@@ -77,8 +82,9 @@ _TESTING_INSTRUCTIONS = (
     "do not introduce byebug or pry. "
     "When the passages come from more than one repository, give each repository "
     "separately. Do not describe RSpec, Minitest, spec/, or test/, and do not "
-    "quote a command that runs those. Do not invent a file:line form or a "
-    "command the passages do not show. If a part has no command in the passages, "
+    "quote a command that runs those. Do not invent a file:line form. The feature "
+    "command is bundle exec cucumber and the Feature path, which the passages show "
+    "separately. Do not invent any other command. If a part has no command in the passages, "
     "say what is missing."
 )
 _IMPACT_INSTRUCTIONS = (
@@ -306,6 +312,14 @@ def _messages(
     passages = _format_passages(hits, max_hits=max_hits, per_passage=per_passage, total_chars=total_chars)
     listed = format_matching_lines(question, hits, phrases)
     found = f"Matching lines:\n{listed}\n\n" if listed else ""
+    if testing:
+        feature_path: list[str] = []
+        for hit in hits:
+            path = hit.path.replace("\\", "/").lstrip("/")
+            if path.endswith(".feature") and path not in feature_path:
+                feature_path.append(path)
+        if feature_path:
+            found += "Feature path:\n" + "\n".join(feature_path) + "\n\n"
     return [
         {"role": "system", "content": instructions},
         {"role": "user", "content": f"Question:\n{question}\n\n{found}Retrieved passages:\n{passages}"},

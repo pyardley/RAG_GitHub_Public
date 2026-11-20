@@ -60,7 +60,7 @@ def retrieve_testing(
             note="Testing looks up the repository's Cucumber commands and leaves RSpec and Minitest out.",
         ))
     phrases = command_phrases(question)
-    paths = feature_paths(question)
+    paths = resolve_feature_paths(feature_paths(question), indexed_feature_paths(conn, repository_ids))
     excluded = list(_EXCLUDE)
     command_hits, elapsed, _more = literal_hits(
         conn, repository_ids, [], phrases, max(k, 40), excluded,
@@ -99,6 +99,58 @@ def retrieve_testing(
     return hits, queries, truncated
 
 
+def indexed_feature_paths(conn, repository_ids: list[int]) -> list[str]:
+    """Feature files stored for these repositories."""
+    if conn is None or not repository_ids:
+        return []
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT path
+            FROM chunks
+            WHERE repository_id = ANY(%(repos)s)
+              AND lower(path) LIKE 'features/%%.feature'
+            ORDER BY path
+            """,
+            {"repos": repository_ids},
+        )
+        found = [row[0] for row in cur.fetchall()]
+    conn.commit()
+    return found
+
+
+def resolve_feature_paths(named: list[str], indexed: list[str]) -> list[str]:
+    """Use the stored path when a question names a feature file.
+
+    dob_married.feature and features/dob_married.feature both become
+    features/dob/dob_married.feature when that is the file in the index.
+    A path that is already stored is left as it is.
+    """
+    available: list[str] = []
+    for path in indexed:
+        cleaned = path.replace("\\", "/").lstrip("/")
+        if cleaned not in available:
+            available.append(cleaned)
+    resolved: list[str] = []
+    for raw in named:
+        cleaned = raw.replace("\\", "/").lstrip("/")
+        exact = [path for path in available if path.lower() == cleaned.lower()]
+        if exact:
+            chosen = exact
+        else:
+            base = cleaned.rsplit("/", 1)[-1].lower()
+            chosen = [
+                path for path in available
+                if path.lower() == base or path.lower().endswith("/" + base)
+            ]
+        if not chosen:
+            chosen = [cleaned]
+        for path in chosen:
+            if path not in resolved:
+                resolved.append(path)
+    return resolved
+
+
 def _prefer(
     command_hits: list[Hit],
     named: list[Hit],
@@ -117,14 +169,16 @@ def _prefer(
     )
     ordered = _spread(_by_band(guides))
     seen = {hit.chunk_id for hit in ordered}
+    kept: list[Hit] = []
     for hit in named:
-        if hit.chunk_id in seen:
-            continue
-        if not _names_feature(hit.path, paths):
+        if hit.chunk_id in seen or not _names_feature(hit.path, paths):
             continue
         seen.add(hit.chunk_id)
-        ordered.append(hit)
-    return ordered
+        kept.append(hit)
+    # The named feature stays with the command notes, ahead of later guides,
+    # so a short passage list still shows its full path.
+    head = [hit for hit in ordered if _band(hit.path) <= 1]
+    return head + kept + [hit for hit in ordered if hit not in head]
 
 
 def _by_band(hits: list[Hit]) -> list[Hit]:

@@ -34,7 +34,7 @@ from rag.gitrepo import branch_list, default_branch_name
 from rag.journey import branch_answers, diff_chart, journey_scopes, mark_visits
 from rag.flows import charts_for, parse_navigation, question_texts
 from rag.features import behaviour_text, gherkin_lines, is_drafting_request, matched_step_texts, retrieve_features
-from rag.testing import command_phrases, retrieve_testing
+from rag.testing import command_phrases, resolve_feature_paths, retrieve_testing
 from rag.web import Handler, _progress_view, github_blob_url, public_status, run_features, run_flow, run_query, run_testing, start_ingest
 from unittest.mock import patch
 
@@ -1166,6 +1166,8 @@ class TestingTest(unittest.TestCase):
     def test_the_answer_quotes_only_commands_from_the_passages(self):
         instructions = _query_instructions(self.QUESTION, [], testing=True)
         self.assertIn("Do not say debugging is missing", instructions)
+        self.assertIn("do not write cucumber a second time", instructions)
+        self.assertIn("Feature path", instructions)
         self.assertIn("not @wip", instructions)
         self.assertIn("do not introduce byebug or pry", instructions)
         self.assertIn("Do not describe RSpec", instructions)
@@ -1258,6 +1260,57 @@ class TestingTest(unittest.TestCase):
             ["README.md", "features/fee.feature"],
         )
         self.assertTrue(any(query.startswith("feature:") for query in queries))
+
+    def test_a_bare_feature_name_uses_the_indexed_directory(self):
+        self.assertEqual(
+            resolve_feature_paths(
+                ["dob_married.feature"],
+                ["features/fee.feature", "features/dob/dob_married.feature"],
+            ),
+            ["features/dob/dob_married.feature"],
+        )
+        self.assertEqual(
+            resolve_feature_paths(
+                ["features/dob_married.feature"],
+                ["features/dob/dob_married.feature"],
+            ),
+            ["features/dob/dob_married.feature"],
+        )
+        self.assertEqual(
+            resolve_feature_paths(
+                ["features/fee.feature"],
+                ["features/fee.feature", "features/dob/dob_married.feature"],
+            ),
+            ["features/fee.feature"],
+        )
+        feature = Hit(
+            6, "hmcts/hwf-publicapp", "features/dob/dob_married.feature", 12, 18,
+            "Married applicant", "scenario", "Scenario: Married applicant", 0.0,
+        )
+        readme = Hit(
+            1, "hmcts/hwf-publicapp", "features/README.md", 17, 24,
+            None, "file", "bundle exec cucumber cucumber features/summary.feature", 0.0,
+        )
+        calls = []
+
+        def fake_literal(_conn, _repos, scopes, _literals, _k, excluded=None):
+            calls.append(scopes)
+            if scopes:
+                return [feature], 0.01, False
+            return [readme], 0.01, False
+
+        with (
+            patch("rag.testing.indexed_feature_paths", return_value=["features/dob/dob_married.feature"]),
+            patch("rag.testing.literal_hits", side_effect=fake_literal),
+            patch("rag.testing.search", return_value=([], False)),
+            patch("rag.plan.search_queries", side_effect=AssertionError("planner")),
+        ):
+            hits, queries, _truncated = retrieve_testing(
+                None, [1], "How do I run dob_married.feature? How do I debug it?", 8, Meter(),
+            )
+        self.assertEqual(calls[1], ["features/dob/dob_married.feature"])
+        self.assertEqual([hit.path for hit in hits], ["features/README.md", "features/dob/dob_married.feature"])
+        self.assertIn("feature: features/dob/dob_married.feature", queries)
 
 
 class PlanTest(unittest.TestCase):
