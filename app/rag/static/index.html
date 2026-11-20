@@ -258,8 +258,30 @@
     .saved-banner h1 { margin: 0 0 0.4rem; }
     .diagram-node:focus { outline: none; }
     .diagram-node:focus rect { stroke: var(--ink); stroke-width: 2; }
-    .flow-frame { overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+    .flow-chart { display: grid; gap: 0.45rem; }
+    .flow-tools { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; }
+    .flow-tools button { padding: 0.3rem 0.7rem; font-size: 0.85rem; }
+    .flow-zoom { color: var(--muted); font-size: 0.85rem; min-width: 3.2rem; }
+    .flow-frame {
+      overflow: auto;
+      max-height: 70vh;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      cursor: grab;
+    }
+    .flow-frame.panning { cursor: grabbing; user-select: none; }
+    .flow-canvas { position: relative; }
     .flow-frame svg { display: block; }
+    .flow-frame .flow-spine {
+      position: absolute;
+      top: 0;
+      left: 0;
+      z-index: 2;
+      display: none;
+      height: 100%;
+    }
+    .flow-frame .flow-spine.active { display: block; }
     .flow-node { cursor: pointer; }
     .flow-node rect { fill: var(--paper); stroke: var(--line); }
     .flow-node.choice rect { stroke: var(--accent); stroke-width: 1.6; }
@@ -267,7 +289,14 @@
     .flow-node.end text { fill: var(--accent-ink); }
     .flow-node text { font: 12px/1.25 "Segoe UI", "Helvetica Neue", sans-serif; fill: var(--ink); }
     .flow-edge { fill: none; stroke: var(--muted); stroke-width: 1.4; }
-    .flow-label { font: 11px "Segoe UI", "Helvetica Neue", sans-serif; fill: var(--muted); cursor: pointer; }
+    .flow-label {
+      font: 11px "Segoe UI", "Helvetica Neue", sans-serif;
+      fill: var(--muted);
+      cursor: pointer;
+      stroke: #fff;
+      stroke-width: 3px;
+      paint-order: stroke fill;
+    }
     .flow-label:hover, .flow-label:focus { fill: var(--ink); }
     .flow-node { scroll-margin: 1.5rem; }
     .flow-node:focus { outline: none; }
@@ -1434,10 +1463,7 @@ ${data}
         const drawn = drawFlow(chart);
         const unmarked = unmarkedList(drawn.nodes);
         if (unmarked) section.append(unmarked);
-        const frame = document.createElement("div");
-        frame.className = "flow-frame";
-        frame.append(drawn.svg);
-        section.append(frame);
+        section.append(flowView(drawn));
         output.append(section);
       }
     }
@@ -1611,7 +1637,7 @@ ${data}
 
     function drawFlow(chart) {
       const svgNs = "http://www.w3.org/2000/svg";
-      const nodeWidth = 230;
+      const nodeWidth = 200;
       const lineHeight = 15;
       const padY = 10;
       const rowGap = 36;
@@ -1622,12 +1648,21 @@ ${data}
         if (!source || !target || source.row !== target.row) return widest;
         return Math.max(widest, edge.label.length);
       }, 0);
-      const columnGap = Math.max(48, sideLabel * 7 + 24);
-      const labelGutter = 176;
-      const laneGap = 168;
+      const columnGap = Math.max(40, sideLabel * 6.6 + 18);
+      const leftLabel = (chart.edges || []).reduce((widest, edge) => {
+        if (edge.route !== "straight" || !edge.label) return widest;
+        const source = (chart.nodes || []).find((node) => node.id === edge.from);
+        if (!source || (source.column || 0) !== 0) return widest;
+        return Math.max(widest, edge.label.length);
+      }, 0);
+      const labelGutter = leftLabel ? Math.min(210, Math.max(28, leftLabel * 6.6 + 20)) : 12;
+      const lanePitch = 8;
+      const laneInset = 14;
+      const formerLanePitch = 168;
+      const formerLaneInset = 36;
       const marginY = 16;
       const nodes = (chart.nodes || []).map((node) => {
-        const lines = wrapLabel(node.label, 32);
+        const lines = wrapLabel(node.label, 27);
         return {
           ...node,
           lines,
@@ -1644,7 +1679,7 @@ ${data}
       if (!nodes.length) {
         svg.setAttribute("width", "0");
         svg.setAttribute("height", "0");
-        return { svg, nodes };
+        return { svg, nodes, width: 0, height: 0, spineWidth: 0 };
       }
       const byId = new Map(nodes.map((node) => [node.id, node]));
       const straightIndex = new Map();
@@ -1682,9 +1717,50 @@ ${data}
       }
       const right = Math.max(...nodes.map((node) => node.x + nodeWidth));
       const laneCount = Math.max(0, ...(chart.edges || []).map((edge) => edge.route === "lane" ? (edge.lane || 0) + 1 : 0));
-      const laneX = (lane) => right + 36 + lane * laneGap;
-      const width = laneCount ? laneX(laneCount - 1) + laneGap : right + 24;
+      const laneX = (edge) => {
+        const source = byId.get(edge.from);
+        const target = byId.get(edge.to);
+        const top = Math.min(source.y + source.height / 2, target.y + target.height / 2);
+        const bottom = Math.max(source.y + source.height / 2, target.y + target.height / 2);
+        let edgeRight = 0;
+        for (const node of nodes) {
+          if (node.y + node.height <= top || node.y >= bottom) continue;
+          edgeRight = Math.max(edgeRight, node.x + nodeWidth);
+        }
+        const lane = edge.lane || 0;
+        const tight = edgeRight + laneInset + lane * lanePitch;
+        const former = right + formerLaneInset + lane * formerLanePitch;
+        return (tight + former) / 2;
+      };
       const height = y - trailing + marginY;
+      const prepared = [];
+      let maxX = right + 20;
+      for (const edge of chart.edges || []) {
+        if (edge.route === "lane" && byId.has(edge.from) && byId.has(edge.to)) {
+          maxX = Math.max(maxX, laneX(edge) + 12);
+        }
+      }
+      for (const edge of chart.edges || []) {
+        const source = byId.get(edge.from);
+        const target = byId.get(edge.to);
+        if (!source || !target) continue;
+        const route = flowRoute(edge, source, target, nodeWidth, laneX);
+        const stackKey = `${source.column}:${source.row}`;
+        const stacked = straightTotal.get(stackKey) || 0;
+        if (edge.route === "straight" && stacked > 1) {
+          const slot = (target.y - (source.y + source.height)) / stacked;
+          route.labelY = source.y + source.height + slot * straightIndex.get(edge) + slot * 0.7;
+        }
+        const spots = route.spots || labelSpots(route, source, target, edge.route).map((spot) => ({ ...spot, anchor: route.anchor }));
+        prepared.push({ edge, route, spots });
+      }
+      settleLaneLabels(prepared);
+      for (const item of prepared) {
+        if (!item.edge.label) continue;
+        for (const spot of item.spots) maxX = Math.max(maxX, labelExtent(spot, item.edge.label));
+      }
+      const width = maxX + 16;
+      const spineWidth = nodes.some((node) => node.column > 0) || laneCount > 0 ? labelGutter + nodeWidth + 2 : 0;
       svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
       svg.setAttribute("width", String(width));
       svg.setAttribute("height", String(height));
@@ -1705,43 +1781,33 @@ ${data}
       defs.append(marker);
       svg.append(defs);
       const nodeElements = new Map(nodes.map((node) => [node.id, flowNode(svgNs, node, nodeWidth, lineHeight, padY)]));
-      for (const edge of chart.edges || []) {
-        const source = byId.get(edge.from);
-        const target = byId.get(edge.to);
-        if (!source || !target) continue;
-        const route = flowRoute(edge, source, target, nodeWidth, laneX);
-        const stackKey = `${source.column}:${source.row}`;
-        const stacked = straightTotal.get(stackKey) || 0;
-        if (edge.route === "straight" && stacked > 1) {
-          const slot = (target.y - (source.y + source.height)) / stacked;
-          route.labelY = source.y + source.height + slot * straightIndex.get(edge) + slot * 0.7;
-        }
+      for (const item of prepared) {
         const path = document.createElementNS(svgNs, "path");
         path.setAttribute("class", "flow-edge");
-        path.setAttribute("d", route.d);
+        path.setAttribute("d", item.route.d);
         path.setAttribute("marker-end", `url(#${markerId})`);
-        if (edge.label) {
+        if (item.edge.label) {
           const title = document.createElementNS(svgNs, "title");
-          title.textContent = edge.label;
+          title.textContent = item.edge.label;
           path.append(title);
         }
         svg.append(path);
-        if (!edge.label) continue;
-        for (const spot of labelSpots(route, source, target, edge.route)) {
+        if (!item.edge.label) continue;
+        for (const spot of item.spots) {
           const text = document.createElementNS(svgNs, "text");
           text.setAttribute("class", "flow-label");
           text.setAttribute("x", String(spot.x));
           text.setAttribute("y", String(spot.y));
-          text.setAttribute("text-anchor", route.anchor);
+          text.setAttribute("text-anchor", spot.anchor || item.route.anchor);
           text.setAttribute("tabindex", "0");
           text.setAttribute("role", "button");
-          text.setAttribute("aria-label", `${edge.label}. Show the other end of this arrow.`);
-          text.textContent = edge.label;
+          text.setAttribute("aria-label", `${item.edge.label}. Show the other end of this arrow.`);
+          text.textContent = item.edge.label;
           const showOtherEnd = (event) => {
             if (event.type === "keydown" && event.key !== "Enter" && event.key !== " ") return;
             event.preventDefault();
-            const sourceEl = nodeElements.get(edge.from);
-            const targetEl = nodeElements.get(edge.to);
+            const sourceEl = nodeElements.get(item.edge.from);
+            const targetEl = nodeElements.get(item.edge.to);
             if (!sourceEl || !targetEl) return;
             const destination = viewDistance(targetEl) >= viewDistance(sourceEl) ? targetEl : sourceEl;
             destination.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
@@ -1752,7 +1818,7 @@ ${data}
         }
       }
       for (const node of nodes) svg.append(nodeElements.get(node.id));
-      return { svg, nodes };
+      return { svg, nodes, width, height, spineWidth };
     }
 
     function flowDomId(chartId, node, usedIds) {
@@ -1845,15 +1911,228 @@ ${data}
           anchor: "middle"
         };
       }
-      const x = laneX(edge.lane || 0);
+      const x = laneX(edge);
       const y1 = source.y + source.height / 2;
       const y2 = target.y + target.height / 2;
+      const spots = [{ x: source.x + nodeWidth + 8, y: y1 - 6, anchor: "start" }];
       return {
         d: `M ${source.x + nodeWidth} ${y1} L ${x} ${y1} L ${x} ${y2} L ${target.x + nodeWidth} ${y2}`,
-        labelX: x + 6,
-        labelY: Math.min(y1, y2) + 14,
-        anchor: "start"
+        labelX: spots[0].x,
+        labelY: spots[0].y,
+        anchor: "start",
+        spots
       };
+    }
+
+    function labelExtent(spot, label) {
+      const text = String(label || "").length * 6.6;
+      if (spot.anchor === "end") return spot.x;
+      if (spot.anchor === "middle") return spot.x + text / 2;
+      return spot.x + text;
+    }
+
+    function settleLaneLabels(prepared) {
+      const occupied = [];
+      for (const item of prepared) {
+        if (item.edge.route !== "lane" || !item.edge.label) continue;
+        const kept = [];
+        for (const spot of item.spots) {
+          const same = occupied.some((other) => other.text === item.edge.label && Math.abs(other.x - spot.x) < 12 && Math.abs(other.y - spot.y) < 16);
+          if (same) continue;
+          let y = spot.y;
+          let guard = 0;
+          while (occupied.some((other) => Math.abs(other.x - spot.x) < 12 && Math.abs(other.y - y) < 15) && guard < 6) {
+            y += 15;
+            guard += 1;
+          }
+          spot.y = y;
+          occupied.push({ x: spot.x, y, text: item.edge.label });
+          kept.push(spot);
+        }
+        item.spots = kept;
+      }
+    }
+
+    function flowView(drawn) {
+      const chartBox = document.createElement("div");
+      chartBox.className = "flow-chart";
+      const tools = document.createElement("div");
+      tools.className = "flow-tools";
+      const readout = document.createElement("span");
+      readout.className = "flow-zoom";
+      const frame = document.createElement("div");
+      frame.className = "flow-frame";
+      frame.title = "Drag to move the chart. Hold Ctrl and scroll to zoom.";
+      const canvas = document.createElement("div");
+      canvas.className = "flow-canvas";
+      canvas.append(drawn.svg);
+      const spine = flowSpine(drawn);
+      if (spine) canvas.append(spine);
+      frame.append(canvas);
+      let scale = 1;
+      let fitted = true;
+      let fitting = false;
+      const limits = () => {
+        const available = frame.clientWidth || drawn.width || 1;
+        const fit = !drawn.width ? 1 : Math.min(1, available / drawn.width);
+        return { fit, min: Math.min(0.25, fit), max: 3 };
+      };
+      const pinSpine = () => {
+        if (!spine) return;
+        const overflow = canvas.offsetWidth > frame.clientWidth + 2;
+        const show = overflow && frame.scrollLeft > 1;
+        spine.classList.toggle("active", show);
+        if (show) spine.style.transform = `translateX(${frame.scrollLeft}px)`;
+        drawn.svg.querySelectorAll("[data-pinned]").forEach((label) => {
+          label.style.visibility = show ? "hidden" : "";
+        });
+      };
+      const applyScale = (next, fittingNow) => {
+        const bound = limits();
+        scale = Math.min(bound.max, Math.max(bound.min, next));
+        const width = Math.round((drawn.width || 0) * scale);
+        const height = Math.round((drawn.height || 0) * scale);
+        canvas.style.width = `${width}px`;
+        canvas.style.height = `${height}px`;
+        drawn.svg.style.width = `${width}px`;
+        drawn.svg.style.height = `${height}px`;
+        if (spine) spine.style.width = `${Math.round(drawn.spineWidth * scale)}px`;
+        readout.textContent = `${Math.round(scale * 100)}%`;
+        fitted = fittingNow;
+        pinSpine();
+      };
+      const fit = () => {
+        if (fitting) return;
+        fitting = true;
+        applyScale(limits().fit, true);
+        frame.scrollLeft = 0;
+        frame.scrollTop = 0;
+        const again = limits().fit;
+        if (Math.abs(again - scale) > 0.01) applyScale(again, true);
+        fitting = false;
+        pinSpine();
+      };
+      const zoomBy = (factor) => {
+        const anchorX = frame.scrollLeft + frame.clientWidth / 2;
+        const anchorY = frame.scrollTop + frame.clientHeight / 2;
+        const pointX = anchorX / scale;
+        const pointY = anchorY / scale;
+        applyScale(scale * factor, false);
+        frame.scrollLeft = pointX * scale - frame.clientWidth / 2;
+        frame.scrollTop = pointY * scale - frame.clientHeight / 2;
+        pinSpine();
+      };
+      tools.append(
+        toolButton("Zoom out", () => zoomBy(1 / 1.25)),
+        toolButton("Zoom in", () => zoomBy(1.25)),
+        toolButton("Fit", fit),
+        readout
+      );
+      chartBox.append(tools, frame);
+      frame.addEventListener("scroll", pinSpine);
+      frame.addEventListener("wheel", (event) => {
+        if (!event.ctrlKey && !event.metaKey) return;
+        event.preventDefault();
+        const rect = frame.getBoundingClientRect();
+        const anchorX = frame.scrollLeft + event.clientX - rect.left;
+        const anchorY = frame.scrollTop + event.clientY - rect.top;
+        const pointX = anchorX / scale;
+        const pointY = anchorY / scale;
+        applyScale(scale * (event.deltaY < 0 ? 1.1 : 1 / 1.1), false);
+        frame.scrollLeft = pointX * scale - (event.clientX - rect.left);
+        frame.scrollTop = pointY * scale - (event.clientY - rect.top);
+        pinSpine();
+      }, { passive: false });
+      let drag = null;
+      frame.addEventListener("pointerdown", (event) => {
+        if (event.button !== 0 || event.target.closest("a, .flow-label, button")) return;
+        drag = { x: event.clientX, y: event.clientY, left: frame.scrollLeft, top: frame.scrollTop };
+        frame.classList.add("panning");
+        frame.setPointerCapture(event.pointerId);
+      });
+      frame.addEventListener("pointermove", (event) => {
+        if (!drag) return;
+        frame.scrollLeft = drag.left - (event.clientX - drag.x);
+        frame.scrollTop = drag.top - (event.clientY - drag.y);
+        pinSpine();
+      });
+      const endDrag = () => {
+        drag = null;
+        frame.classList.remove("panning");
+      };
+      frame.addEventListener("pointerup", endDrag);
+      frame.addEventListener("pointercancel", endDrag);
+      if (typeof ResizeObserver !== "undefined") {
+        const observer = new ResizeObserver(() => {
+          if (fitted) fit();
+        });
+        observer.observe(frame);
+      }
+      requestAnimationFrame(fit);
+      return chartBox;
+    }
+
+    function toolButton(label, onClick) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "secondary";
+      button.textContent = label;
+      button.addEventListener("click", onClick);
+      return button;
+    }
+
+    function pathStaysInside(d, limit) {
+      const numbers = String(d || "").match(/-?\d*\.?\d+/g) || [];
+      for (let index = 0; index < numbers.length; index += 2) {
+        if (Number(numbers[index]) > limit + 1) return false;
+      }
+      return numbers.length > 0;
+    }
+
+    function flowSpine(drawn) {
+      if (!drawn.spineWidth || !drawn.height) return null;
+      const svgNs = "http://www.w3.org/2000/svg";
+      const copy = document.createElementNS(svgNs, "svg");
+      copy.setAttribute("class", "flow-spine");
+      copy.setAttribute("viewBox", `0 0 ${drawn.spineWidth} ${drawn.height}`);
+      copy.setAttribute("aria-hidden", "true");
+      const backdrop = document.createElementNS(svgNs, "rect");
+      backdrop.setAttribute("width", String(drawn.spineWidth));
+      backdrop.setAttribute("height", String(drawn.height));
+      backdrop.setAttribute("fill", "#fff");
+      copy.append(backdrop);
+      drawn.svg.querySelectorAll("path.flow-edge").forEach((edge) => {
+        if (!pathStaysInside(edge.getAttribute("d"), drawn.spineWidth)) return;
+        copy.append(edge.cloneNode(true));
+      });
+      const rule = document.createElementNS(svgNs, "line");
+      rule.setAttribute("x1", String(drawn.spineWidth - 1));
+      rule.setAttribute("x2", String(drawn.spineWidth - 1));
+      rule.setAttribute("y1", "0");
+      rule.setAttribute("y2", String(drawn.height));
+      rule.setAttribute("stroke", "#ddd4c4");
+      copy.append(rule);
+      for (const node of drawn.nodes) {
+        if ((node.column || 0) !== 0 || !node.domId) continue;
+        const original = drawn.svg.querySelector(`[id="${node.domId}"]`);
+        if (!original) continue;
+        const clone = original.cloneNode(true);
+        clone.removeAttribute("id");
+        copy.append(clone);
+      }
+      drawn.svg.querySelectorAll(".flow-label").forEach((label) => {
+        if (Number(label.getAttribute("x")) > drawn.spineWidth) return;
+        label.dataset.pinned = "true";
+        const clone = label.cloneNode(true);
+        clone.removeAttribute("tabindex");
+        clone.removeAttribute("role");
+        clone.addEventListener("click", (event) => {
+          event.preventDefault();
+          label.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+        });
+        copy.append(clone);
+      });
+      return copy;
     }
 
     function flowNode(svgNs, node, nodeWidth, lineHeight, padY) {
