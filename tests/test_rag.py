@@ -1856,6 +1856,8 @@ class WebTest(unittest.TestCase):
             self.assertEqual(response.status, 200)
             self.assertIn("Impact", page)
             self.assertIn("Search", page)
+            self.assertIn('role="tablist"', page)
+            self.assertIn('role="tab"', page)
             self.assertIn('data-mode="flow"', page)
             self.assertIn(">Flow</button>", page)
             self.assertIn('data-mode="features"', page)
