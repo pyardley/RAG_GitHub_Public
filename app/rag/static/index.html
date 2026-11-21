@@ -345,29 +345,33 @@
       padding: 0.4rem 0.85rem; background: #1c2a24; color: #c5d0c8;
       font: 0.78rem/1.4 ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
     }
-    .history-delta { color: #8fd6a8; }
+    .history-delta { color: #c5d0c8; }
+    .history-added { color: #9cf0b8; font-weight: 650; }
+    .history-removed { color: #ffb4a6; font-weight: 650; }
     .history-code { min-width: min-content; padding: 0.35rem 0 0.6rem; }
+    .history-code.has-diff .hline-same { opacity: 0.42; }
     .hline {
       display: flex; gap: 0.45rem; padding: 0 0.85rem; white-space: pre;
       font: 0.82rem/1.45 ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
     }
     .hnum { flex: 0 0 2.8rem; text-align: right; color: #8d9a90; user-select: none; }
-    .hmark { flex: 0 0 0.8rem; color: #8fd6a8; }
+    .hmark { flex: 0 0 0.8rem; color: #8fd6a8; font-weight: 700; }
     .htext { flex: 1 0 auto; }
-    .hline-add { background: rgba(116, 196, 140, 0.22); box-shadow: inset 3px 0 0 #6fbf8b; }
-    .hline-del { background: rgba(214, 112, 90, 0.24); box-shadow: inset 3px 0 0 #e08a7a; }
-    .hline-del .hmark { color: #f0b0a4; }
+    .hline-add { background: rgba(126, 214, 150, 0.48); box-shadow: inset 6px 0 0 #9cf0b8; }
+    .hline-add .hmark { color: #d8ffe6; }
+    .hline-add .htext { color: #f4fff7; }
+    .hline-del { background: rgba(224, 112, 96, 0.48); box-shadow: inset 6px 0 0 #ffb4a6; }
+    .hline-del .hmark { color: #ffe0d8; }
+    .hline-del .htext { color: #fff1ed; text-decoration: line-through; text-decoration-color: #ffb4a6; }
     .hline-enter { animation: h-enter 0.48s ease both; }
     .hline-arrive { animation: h-arrive 0.45s ease both; }
     .hline-leave { overflow: hidden; animation: h-leave 0.42s ease forwards; }
-    .hline-settle { animation: h-settle 1.05s ease forwards; }
     .history-empty { margin: 0; padding: 1rem 0.9rem 1.1rem; color: #c5d0c8; }
     @keyframes h-arrive { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
     @keyframes h-enter { from { opacity: 0; transform: translateY(-0.35rem); } to { opacity: 1; transform: none; } }
     @keyframes h-leave { to { opacity: 0; transform: translateX(8px); max-height: 0; } }
-    @keyframes h-settle { to { background-color: transparent; box-shadow: inset 3px 0 0 transparent; } }
     @media (prefers-reduced-motion: reduce) {
-      .hline-enter, .hline-arrive, .hline-leave, .hline-settle, .history-rail-fill { animation: none; transition: none; }
+      .hline-enter, .hline-arrive, .hline-leave, .history-rail-fill { animation: none; transition: none; }
     }
   </style>
 </head>
@@ -2738,6 +2742,8 @@ ${data}
       const mark = document.createElement("span");
       mark.className = "hmark";
       mark.textContent = op.kind === "add" ? "+" : op.kind === "del" ? "−" : "";
+      if (op.kind === "add") row.title = "Added in this commit";
+      if (op.kind === "del") row.title = "Removed in this commit";
       const code = document.createElement("code");
       code.className = "htext";
       code.textContent = op.text === "" ? " " : op.text;
@@ -2748,6 +2754,7 @@ ${data}
     function historyCode(ops) {
       const code = document.createElement("div");
       code.className = "history-code";
+      if (ops.some((op) => op.kind === "add" || op.kind === "del")) code.classList.add("has-diff");
       ops.forEach((op) => code.append(lineRow(op)));
       return code;
     }
@@ -2907,61 +2914,64 @@ ${data}
         fill.style.width = `${(index / span) * 100}%`;
       }
 
-      function showSettled(version, summary) {
-        const lines = versionLines(version);
-        const code = stage.querySelector(".history-code");
-        if (code) code.remove();
-        stage.querySelector(".history-empty")?.remove();
-        if (!lines || !lines.length) {
-          const empty = document.createElement("p");
-          empty.className = "history-empty";
-          empty.textContent = omittedCopy(version);
-          stage.append(empty);
-        } else {
-          stage.append(historyCode(lines.map((text, line) => ({ kind: "same", text, line: line + 1 }))));
+      function revealChange(code) {
+        const hit = code.querySelector(".hline-add, .hline-del");
+        if (!hit) {
+          stage.scrollTo({ top: 0, behavior: "auto" });
+          return;
         }
-        delta.textContent = summary;
+        const top = hit.getBoundingClientRect().top - stage.getBoundingClientRect().top + stage.scrollTop;
+        const bar = stage.querySelector(".history-filebar")?.offsetHeight || 0;
+        stage.scrollTo({
+          top: Math.max(0, top - bar - 10),
+          behavior: reduced ? "auto" : "smooth",
+        });
       }
 
-      function finish(step, code) {
-        if (step !== token) return;
-        code.querySelectorAll(".hline-del").forEach((row) => row.remove());
-        const remaining = [...code.querySelectorAll(".hline")];
-        remaining.forEach((row, line) => {
-          row.querySelector(".hnum").textContent = String(line + 1);
-          const mark = row.querySelector(".hmark");
-          if (mark.textContent) mark.textContent = "";
-          if (row.classList.contains("hline-add")) row.classList.add("hline-settle");
-        });
-        if (!remaining.length) {
-          const empty = document.createElement("p");
-          empty.className = "history-empty";
-          empty.textContent = omittedCopy(versions[index]);
-          stage.append(empty);
+      function writeDelta(change, opening) {
+        delta.replaceChildren();
+        if (!change) {
+          delta.textContent = opening ? "Oldest in this list" : "";
+          return;
         }
-        if (playing) schedule(step);
+        if (change.added === 0 && change.removed === 0) {
+          delta.textContent = "No line changes";
+          return;
+        }
+        if (change.added) {
+          const added = document.createElement("span");
+          added.className = "history-added";
+          added.textContent = `${change.added} added`;
+          delta.append(added);
+        }
+        if (change.added && change.removed) delta.append(document.createTextNode(" · "));
+        if (change.removed) {
+          const removed = document.createElement("span");
+          removed.className = "history-removed";
+          removed.textContent = `${change.removed} removed`;
+          delta.append(removed);
+        }
+      }
+
+      function changeOps(baseline, lines) {
+        if (lines && baseline) return diffLines(baseline, lines);
+        if (lines) return lines.map((text, line) => ({ kind: "same", text, line: line + 1 }));
+        if (baseline) return baseline.map((text, line) => ({ kind: "del", text, line: line + 1 }));
+        return [];
       }
 
       function paint(next, animate) {
         const step = ++token;
         clearTimeout(timer);
-        const previous = index === null ? null : versions[index];
         const opening = index === null;
-        const moved = index !== null && next !== index;
         index = next;
         updateChrome();
         const version = versions[next];
-        const fromLines = moved ? versionLines(previous) : null;
+        const baseline = next > 0 ? versionLines(versions[next - 1]) : null;
         const toLines = versionLines(version);
-        const ownChange = next > 0 ? counts(versionLines(versions[next - 1]), toLines) : null;
-        const change = animate && moved ? counts(fromLines, toLines) : ownChange;
-        const summary = !change
-          ? (next === 0 ? "Oldest in this list" : "")
-          : change.added === 0 && change.removed === 0
-            ? "No line changes"
-            : `${change.added} added · ${change.removed} removed`;
-        delta.textContent = summary;
-        const canAnimate = live && animate && !reduced && (moved || opening);
+        const change = next > 0 ? counts(baseline, toLines) : null;
+        writeDelta(change, next === 0);
+        const canAnimate = live && animate && !reduced;
         stage.querySelector(".history-code")?.remove();
         stage.querySelector(".history-empty")?.remove();
         if (opening && canAnimate && toLines && toLines.length) {
@@ -2973,30 +2983,30 @@ ${data}
           stage.append(code);
           return;
         }
-        if (!canAnimate || !fromLines) {
-          showSettled(version, summary);
+        const ops = changeOps(baseline, toLines);
+        if (!ops.length) {
+          const empty = document.createElement("p");
+          empty.className = "history-empty";
+          empty.textContent = omittedCopy(version);
+          stage.append(empty);
           if (playing) schedule(step);
           return;
         }
-        const ops = toLines
-          ? diffLines(fromLines, toLines)
-          : fromLines.map((text, line) => ({ kind: "del", text, line: line + 1 }));
         const code = historyCode(ops);
-        stage.append(code);
-        [...code.querySelectorAll(".hline-add")].forEach((row, position) => {
-          row.classList.add("hline-enter");
-          row.style.animationDelay = `${Math.min(position, 24) * 16}ms`;
-        });
-        const leaving = [...code.querySelectorAll(".hline-del")];
-        const hold = Math.min(1100, 420 + Math.max(change.added, change.removed) * 45);
-        timer = setTimeout(() => {
-          if (step !== token) return;
-          leaving.forEach((row) => {
-            row.style.maxHeight = `${row.offsetHeight}px`;
-            row.classList.add("hline-leave");
+        if (canAnimate && !opening) {
+          [...code.querySelectorAll(".hline-add, .hline-del")].forEach((row, position) => {
+            row.classList.add("hline-enter");
+            row.style.animationDelay = `${Math.min(position, 24) * 16}ms`;
           });
-          timer = setTimeout(() => finish(step, code), leaving.length ? 460 : 30);
-        }, hold);
+        }
+        stage.append(code);
+        revealChange(code);
+        if (playing) {
+          const size = change ? Math.max(change.added, change.removed) : 0;
+          timer = setTimeout(() => {
+            if (step === token && playing) schedule(step);
+          }, Math.min(1400, 700 + size * 35));
+        }
       }
 
       function schedule(step) {
