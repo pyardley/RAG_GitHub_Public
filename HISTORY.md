@@ -1,8 +1,8 @@
 # History of changes
 
-Code RAG answers questions about indexed GitHub repositories. The index is Postgres with pgvector, the app runs in Docker, and the page is at http://127.0.0.1:8080. This is the history of `main` from the first commit on 5 November 2026 through 20 November 2026: 64 commits.
+Code RAG answers questions about indexed GitHub repositories. The index is Postgres with pgvector, the app runs in Docker, and the page is at http://127.0.0.1:8080. This is the history of `main` from the first commit on 5 November 2026 through 21 November 2026: 73 commits.
 
-The work falls into six stretches: a searchable index and a page, sharper lookup of Cucumber and directories, an impact graph, embeddings and an evaluation, journey charts, then Features, Testing, and the demo.
+The work falls into seven stretches: a searchable index and a page, sharper lookup of Cucumber and directories, an impact graph, embeddings and an evaluation, journey charts, Features, Testing, and the demo, then a History tab for one file or one block.
 
 ## 5–6 November: an index, a page, and a feature skill
 
@@ -75,3 +75,13 @@ Flow starts with the Help with Fees question journeys (`b0b0af7`). Each box open
 `9e3f5b5` turns Query, Impact, Search, Flow, Features, and Testing into tabs. `2b05a00` redraws flow charts so they fit the frame: narrower boxes, return arrows beside the steps, zoom, and the main column pinned when the chart is scrolled sideways. `0cf6e16` replaces the demo with one that includes Features, Testing, and opening GitHub from an Impact reference and from a journey box.
 
 `56961ab` fixes the command Testing gives for a named feature file. `dob_married.feature` is stored as `features/dob/dob_married.feature`. The answer had been dropping the `dob` directory, and on one machine it also copied a doubled `cucumber` from the features README. The command is now `bundle exec cucumber` once, followed by the indexed path.
+
+## 21 November: a file's own history
+
+`b0b44c0` writes this file, so the sequence of changes is in one place.
+
+`caf30f3` adds a History tab. Choose one repository and a path. The page steps through the recent commits that touch that file, oldest of that window first, at most twelve. The bytes come from a bare clone of the branch, kept apart from the indexed checkout, so the tab reads git locally. Step backward, Step forward, and Play move through the commits. Each step names the author and the time. The indexed commit is marked when it is one of them, and the list includes commits newer than the index.
+
+`89db49a` keeps the changed lines marked after the step lands. Added lines stay green, removed lines stay struck out, the rest of the file is dimmed, and the view scrolls to the first changed line.
+
+`25a6b4f` follows one named block. A name such as `address_lookup_access_token` in `app/helpers/application_helper.rb` keeps only the commits that change that method, class, or scenario, and each step shows that block alone. On Help with Fees that method appears in a single commit, `RST-3163 address lookup`, at line 14. Later edits to the rest of the helper stay out of the list. A name that matches two declarations asks for the full symbol, such as `ApplicationHelper#address_lookup_access_token`.

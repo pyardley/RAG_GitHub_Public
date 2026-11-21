@@ -52,7 +52,7 @@ Only one index is built at a time. That holds whether the ingest was started fro
 docker compose up -d
 ```
 
-Open http://localhost:8080. Switch between Query, Impact, Search, Flow, Features, and Testing, choose an indexed repository, and run it. Features finds an existing Cucumber step, or the steps to reuse when writing a feature. Testing explains how to run the Cucumber suite under `features/`, a group of scenarios, or one scenario, and how to debug a scenario that is being written. The commands are quoted from that repository. RSpec and Minitest are left out. A pasted Gherkin line is matched as that line. A request to write a feature is searched as the behaviour, and the written answer quotes only steps that appear in the passages. Flow draws the main journeys it can find in the selected repository. Help with Fees comes from the application's question list or its redirects. A test suite comes from its page objects and the journey that clicks through them, which is how the Employment Tribunals claim and response are drawn. A start path such as `/steps/opening/start_or_continue` draws the journey an application chooses in its decision tree, which is how the C100 child arrangements application is drawn. Each box opens the file for that step on the indexed commit. A corner mark is a step a feature or step definition names. When the branch has newer commits, the chart lists steps added, removed, or rewired since the indexed commit. **Ask about this journey** follows an arrow when the question names a step and its answer, and otherwise searches only the files for the steps on that chart. Each passage links to those lines in the indexed commit on GitHub. **Save as HTML** downloads that result as one file. It starts with a table of contents, then the question or target, the written answer, and each passage with its file, lines, and code. An impact result includes the same relationship diagram as the page, so a file's scenarios stay in one box until you choose it. A dashed arrow is a possible call. The file stays on your machine. The app does not keep a copy. Index another GitHub repository from the same page. A first index takes several minutes and the page shows its progress.
+Open http://localhost:8080. Switch between Query, Impact, Search, Flow, Features, Testing, and History, choose an indexed repository, and run it. Features finds an existing Cucumber step, or the steps to reuse when writing a feature. Testing explains how to run the Cucumber suite under `features/`, a group of scenarios, or one scenario, and how to debug a scenario that is being written. The commands are quoted from that repository. RSpec and Minitest are left out. A pasted Gherkin line is matched as that line. A request to write a feature is searched as the behaviour, and the written answer quotes only steps that appear in the passages. History steps through one file on that repository's branch. Choose one repository and a path such as `app/helpers/application_helper.rb`. Leave Block blank for the whole file. A name such as `address_lookup_access_token` keeps only the commits that change that method, class, or scenario, and each step shows that block alone. The versions are read from a local git clone of the branch, including commits newer than the index, and the indexed checkout stays on the commit that was embedded. The page shows at most twelve versions. For a block it reads further back through the file and keeps the commits that change that block, still at most twelve. Step backward, Step forward, and Play move through them. Each step names the author and the time. Added lines stay green and removed lines stay struck out. The indexed commit is marked when it is one of those versions. Flow draws the main journeys it can find in the selected repository. Help with Fees comes from the application's question list or its redirects. A test suite comes from its page objects and the journey that clicks through them, which is how the Employment Tribunals claim and response are drawn. A start path such as `/steps/opening/start_or_continue` draws the journey an application chooses in its decision tree, which is how the C100 child arrangements application is drawn. Each box opens the file for that step on the indexed commit. A corner mark is a step a feature or step definition names. When the branch has newer commits, the chart lists steps added, removed, or rewired since the indexed commit. **Ask about this journey** follows an arrow when the question names a step and its answer, and otherwise searches only the files for the steps on that chart. Each passage links to those lines in the indexed commit on GitHub. **Save as HTML** downloads that result as one file. It starts with a table of contents, then the question or target, the written answer, and each passage with its file, lines, and code. An impact result includes the same relationship diagram as the page, so a file's scenarios stay in one box until you choose it. A dashed arrow is a possible call. The file stays on your machine. The app does not keep a copy. Index another GitHub repository from the same page. A first index takes several minutes and the page shows its progress.
 
 When the page opens, it asks GitHub which commit each indexed branch is at. A repository whose branch has moved on is marked "branch has newer commits" in the list. Choose it to see both commits, and use **Update the index** to index the branch again. The app keeps GitHub's answer for ten minutes, and a branch that cannot be read is left unmarked.
 
@@ -105,7 +105,7 @@ Search covers every indexed repository. Each repository is searched on its own, 
 
 ## Examples
 
-Paste a query into Query on the page, or pass the same text to `query`. Paste an impact target into Impact, or pass it to `impact`. Paste a Gherkin step, or a feature to write, into Features, or pass it to `features`. Ask Testing, or `testing`, how to run or debug the Cucumber suite. These are written for [hmcts/hwf-publicapp](https://github.com/hmcts/hwf-publicapp), except the claim factory, which is run against [hmcts/et-full-system](https://github.com/hmcts/et-full-system). On the command line, add `--repo hmcts/hwf-publicapp` when both Help with Fees repositories are indexed and the request should stay in one of them.
+Paste a query into Query on the page, or pass the same text to `query`. Paste an impact target into Impact, or pass it to `impact`. Paste a Gherkin step, or a feature to write, into Features, or pass it to `features`. Ask Testing, or `testing`, how to run or debug the Cucumber suite. On History, choose one repository and a file path. Leave Block blank, or name a method, class, or scenario. History is on the page only. These are written for [hmcts/hwf-publicapp](https://github.com/hmcts/hwf-publicapp), except the claim factory, which is run against [hmcts/et-full-system](https://github.com/hmcts/et-full-system). On the command line, add `--repo hmcts/hwf-publicapp` when both Help with Fees repositories are indexed and the request should stay in one of them.
 
 ### Queries
 
@@ -244,6 +244,22 @@ On the command line:
 ```powershell
 docker compose run --rm -T rag testing "How do I run the Cucumber suite, features/fee.feature, and one scenario, and how do I debug a scenario I am writing?" --repo hmcts/hwf-publicapp
 ```
+
+### History
+
+Choose one indexed repository, then a path in that repository. The file is read from a separate clone of the branch, so the indexed checkout stays on the commit that was embedded. A private repository uses the same `GITHUB_TOKEN` as ingest.
+
+```text
+app/helpers/application_helper.rb
+```
+
+With Block left blank, the page steps through the twelve most recent commits that touch the file, from the oldest of that window. On `hmcts/hwf-publicapp` that run of `app/helpers/application_helper.rb` starts with the Welsh copy change in March 2017. Added lines stay green, with a `+` in the gutter. Removed lines stay on a red background and struck out. The rest of the file is dimmed, and the view scrolls to the first changed line. **Open this commit** opens that version on GitHub.
+
+```text
+address_lookup_access_token
+```
+
+The same path with that block name shows `ApplicationHelper#address_lookup_access_token` and nothing else in the file. The only commit that changes it is `RST-3163 address lookup`, which adds the method at line 14. Later edits to the rest of the helper are left out. A name that matches more than one declaration has to be the full symbol, such as `ApplicationHelper#address_lookup_access_token`. The block follows a method, class, or scenario in Ruby, Python, JavaScript, TypeScript, Java, or Gherkin.
 
 ## Logs
 
@@ -414,7 +430,7 @@ docker compose run --rm --no-deps --entrypoint python -v "${PWD}/eval:/eval" rag
 
 ## Tests
 
-The unit tests cover chunking, file selection, reciprocal rank fusion, the index and fusion options, and the schema migration. They do not need Docker. When the local index is running, one test also checks that a search for `limit` still returns a passage about a threshold, and skips that check when the index is stopped:
+The unit tests cover chunking, file selection, reciprocal rank fusion, the index and fusion options, file history, and the schema migration. They do not need Docker. When the local index is running, one test also checks that a search for `limit` still returns a passage about a threshold, and skips that check when the index is stopped:
 
 ```powershell
 python -m unittest discover -s tests -v
