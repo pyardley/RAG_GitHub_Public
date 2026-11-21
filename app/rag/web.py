@@ -31,6 +31,7 @@ from rag.edges import POSSIBLE_ARROW, prepare_call_edges
 from rag.features import matched_step_texts, retrieve_features
 from rag.testing import command_phrases, retrieve_testing
 from rag.files import parse_repo
+from rag.history import HistoryError, file_history
 from rag.flows import charts_for, unmapped_message
 from rag.gitrepo import checkout_dir, list_branches, remote_commit, tip_checkout
 from rag.journey import apply_journey_diff, branch_answers, journey_scopes, mark_visits
@@ -106,6 +107,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/flow": run_flow,
             "/api/features": run_features,
             "/api/testing": run_testing,
+            "/api/history": run_history,
             "/api/ingest": start_ingest,
             "/api/remove": remove_index,
         }
@@ -411,6 +413,39 @@ def run_impact(body: dict) -> tuple[int, dict]:
         "answer_error": answer_error,
         "model": _model_view(),
     }
+
+
+def run_history(body: dict) -> tuple[int, dict]:
+    """Recent versions of one file on the indexed repository's branch."""
+    repo = _optional_repo(body)
+    path = _required_text(body, "path", "Enter a file path")
+    if not repo:
+        raise ValueError("Choose one repository")
+    try:
+        conn = connect()
+    except SystemExit as exc:
+        return 503, {"error": _failure_text(exc)}
+    try:
+        repositories = resolve_repositories(conn, repo)
+    except SystemExit as exc:
+        return 400, {"error": _failure_text(exc)}
+    finally:
+        conn.close()
+    if len(repositories) != 1:
+        raise ValueError("Choose one repository")
+    item = repositories[0]
+    try:
+        history = file_history(
+            item["name"],
+            str(item.get("branch") or ""),
+            path,
+            str(item.get("commit_sha") or ""),
+            url=str(item.get("url") or ""),
+        )
+    except HistoryError as exc:
+        logger.warning("history failed for %s: %s", item.get("name"), exc)
+        return 502, {"error": str(exc)}
+    return 200, {"repositories": [_scope(item)], **history}
 
 
 def run_flow(body: dict) -> tuple[int, dict]:

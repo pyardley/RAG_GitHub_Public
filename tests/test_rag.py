@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -34,8 +35,9 @@ from rag.gitrepo import branch_list, default_branch_name
 from rag.journey import branch_answers, diff_chart, journey_scopes, mark_visits
 from rag.flows import charts_for, parse_navigation, question_texts
 from rag.features import behaviour_text, gherkin_lines, is_drafting_request, matched_step_texts, retrieve_features
+from rag.history import HistoryError, file_history
 from rag.testing import command_phrases, resolve_feature_paths, retrieve_testing
-from rag.web import Handler, _progress_view, github_blob_url, public_status, run_features, run_flow, run_query, run_testing, start_ingest
+from rag.web import Handler, _progress_view, github_blob_url, public_status, run_features, run_flow, run_history, run_query, run_testing, start_ingest
 from unittest.mock import patch
 
 from rag.plan import parse_queries, question_needs_plan
@@ -1863,6 +1865,186 @@ class AnswerTest(unittest.TestCase):
         self.assertNotIn("app/file_11.rb", passages)
 
 
+class HistoryTest(unittest.TestCase):
+    def test_versions_run_from_older_to_newer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _git_init(root)
+            older = _commit_file(root, "app/helpers/application_helper.rb", b"def older\n", "Older helper")
+            newer = _commit_file(root, "app/helpers/application_helper.rb", b"def newer\n", "Newer helper")
+            found = file_history(
+                "hmcts/hwf-publicapp",
+                "master",
+                "app/helpers/application_helper.rb",
+                older,
+                root=root,
+            )
+        self.assertEqual([item["sha"] for item in found["versions"]], [older, newer])
+        self.assertEqual(found["versions"][0]["text"], "def older\n")
+        self.assertEqual(found["versions"][0]["author"], "Ada")
+        self.assertTrue(found["versions"][0]["date"])
+        self.assertTrue(found["versions"][0]["indexed"])
+        self.assertFalse(found["versions"][1]["indexed"])
+        self.assertFalse(found["truncated"])
+        self.assertEqual(found["path"], "app/helpers/application_helper.rb")
+        self.assertIn(older, found["versions"][0]["url"])
+
+    def test_a_deleted_version_is_marked_and_a_blob_url_is_a_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _git_init(root)
+            _commit_file(root, "app/helpers/application_helper.rb", b"keep\n", "Add the helper")
+            _delete_file(root, "app/helpers/application_helper.rb", "Remove the helper")
+            found = file_history(
+                "hmcts/hwf-publicapp",
+                "master",
+                "https://github.com/hmcts/hwf-publicapp/blob/master/app/helpers/application_helper.rb#L4",
+                root=root,
+            )
+        self.assertEqual(found["path"], "app/helpers/application_helper.rb")
+        self.assertEqual(found["versions"][0]["text"], "keep\n")
+        self.assertEqual(found["versions"][1]["omitted"], "deleted")
+        self.assertIsNone(found["versions"][1]["text"])
+
+    def test_a_binary_or_huge_file_is_left_out(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _git_init(root)
+            binary = _commit_file(root, "app/helper.rb", b"\0not text", "Binary")
+            huge = _commit_file(root, "app/helper.rb", b"x" * 60_001, "Huge")
+            found = file_history("hmcts/hwf-publicapp", "master", "app/helper.rb", root=root)
+        by_sha = {item["sha"]: item["omitted"] for item in found["versions"]}
+        self.assertEqual(by_sha[binary], "binary")
+        self.assertEqual(by_sha[huge], "too large")
+
+    def test_a_shallow_clone_fetches_older_commits_from_its_remote(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            work = base / "work"
+            _git_init(work)
+            for number in range(4):
+                _commit_file(work, "README", f"{number}\n".encode(), f"readme {number}")
+            _commit_file(work, "app/helper.rb", b"one\n", "Add helper")
+            _commit_file(work, "app/helper.rb", b"two\n", "Edit helper")
+            remote = base / "remote"
+            shallow = base / "shallow"
+            subprocess.run(["git", "clone", "--bare", str(work), str(remote)], check=True, capture_output=True)
+            subprocess.run(
+                ["git", "clone", "--depth", "1", "--branch", "master", str(remote), str(shallow)],
+                check=True,
+                capture_output=True,
+            )
+            found = file_history("hmcts/hwf-publicapp", "master", "app/helper.rb", root=shallow)
+        self.assertEqual([item["text"] for item in found["versions"]], ["one\n", "two\n"])
+        self.assertFalse(found["truncated"])
+
+    def test_only_the_newest_window_is_returned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _git_init(root)
+            for number in range(13):
+                _commit_file(root, "app/fee.rb", f"{number}\n".encode(), f"change {number}")
+            found = file_history("hmcts/hwf-publicapp", "master", "app/fee.rb", root=root)
+        self.assertTrue(found["truncated"])
+        self.assertEqual(len(found["versions"]), 12)
+        self.assertEqual(found["versions"][0]["text"], "1\n")
+        self.assertEqual(found["versions"][-1]["text"], "12\n")
+
+    def test_a_path_cannot_leave_the_repository(self):
+        with self.assertRaises(ValueError):
+            file_history("hmcts/hwf-publicapp", "master", "../secrets")
+        with self.assertRaises(ValueError):
+            file_history("not a repo", "master", "app/fee.rb")
+
+    def test_a_missing_repository_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(HistoryError) as caught:
+                file_history("hmcts/hwf-publicapp", "master", "app/fee.rb", root=Path(tmp))
+        self.assertIn("not available", str(caught.exception))
+
+    def test_history_needs_one_repository(self):
+        with self.assertRaises(ValueError):
+            run_history({"path": "app/fee.rb"})
+
+    @patch("rag.web.file_history", side_effect=HistoryError("The file history could not be read."))
+    @patch("rag.web.resolve_repositories")
+    @patch("rag.web.connect")
+    def test_a_github_failure_is_reported(self, connect, resolve, _history):
+        connect.return_value.close = lambda: None
+        resolve.return_value = [{
+            "name": "hmcts/hwf-publicapp",
+            "branch": "master",
+            "commit_sha": "b3063dc39ed1",
+        }]
+        status, payload = run_history({
+            "repo": "hmcts/hwf-publicapp",
+            "path": "app/helpers/application_helper.rb",
+        })
+        self.assertEqual(status, 502)
+        self.assertIn("history", payload["error"])
+
+
+def _git_init(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    completed = subprocess.run(
+        ["git", "init", "-b", "master", str(path)],
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        subprocess.run(["git", "init", str(path)], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(path), "checkout", "-b", "master"], check=True, capture_output=True)
+
+
+def _git_env() -> dict[str, str]:
+    return {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "Ada",
+        "GIT_AUTHOR_EMAIL": "ada@example.com",
+        "GIT_COMMITTER_NAME": "Ada",
+        "GIT_COMMITTER_EMAIL": "ada@example.com",
+    }
+
+
+def _commit_file(root: Path, path: str, content: bytes, message: str) -> str:
+    destination = root / path
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(content)
+    subprocess.run(
+        ["git", "-C", str(root), "-c", "core.autocrlf=false", "add", "--", path],
+        check=True,
+        capture_output=True,
+        env=_git_env(),
+    )
+    subprocess.run(
+        ["git", "-C", str(root), "-c", "core.autocrlf=false", "commit", "-m", message],
+        check=True,
+        capture_output=True,
+        env=_git_env(),
+    )
+    return subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def _delete_file(root: Path, path: str, message: str) -> None:
+    subprocess.run(
+        ["git", "-C", str(root), "rm", "--", path],
+        check=True,
+        capture_output=True,
+        env=_git_env(),
+    )
+    subprocess.run(
+        ["git", "-C", str(root), "commit", "-m", message],
+        check=True,
+        capture_output=True,
+        env=_git_env(),
+    )
+
+
 class WebTest(unittest.TestCase):
     def test_github_link_points_at_the_indexed_lines(self):
         url = github_blob_url(
@@ -1917,6 +2099,13 @@ class WebTest(unittest.TestCase):
             self.assertIn(">Features</button>", page)
             self.assertIn('data-mode="testing"', page)
             self.assertIn(">Testing</button>", page)
+            self.assertIn('data-mode="history"', page)
+            self.assertIn(">History</button>", page)
+            self.assertIn("function renderHistory", page)
+            self.assertIn("app/helpers/application_helper.rb", page)
+            self.assertIn("Step backward and Step forward move through the changes", page)
+            self.assertIn('older.textContent = "Step backward"', page)
+            self.assertIn('newer.textContent = "Step forward"', page)
             self.assertIn("quotes only steps already in the suite", page)
             self.assertIn("RSpec, Minitest, and the question planner are not used.", page)
             self.assertIn("Cucumber under features/ only.", page)

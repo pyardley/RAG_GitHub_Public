@@ -167,11 +167,64 @@ def remove_checkout(name: str) -> bool:
     existed = destination.exists()
     if existed:
         shutil.rmtree(destination)
-    parent = destination.parent
-    root = REPOS_DIR.resolve()
-    if parent != root and parent.is_dir() and not any(parent.iterdir()):
-        parent.rmdir()
+    _remove_empty_parents(destination.parent)
+    remove_history_clone(name)
     return existed
+
+
+def history_clone_dir(name: str) -> Path:
+    """Bare clone used to read file history without touching the indexed checkout."""
+    parts = [part for part in name.split("/") if part and part != "."]
+    return _inside_repos(".history", *parts)
+
+
+def remove_history_clone(name: str) -> None:
+    """Delete the history clone for one repository. A missing clone is fine."""
+    destination = history_clone_dir(name)
+    if destination.exists():
+        shutil.rmtree(destination)
+    _remove_empty_parents(destination.parent)
+
+
+def run_git(args: list[str], timeout: float | None = 120) -> str:
+    """Run git outside a repository. The token, when set, is passed only to this process."""
+    return _run(["git", "-c", "safe.directory=*", *args], timeout=timeout)
+
+
+def git_text(repo: Path, args: list[str], timeout: float | None = 120) -> str:
+    """Run git in ``repo`` and return stdout."""
+    return _run(
+        ["git", "-c", "safe.directory=*", "-c", "core.quotepath=false", "-C", str(repo), *args],
+        timeout=timeout,
+    )
+
+
+def git_bytes(repo: Path, args: list[str], timeout: float | None = 60) -> bytes:
+    """Run git in ``repo`` and return stdout bytes, for file contents."""
+    try:
+        completed = subprocess.run(
+            ["git", "-c", "safe.directory=*", "-C", str(repo), *args],
+            check=False,
+            capture_output=True,
+            env=_git_env(),
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("git did not answer in time") from exc
+    if completed.returncode != 0:
+        message = (completed.stderr or b"git failed").decode("utf-8", "replace").strip()
+        if GITHUB_TOKEN:
+            message = message.replace(GITHUB_TOKEN, "***")
+        raise RuntimeError(message or "git failed")
+    return completed.stdout
+
+
+def _remove_empty_parents(start: Path) -> None:
+    root = REPOS_DIR.resolve()
+    parent = start
+    while parent != root and parent.is_dir() and not any(parent.iterdir()):
+        parent.rmdir()
+        parent = parent.parent
 
 
 def _destination(name: str) -> Path:

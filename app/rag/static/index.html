@@ -128,7 +128,7 @@
       background: var(--paper);
     }
     .task .ask { margin-top: 0; }
-    @media (max-width: 640px) {
+    @media (max-width: 720px) {
       .modes {
         flex-wrap: wrap;
         border-bottom: 1px solid var(--line);
@@ -309,6 +309,66 @@
     .journey-ask textarea { min-height: 4.5rem; }
     .journey-ask .hint { margin: 0; }
     .journey-result { display: grid; gap: 0.6rem; }
+    .history { margin-top: 0.35rem; overflow: hidden; }
+    .history-kicker, .history-meta, .history-note { margin: 0; color: var(--muted); font-size: 0.85rem; }
+    .history-who { color: var(--ink); font-weight: 650; }
+    .history-kicker { margin-bottom: 0.35rem; }
+    .history-message { margin: 0.15rem 0 0.25rem; font-size: 1.2rem; letter-spacing: -0.02em; line-height: 1.35; }
+    .history-meta a { color: var(--accent); text-underline-offset: 0.18em; }
+    .history-note { margin-top: 0.45rem; }
+    .history-transport { display: flex; gap: 0.55rem; align-items: center; margin: 0.85rem 0 0.7rem; }
+    .history-transport > button { padding: 0.35rem 0.75rem; font-size: 0.85rem; }
+    .history-rail { position: relative; flex: 1; min-width: 6rem; height: 1.4rem; }
+    .history-rail-fill {
+      position: absolute; left: 0; top: 50%; height: 2px; width: 0;
+      background: var(--accent); transform: translateY(-50%);
+      transition: width 0.45s ease;
+    }
+    .history-rail::before {
+      content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 2px;
+      background: var(--line); transform: translateY(-50%);
+    }
+    .history-dots { position: relative; display: flex; justify-content: space-between; align-items: center; height: 100%; margin: 0; padding: 0; list-style: none; }
+    .history-dots button {
+      width: 0.7rem; height: 0.7rem; padding: 0; border-radius: 999px;
+      background: #fff; color: transparent; border: 2px solid var(--line);
+      font-size: 0;
+    }
+    .history-dots button[aria-current="step"] { width: 0.95rem; height: 0.95rem; background: var(--accent); border-color: var(--accent); }
+    .history-dots button.indexed { box-shadow: 0 0 0 2px var(--paper), 0 0 0 4px var(--warn); }
+    .history-stage {
+      border: 1px solid var(--line); border-radius: 10px; overflow: auto;
+      max-height: 70vh; background: var(--code); color: var(--code-ink);
+    }
+    .history-filebar {
+      position: sticky; top: 0; z-index: 1; display: flex; justify-content: space-between; gap: 1rem;
+      padding: 0.4rem 0.85rem; background: #1c2a24; color: #c5d0c8;
+      font: 0.78rem/1.4 ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
+    }
+    .history-delta { color: #8fd6a8; }
+    .history-code { min-width: min-content; padding: 0.35rem 0 0.6rem; }
+    .hline {
+      display: flex; gap: 0.45rem; padding: 0 0.85rem; white-space: pre;
+      font: 0.82rem/1.45 ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
+    }
+    .hnum { flex: 0 0 2.8rem; text-align: right; color: #8d9a90; user-select: none; }
+    .hmark { flex: 0 0 0.8rem; color: #8fd6a8; }
+    .htext { flex: 1 0 auto; }
+    .hline-add { background: rgba(116, 196, 140, 0.22); box-shadow: inset 3px 0 0 #6fbf8b; }
+    .hline-del { background: rgba(214, 112, 90, 0.24); box-shadow: inset 3px 0 0 #e08a7a; }
+    .hline-del .hmark { color: #f0b0a4; }
+    .hline-enter { animation: h-enter 0.48s ease both; }
+    .hline-arrive { animation: h-arrive 0.45s ease both; }
+    .hline-leave { overflow: hidden; animation: h-leave 0.42s ease forwards; }
+    .hline-settle { animation: h-settle 1.05s ease forwards; }
+    .history-empty { margin: 0; padding: 1rem 0.9rem 1.1rem; color: #c5d0c8; }
+    @keyframes h-arrive { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+    @keyframes h-enter { from { opacity: 0; transform: translateY(-0.35rem); } to { opacity: 1; transform: none; } }
+    @keyframes h-leave { to { opacity: 0; transform: translateX(8px); max-height: 0; } }
+    @keyframes h-settle { to { background-color: transparent; box-shadow: inset 3px 0 0 transparent; } }
+    @media (prefers-reduced-motion: reduce) {
+      .hline-enter, .hline-arrive, .hline-leave, .hline-settle, .history-rail-fill { animation: none; transition: none; }
+    }
   </style>
 </head>
 <body>
@@ -373,6 +433,7 @@
       <button type="button" role="tab" id="tab-flow" aria-controls="ask" data-mode="flow" aria-selected="false" tabindex="-1">Flow</button>
       <button type="button" role="tab" id="tab-features" aria-controls="ask" data-mode="features" aria-selected="false" tabindex="-1">Features</button>
       <button type="button" role="tab" id="tab-testing" aria-controls="ask" data-mode="testing" aria-selected="false" tabindex="-1">Testing</button>
+      <button type="button" role="tab" id="tab-history" aria-controls="ask" data-mode="history" aria-selected="false" tabindex="-1">History</button>
     </nav>
 
     <form class="ask" id="ask" role="tabpanel" aria-labelledby="tab-query">
@@ -434,11 +495,20 @@
         answer: true,
         k: true,
         hint: "Ask how to run the Cucumber suite under features/, a group of scenarios, or one scenario, and how to debug a scenario you are writing. The answer quotes the commands in this repository. RSpec, Minitest, and the question planner are not used."
+      },
+      history: {
+        label: "File path",
+        placeholder: "app/helpers/application_helper.rb",
+        button: "Show",
+        answer: false,
+        k: false,
+        hint: "Enter a path in the selected repository, such as app/helpers/application_helper.rb. The recent versions of that file are shown from older to newer. Step backward and Step forward move through the changes, and Play walks them in order. Each change shows who made it and when. Versions come from the branch, including commits newer than the index. The indexed commit is marked."
       }
     };
-    const prompts = { query: "", impact: "", search: "", flow: "", features: "", testing: "" };
+    const prompts = { query: "", impact: "", search: "", flow: "", features: "", testing: "", history: "" };
     const queryHint = document.querySelector("#prompt-hint").textContent;
     let mode = "query";
+    let historyStop = () => {};
     let poll = null;
     let currentIngest = null;
     let branchTimer = null;
@@ -538,7 +608,7 @@
       document.querySelector("#fusion-wrap").hidden = !retrieval;
       document.querySelector("#prompt-label").hidden = spec.prompt === false;
       const hint = document.querySelector("#prompt-hint");
-      hint.hidden = next !== "query" && next !== "flow" && next !== "features" && next !== "testing";
+      hint.hidden = next !== "query" && next !== "flow" && next !== "features" && next !== "testing" && next !== "history";
       hint.textContent = next === "query" ? queryHint : spec.hint;
       document.querySelector("#answer-wrap").hidden = !spec.answer;
       document.querySelectorAll(".modes button").forEach((button) => {
@@ -547,6 +617,7 @@
         button.tabIndex = selected ? 0 : -1;
       });
       document.querySelector("#ask").setAttribute("aria-labelledby", `tab-${next}`);
+      stopHistory();
       results.replaceChildren();
       setStatus("");
     }
@@ -936,12 +1007,21 @@
       const spec = modes[requested];
       const go = document.querySelector("#go");
       go.disabled = true;
+      stopHistory();
       results.replaceChildren();
+      if (mode === "history" && !repoSelect.value) {
+        setStatus("Choose one repository", true);
+        go.disabled = false;
+        return;
+      }
       setStatus(mode === "flow"
         ? "Drawing the journey…"
-        : spec.answer && document.querySelector("#answer").checked ? "Searching and writing an answer…" : "Searching the index…");
+        : mode === "history"
+          ? "Reading the history of that file…"
+          : spec.answer && document.querySelector("#answer").checked ? "Searching and writing an answer…" : "Searching the index…");
       const payload = { repo: repoSelect.value };
       if (mode === "impact") payload.target = prompt.value;
+      else if (mode === "history") payload.path = prompt.value.trim();
       else if (mode === "flow") payload.start = prompt.value.trim();
       else if (mode === "features" || mode === "testing") {
         payload.question = prompt.value;
@@ -995,6 +1075,10 @@
       }
       if (requested === "flow") {
         renderFlow(body);
+        return;
+      }
+      if (requested === "history") {
+        renderHistory(body);
         return;
       }
       if (body.index) {
@@ -2548,6 +2632,413 @@ ${data}
       code.textContent = hit.content;
       article.append(code);
       return article;
+    }
+
+    function stopHistory() {
+      const stop = historyStop;
+      historyStop = () => {};
+      stop();
+    }
+
+    function motionReduced() {
+      return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    }
+
+    function historyLines(text) {
+      if (text == null) return null;
+      const normalised = String(text).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+      if (normalised === "") return [];
+      const lines = normalised.split("\n");
+      if (lines[lines.length - 1] === "") lines.pop();
+      return lines;
+    }
+
+    function historyDate(iso) {
+      const date = new Date(iso);
+      if (Number.isNaN(date.getTime())) return iso || "";
+      return date.toLocaleString(undefined, {
+        day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit"
+      });
+    }
+
+    function diffLines(before, after) {
+      let start = 0;
+      while (start < before.length && start < after.length && before[start] === after[start]) start += 1;
+      let endBefore = before.length;
+      let endAfter = after.length;
+      while (endBefore > start && endAfter > start && before[endBefore - 1] === after[endAfter - 1]) {
+        endBefore -= 1;
+        endAfter -= 1;
+      }
+      const ops = [];
+      for (let i = 0; i < start; i += 1) ops.push({ kind: "same", text: before[i], line: i + 1 });
+      ops.push(...diffMiddle(before.slice(start, endBefore), after.slice(start, endAfter), start + 1).ops);
+      for (let i = endAfter; i < after.length; i += 1) {
+        ops.push({ kind: "same", text: after[i], line: i + 1 });
+      }
+      return ops;
+    }
+
+    function diffMiddle(before, after, firstAfterLine) {
+      const ops = [];
+      const n = before.length;
+      const m = after.length;
+      if (!n && !m) return { ops };
+      if (n * m > 250000) {
+        before.forEach((text, index) => ops.push({ kind: "del", text, line: firstAfterLine + index }));
+        after.forEach((text, index) => ops.push({ kind: "add", text, line: firstAfterLine + index }));
+        return { ops };
+      }
+      const dp = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+      for (let i = n - 1; i >= 0; i -= 1) {
+        for (let j = m - 1; j >= 0; j -= 1) {
+          dp[i][j] = before[i] === after[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+        }
+      }
+      let i = 0;
+      let j = 0;
+      let afterLine = firstAfterLine;
+      let beforeLine = firstAfterLine;
+      while (i < n && j < m) {
+        if (before[i] === after[j]) {
+          ops.push({ kind: "same", text: after[j], line: afterLine });
+          i += 1;
+          j += 1;
+          afterLine += 1;
+          beforeLine += 1;
+        } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+          ops.push({ kind: "del", text: before[i], line: beforeLine });
+          i += 1;
+          beforeLine += 1;
+        } else {
+          ops.push({ kind: "add", text: after[j], line: afterLine });
+          j += 1;
+          afterLine += 1;
+        }
+      }
+      while (i < n) {
+        ops.push({ kind: "del", text: before[i], line: beforeLine });
+        i += 1;
+        beforeLine += 1;
+      }
+      while (j < m) {
+        ops.push({ kind: "add", text: after[j], line: afterLine });
+        j += 1;
+        afterLine += 1;
+      }
+      return { ops };
+    }
+
+    function lineRow(op) {
+      const row = document.createElement("div");
+      row.className = `hline hline-${op.kind}`;
+      const num = document.createElement("span");
+      num.className = "hnum";
+      num.textContent = op.line ? String(op.line) : "";
+      const mark = document.createElement("span");
+      mark.className = "hmark";
+      mark.textContent = op.kind === "add" ? "+" : op.kind === "del" ? "−" : "";
+      const code = document.createElement("code");
+      code.className = "htext";
+      code.textContent = op.text === "" ? " " : op.text;
+      row.append(num, mark, code);
+      return row;
+    }
+
+    function historyCode(ops) {
+      const code = document.createElement("div");
+      code.className = "history-code";
+      ops.forEach((op) => code.append(lineRow(op)));
+      return code;
+    }
+
+    function omittedCopy(version) {
+      if (!version || version.omitted === "deleted") return "Removed in this commit.";
+      if (version.omitted === "binary") return "This version is not text, so the changes are not shown.";
+      if (version.omitted === "too large") return "This version is too large to show here.";
+      return "This version is empty.";
+    }
+
+    function renderHistory(body) {
+      const versions = Array.isArray(body.versions) ? body.versions : [];
+      if (!versions.length) {
+        const empty = document.createElement("p");
+        empty.className = "answer";
+        empty.textContent = "No versions were returned for that file.";
+        output.append(empty);
+        return;
+      }
+      const live = document.contains(output);
+      if (live) stopHistory();
+      const section = document.createElement("section");
+      section.className = "history";
+      section.setAttribute("aria-label", "File history");
+      const kicker = document.createElement("p");
+      kicker.className = "history-kicker";
+      kicker.textContent = `${body.repo || ""} · ${body.path || ""}`.replace(/^ · | · $/g, "");
+      const message = document.createElement("h2");
+      message.className = "history-message";
+      const meta = document.createElement("p");
+      meta.className = "history-meta";
+      const note = document.createElement("p");
+      note.className = "history-note";
+      const marked = versions.some((version) => version.indexed);
+      note.textContent = body.truncated
+        ? `The ${versions.length} most recent versions on ${body.branch}. Older changes are not in this list.`
+        : `Every version on ${body.branch}, from the oldest.`;
+      if (!marked) note.textContent += " The indexed commit did not change this file.";
+      const transport = document.createElement("div");
+      transport.className = "history-transport";
+      const older = document.createElement("button");
+      older.type = "button";
+      older.className = "secondary";
+      older.textContent = "Step backward";
+      const newer = document.createElement("button");
+      newer.type = "button";
+      newer.className = "secondary";
+      newer.textContent = "Step forward";
+      const play = document.createElement("button");
+      play.type = "button";
+      play.textContent = "Play";
+      play.setAttribute("aria-pressed", "false");
+      if (versions.length < 2) play.disabled = true;
+      const rail = document.createElement("div");
+      rail.className = "history-rail";
+      const fill = document.createElement("div");
+      fill.className = "history-rail-fill";
+      const dots = document.createElement("ol");
+      dots.className = "history-dots";
+      rail.append(fill, dots);
+      transport.append(older, rail, newer, play);
+      const stage = document.createElement("div");
+      stage.className = "history-stage";
+      const filebar = document.createElement("div");
+      filebar.className = "history-filebar";
+      const filename = document.createElement("span");
+      filename.textContent = String(body.path || "").split("/").pop() || "file";
+      const delta = document.createElement("span");
+      delta.className = "history-delta";
+      filebar.append(filename, delta);
+      stage.append(filebar);
+      section.append(kicker, message, meta, note, transport, stage);
+      output.append(section);
+
+      let index = null;
+      let token = 0;
+      let playing = false;
+      let timer = null;
+      const reduced = motionReduced();
+
+      function abandon() {
+        token += 1;
+        playing = false;
+        clearTimeout(timer);
+      }
+      if (live) historyStop = abandon;
+
+      versions.forEach((version, position) => {
+        const item = document.createElement("li");
+        const dot = document.createElement("button");
+        dot.type = "button";
+        const when = [version.author, historyDate(version.date)].filter(Boolean).join(", ");
+        dot.setAttribute("aria-label", `Version ${position + 1}, ${when}`);
+        if (version.indexed) dot.classList.add("indexed");
+        dot.title = version.indexed ? `Indexed commit, ${when}` : when;
+        dot.addEventListener("click", () => {
+          pause();
+          paint(position, Math.abs(position - index) === 1);
+        });
+        item.append(dot);
+        dots.append(item);
+      });
+
+      function pause() {
+        playing = false;
+        play.textContent = "Play";
+        play.setAttribute("aria-pressed", "false");
+      }
+
+      function counts(fromLines, toLines) {
+        if (!fromLines || !toLines) {
+          if (fromLines && !toLines) return { added: 0, removed: fromLines.length };
+          if (!fromLines && toLines) return { added: toLines.length, removed: 0 };
+          return { added: 0, removed: 0 };
+        }
+        const ops = diffLines(fromLines, toLines);
+        return {
+          added: ops.filter((op) => op.kind === "add").length,
+          removed: ops.filter((op) => op.kind === "del").length,
+        };
+      }
+
+      function versionLines(version) {
+        if (!version || version.omitted) return null;
+        return historyLines(version.text);
+      }
+
+      function updateChrome() {
+        const version = versions[index];
+        message.textContent = version.message || "Commit";
+        meta.replaceChildren();
+        const who = document.createElement("span");
+        who.className = "history-who";
+        const author = version.author || "Unknown author";
+        const when = historyDate(version.date);
+        who.textContent = when ? `${author} · ${when}` : author;
+        meta.append(who);
+        if (version.short) meta.append(document.createTextNode(` · ${version.short}`));
+        if (version.indexed) meta.append(document.createTextNode(" · Indexed commit"));
+        if (version.url) {
+          meta.append(document.createTextNode(" · "));
+          const link = document.createElement("a");
+          link.href = version.url;
+          link.textContent = "Open this commit";
+          link.setAttribute("target", "_blank");
+          link.setAttribute("rel", "noopener");
+          meta.append(link);
+        }
+        dots.querySelectorAll("button").forEach((dot, position) => {
+          if (position === index) dot.setAttribute("aria-current", "step");
+          else dot.removeAttribute("aria-current");
+        });
+        older.disabled = index <= 0;
+        newer.disabled = index >= versions.length - 1;
+        const span = Math.max(versions.length - 1, 1);
+        fill.style.width = `${(index / span) * 100}%`;
+      }
+
+      function showSettled(version, summary) {
+        const lines = versionLines(version);
+        const code = stage.querySelector(".history-code");
+        if (code) code.remove();
+        stage.querySelector(".history-empty")?.remove();
+        if (!lines || !lines.length) {
+          const empty = document.createElement("p");
+          empty.className = "history-empty";
+          empty.textContent = omittedCopy(version);
+          stage.append(empty);
+        } else {
+          stage.append(historyCode(lines.map((text, line) => ({ kind: "same", text, line: line + 1 }))));
+        }
+        delta.textContent = summary;
+      }
+
+      function finish(step, code) {
+        if (step !== token) return;
+        code.querySelectorAll(".hline-del").forEach((row) => row.remove());
+        const remaining = [...code.querySelectorAll(".hline")];
+        remaining.forEach((row, line) => {
+          row.querySelector(".hnum").textContent = String(line + 1);
+          const mark = row.querySelector(".hmark");
+          if (mark.textContent) mark.textContent = "";
+          if (row.classList.contains("hline-add")) row.classList.add("hline-settle");
+        });
+        if (!remaining.length) {
+          const empty = document.createElement("p");
+          empty.className = "history-empty";
+          empty.textContent = omittedCopy(versions[index]);
+          stage.append(empty);
+        }
+        if (playing) schedule(step);
+      }
+
+      function paint(next, animate) {
+        const step = ++token;
+        clearTimeout(timer);
+        const previous = index === null ? null : versions[index];
+        const opening = index === null;
+        const moved = index !== null && next !== index;
+        index = next;
+        updateChrome();
+        const version = versions[next];
+        const fromLines = moved ? versionLines(previous) : null;
+        const toLines = versionLines(version);
+        const ownChange = next > 0 ? counts(versionLines(versions[next - 1]), toLines) : null;
+        const change = animate && moved ? counts(fromLines, toLines) : ownChange;
+        const summary = !change
+          ? (next === 0 ? "Oldest in this list" : "")
+          : change.added === 0 && change.removed === 0
+            ? "No line changes"
+            : `${change.added} added · ${change.removed} removed`;
+        delta.textContent = summary;
+        const canAnimate = live && animate && !reduced && (moved || opening);
+        stage.querySelector(".history-code")?.remove();
+        stage.querySelector(".history-empty")?.remove();
+        if (opening && canAnimate && toLines && toLines.length) {
+          const code = historyCode(toLines.map((text, line) => ({ kind: "same", text, line: line + 1 })));
+          [...code.children].forEach((row, position) => {
+            row.classList.add("hline-arrive");
+            row.style.animationDelay = `${Math.min(position, 28) * 16}ms`;
+          });
+          stage.append(code);
+          return;
+        }
+        if (!canAnimate || !fromLines) {
+          showSettled(version, summary);
+          if (playing) schedule(step);
+          return;
+        }
+        const ops = toLines
+          ? diffLines(fromLines, toLines)
+          : fromLines.map((text, line) => ({ kind: "del", text, line: line + 1 }));
+        const code = historyCode(ops);
+        stage.append(code);
+        [...code.querySelectorAll(".hline-add")].forEach((row, position) => {
+          row.classList.add("hline-enter");
+          row.style.animationDelay = `${Math.min(position, 24) * 16}ms`;
+        });
+        const leaving = [...code.querySelectorAll(".hline-del")];
+        const hold = Math.min(1100, 420 + Math.max(change.added, change.removed) * 45);
+        timer = setTimeout(() => {
+          if (step !== token) return;
+          leaving.forEach((row) => {
+            row.style.maxHeight = `${row.offsetHeight}px`;
+            row.classList.add("hline-leave");
+          });
+          timer = setTimeout(() => finish(step, code), leaving.length ? 460 : 30);
+        }, hold);
+      }
+
+      function schedule(step) {
+        timer = setTimeout(() => {
+          if (step !== token || !playing) return;
+          if (index >= versions.length - 1) {
+            pause();
+            return;
+          }
+          paint(index + 1, true);
+        }, reduced ? 900 : 1300);
+      }
+
+      function togglePlay() {
+        if (playing) {
+          pause();
+          return;
+        }
+        playing = true;
+        play.textContent = "Pause";
+        play.setAttribute("aria-pressed", "true");
+        if (index >= versions.length - 1) paint(0, false);
+        else paint(index + 1, true);
+      }
+
+      older.addEventListener("click", () => {
+        pause();
+        if (index > 0) paint(index - 1, true);
+      });
+      newer.addEventListener("click", () => {
+        pause();
+        if (index < versions.length - 1) paint(index + 1, true);
+      });
+      play.addEventListener("click", togglePlay);
+      section.addEventListener("keydown", (event) => {
+        if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
+        event.preventDefault();
+        pause();
+        if (event.key === "ArrowRight" && index < versions.length - 1) paint(index + 1, true);
+        if (event.key === "ArrowLeft" && index > 0) paint(index - 1, true);
+      });
+      paint(0, true);
     }
 
     function setStatus(message, isError) {
