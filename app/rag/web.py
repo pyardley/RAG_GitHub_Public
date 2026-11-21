@@ -440,6 +440,7 @@ def run_history(body: dict) -> tuple[int, dict]:
             str(item.get("branch") or ""),
             path,
             str(item.get("commit_sha") or ""),
+            block=_optional_block(body),
             url=str(item.get("url") or ""),
         )
     except HistoryError as exc:
@@ -957,6 +958,15 @@ def _optional_repo(body: dict) -> str | None:
     if not isinstance(repo, str):
         raise ValueError("Repository must be a name or GitHub URL")
     return repo.strip() or None
+
+
+def _optional_block(body: dict) -> str:
+    value = body.get("block", "")
+    if value is None or value == "":
+        return ""
+    if not isinstance(value, str):
+        raise ValueError("Enter the name of a method, class, or scenario")
+    return value
 
 
 def _required_text(body: dict, key: str, message: str) -> str:

@@ -35,6 +35,7 @@ from rag.gitrepo import branch_list, default_branch_name
 from rag.journey import branch_answers, diff_chart, journey_scopes, mark_visits
 from rag.flows import charts_for, parse_navigation, question_texts
 from rag.features import behaviour_text, gherkin_lines, is_drafting_request, matched_step_texts, retrieve_features
+from rag.chunker import find_blocks
 from rag.history import HistoryError, file_history
 from rag.testing import command_phrases, resolve_feature_paths, retrieve_testing
 from rag.web import Handler, _progress_view, github_blob_url, public_status, run_features, run_flow, run_history, run_query, run_testing, start_ingest
@@ -1950,6 +1951,80 @@ class HistoryTest(unittest.TestCase):
         self.assertEqual(found["versions"][0]["text"], "1\n")
         self.assertEqual(found["versions"][-1]["text"], "12\n")
 
+    def test_a_block_keeps_only_the_commits_that_change_it(self):
+        helper = "app/helpers/application_helper.rb"
+        original = (
+            "module ApplicationHelper\n"
+            "  def ni_number_value(summary)\n"
+            "    summary\n"
+            "  end\n"
+            "end\n"
+        )
+        added = (
+            "module ApplicationHelper\n"
+            "  def ni_number_value(summary)\n"
+            "    summary\n"
+            "  end\n"
+            "\n"
+            "  def address_lookup_access_token\n"
+            "    Rails.cache.read('address_lookup')\n"
+            "  end\n"
+            "end\n"
+        )
+        other = added.replace("summary", "summary.to_s")
+        edited = added.replace(
+            "Rails.cache.read('address_lookup')",
+            "Rails.cache.read('address_lookup_v2')",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _git_init(root)
+            _commit_file(root, helper, original.encode(), "Add the helper")
+            introduced = _commit_file(root, helper, added.encode(), "Add address lookup")
+            _commit_file(root, helper, other.encode(), "Change the ni number helper")
+            revised = _commit_file(root, helper, edited.encode(), "Rename the cache key")
+            found = file_history(
+                "hmcts/hwf-publicapp", "master", helper,
+                block="address_lookup_access_token", root=root,
+            )
+        self.assertEqual([item["sha"] for item in found["versions"]], [introduced, revised])
+        self.assertEqual(found["symbol"], "ApplicationHelper#address_lookup_access_token")
+        self.assertEqual(found["block"], "address_lookup_access_token")
+        self.assertIn("def address_lookup_access_token", found["versions"][0]["text"])
+        self.assertIn("address_lookup_v2", found["versions"][1]["text"])
+        self.assertNotIn("ni_number_value", found["versions"][0]["text"])
+        self.assertNotIn("\nend\nend\n", found["versions"][0]["text"])
+        self.assertEqual(found["versions"][0]["start_line"], 6)
+        self.assertFalse(found["truncated"])
+
+    def test_a_block_name_must_pick_one_declaration(self):
+        source = "module A\n  def save\n  end\nend\nmodule B\n  def save\n  end\nend\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _git_init(root)
+            _commit_file(root, "app/helper.rb", source.encode(), "Two saves")
+            with self.assertRaises(ValueError) as caught:
+                file_history(
+                    "hmcts/hwf-publicapp", "master", "app/helper.rb",
+                    block="save", root=root,
+                )
+        self.assertIn("A#save", str(caught.exception))
+        self.assertIn("B#save", str(caught.exception))
+        blocks = find_blocks("ruby", source, "A#save")
+        self.assertEqual([item.symbol for item in blocks], ["A#save"])
+
+    def test_an_unknown_block_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _git_init(root)
+            _commit_file(root, "app/helper.rb", b"def other\nend\n", "Add other")
+            with self.assertRaises(HistoryError) as caught:
+                file_history(
+                    "hmcts/hwf-publicapp", "master", "app/helper.rb",
+                    block="missing_method", root=root,
+                )
+        self.assertIn("missing_method", str(caught.exception))
+
     def test_a_path_cannot_leave_the_repository(self):
         with self.assertRaises(ValueError):
             file_history("hmcts/hwf-publicapp", "master", "../secrets")
@@ -2104,6 +2179,8 @@ class WebTest(unittest.TestCase):
             self.assertIn("function renderHistory", page)
             self.assertIn("app/helpers/application_helper.rb", page)
             self.assertIn("Step backward and Step forward move through the changes", page)
+            self.assertIn('placeholder="address_lookup_access_token"', page)
+            self.assertIn("only the versions that change it", page)
             self.assertIn('older.textContent = "Step backward"', page)
             self.assertIn('newer.textContent = "Step forward"', page)
             self.assertIn("quotes only steps already in the suite", page)

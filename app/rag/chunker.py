@@ -161,6 +161,85 @@ def chunk_source(
     return chunks
 
 
+@dataclass(frozen=True)
+class Block:
+    symbol: str
+    kind: str
+    start_line: int
+    content: str
+
+
+def find_blocks(language: str, text: str, query: str) -> list[Block]:
+    """Named blocks in ``text`` that the query points at.
+
+    A query matches a declaration's full symbol or its own name, so
+    ``address_lookup_access_token`` finds ``ApplicationHelper#address_lookup_access_token``.
+    The block runs from the declaration through its body, and no further.
+    """
+    wanted = _normalise_query(query)
+    if not wanted or not text:
+        return []
+    lines = text.splitlines()
+    defs = _find_defs(language, lines)
+    found: list[Block] = []
+    for index, defn in enumerate(defs):
+        symbol = _format_symbol(language, _enclosing(defs, index), defn)
+        if not _query_hits(symbol, defn.name, wanted):
+            continue
+        end = _block_end(lines, defn)
+        body = "\n".join(lines[defn.line:end])
+        if body:
+            body += "\n"
+        found.append(Block(symbol, _stored_kind(defn.kind), defn.line + 1, body))
+    return found
+
+
+def _normalise_query(query: str) -> str:
+    text = " ".join(str(query).split())
+    for prefix in ("def ", "function ", "class ", "module "):
+        if text.startswith(prefix):
+            text = text[len(prefix):].strip()
+            break
+    if "(" in text:
+        text = text.split("(", 1)[0].strip()
+    return text
+
+
+def _query_hits(symbol: str, name: str, query: str) -> bool:
+    if symbol == query or name == query:
+        return True
+    bare = name[5:] if name.startswith("self.") else name
+    if bare == query:
+        return True
+    return any(symbol.endswith(suffix) for suffix in (
+        f"#{query}", f".{query}", f"::{query}", f" / {query}", f":{query}",
+    ))
+
+
+def _block_end(lines: list[str], defn: _Defn) -> int:
+    """The line after the declaration's body. A closing ``end`` or ``}`` at the same indent is included."""
+    end = defn.line + 1
+    while end < len(lines):
+        line = lines[end]
+        if not line.strip():
+            end += 1
+            continue
+        if _line_indent(line) > defn.indent:
+            end += 1
+            continue
+        token = line.strip().split()[0]
+        if token == "end" or token.startswith("}"):
+            end += 1
+        break
+    while end > defn.line + 1 and not lines[end - 1].strip():
+        end -= 1
+    return end
+
+
+def _line_indent(line: str) -> int:
+    return _indent_width(line[: len(line) - len(line.lstrip(" \t"))])
+
+
 def source_role(path: str, content: str) -> str | None:
     """Label the Ruby files these repositories are built from.
 

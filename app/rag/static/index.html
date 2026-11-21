@@ -62,6 +62,8 @@
     .bar { display: flex; gap: 0.75rem; align-items: end; flex-wrap: wrap; }
     label { display: grid; gap: 0.3rem; font-size: 0.85rem; color: var(--muted); }
     label.grow { flex: 1 1 16rem; }
+    #block-wrap { margin-top: 0.75rem; }
+    #block-wrap[hidden] { display: none; }
     select, input[type="text"], input[type="number"], textarea {
       width: 100%;
       border: 1px solid var(--line);
@@ -444,6 +446,9 @@
       <label id="prompt-label"><span id="prompt-caption">Question</span>
         <textarea id="prompt" placeholder="Where is the online application stored?"></textarea>
       </label>
+      <label id="block-wrap" hidden>Block
+        <input id="history-block" type="text" placeholder="address_lookup_access_token" autocomplete="off">
+      </label>
       <p class="hint" id="prompt-hint">Ask in your own words, or quote text to match it exactly. Inside quotes, [0-9]* matches any amount. under /features limits the directory. Ignore /features/support leaves that folder out. Index chooses the text model, the code model, or both.</p>
       <div class="row">
         <label id="index-wrap">Index
@@ -506,7 +511,7 @@
         button: "Show",
         answer: false,
         k: false,
-        hint: "Enter a path in the selected repository, such as app/helpers/application_helper.rb. The recent versions of that file are shown from older to newer. Step backward and Step forward move through the changes, and Play walks them in order. Each change shows who made it and when. Versions come from the branch, including commits newer than the index. The indexed commit is marked."
+        hint: "Enter a path in the selected repository, such as app/helpers/application_helper.rb. Leave the block blank to step through the whole file. A block such as address_lookup_access_token shows only that method, class, or scenario, and only the versions that change it. Step backward and Step forward move through the changes, and Play walks them in order. Each change shows who made it and when. Versions come from the branch, including commits newer than the index. The indexed commit is marked."
       }
     };
     const prompts = { query: "", impact: "", search: "", flow: "", features: "", testing: "", history: "" };
@@ -611,6 +616,7 @@
       document.querySelector("#index-wrap").hidden = !retrieval;
       document.querySelector("#fusion-wrap").hidden = !retrieval;
       document.querySelector("#prompt-label").hidden = spec.prompt === false;
+      document.querySelector("#block-wrap").hidden = next !== "history";
       const hint = document.querySelector("#prompt-hint");
       hint.hidden = next !== "query" && next !== "flow" && next !== "features" && next !== "testing" && next !== "history";
       hint.textContent = next === "query" ? queryHint : spec.hint;
@@ -1018,14 +1024,18 @@
         go.disabled = false;
         return;
       }
+      const historyBlock = mode === "history" ? document.querySelector("#history-block").value.trim() : "";
       setStatus(mode === "flow"
         ? "Drawing the journey…"
         : mode === "history"
-          ? "Reading the history of that file…"
+          ? (historyBlock ? "Reading the history of that block…" : "Reading the history of that file…")
           : spec.answer && document.querySelector("#answer").checked ? "Searching and writing an answer…" : "Searching the index…");
       const payload = { repo: repoSelect.value };
       if (mode === "impact") payload.target = prompt.value;
-      else if (mode === "history") payload.path = prompt.value.trim();
+      else if (mode === "history") {
+        payload.path = prompt.value.trim();
+        if (historyBlock) payload.block = historyBlock;
+      }
       else if (mode === "flow") payload.start = prompt.value.trim();
       else if (mode === "features" || mode === "testing") {
         payload.question = prompt.value;
@@ -2771,7 +2781,9 @@ ${data}
       if (!versions.length) {
         const empty = document.createElement("p");
         empty.className = "answer";
-        empty.textContent = "No versions were returned for that file.";
+        empty.textContent = body.block
+          ? "No versions were returned for that block."
+          : "No versions were returned for that file.";
         output.append(empty);
         return;
       }
@@ -2779,10 +2791,10 @@ ${data}
       if (live) stopHistory();
       const section = document.createElement("section");
       section.className = "history";
-      section.setAttribute("aria-label", "File history");
+      section.setAttribute("aria-label", body.block ? "Block history" : "File history");
       const kicker = document.createElement("p");
       kicker.className = "history-kicker";
-      kicker.textContent = `${body.repo || ""} · ${body.path || ""}`.replace(/^ · | · $/g, "");
+      kicker.textContent = [body.repo, body.path, body.symbol].filter(Boolean).join(" · ");
       const message = document.createElement("h2");
       message.className = "history-message";
       const meta = document.createElement("p");
@@ -2790,10 +2802,19 @@ ${data}
       const note = document.createElement("p");
       note.className = "history-note";
       const marked = versions.some((version) => version.indexed);
-      note.textContent = body.truncated
-        ? `The ${versions.length} most recent versions on ${body.branch}. Older changes are not in this list.`
-        : `Every version on ${body.branch}, from the oldest.`;
-      if (!marked) note.textContent += " The indexed commit did not change this file.";
+      const followed = body.symbol || body.block;
+      note.textContent = followed
+        ? (body.truncated
+          ? `The ${versions.length} most recent changes to ${followed}. Older changes to it are not in this list.`
+          : `Every change to ${followed} on ${body.branch}.`)
+        : (body.truncated
+          ? `The ${versions.length} most recent versions on ${body.branch}. Older changes are not in this list.`
+          : `Every version on ${body.branch}, from the oldest.`);
+      if (!marked) {
+        note.textContent += followed
+          ? " The indexed commit did not change this block."
+          : " The indexed commit did not change this file.";
+      }
       const transport = document.createElement("div");
       transport.className = "history-transport";
       const older = document.createElement("button");
@@ -2908,6 +2929,11 @@ ${data}
           if (position === index) dot.setAttribute("aria-current", "step");
           else dot.removeAttribute("aria-current");
         });
+        const file = String(body.path || "").split("/").pop() || "file";
+        const followedName = version.symbol || body.symbol || body.block;
+        filename.textContent = followedName
+          ? `${version.start_line ? `${file}:${version.start_line}` : file} · ${followedName}`
+          : file;
         older.disabled = index <= 0;
         newer.disabled = index >= versions.length - 1;
         const span = Math.max(versions.length - 1, 1);

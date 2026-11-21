@@ -13,11 +13,15 @@ import threading
 import urllib.parse
 from pathlib import Path
 
+from rag.chunker import find_blocks
+from rag.files import language_for
 from rag.gitrepo import git_bytes, git_text, history_clone_dir, run_git
 from rag.log import logger
 
 VERSION_LIMIT = 12
+BLOCK_SCAN = 80
 TEXT_LIMIT = 60_000
+_BLOCK_LANGUAGES = {"ruby", "python", "javascript", "typescript", "java", "gherkin"}
 _CLONE_TIMEOUT = 300
 _FETCH_TIMEOUT = 300
 
@@ -35,11 +39,14 @@ def file_history(
     path: str,
     indexed_sha: str = "",
     *,
+    block: str = "",
     url: str = "",
     root: Path | None = None,
 ) -> dict:
     """Versions of ``path`` on ``branch``, oldest of the recent window first.
 
+    ``block`` is a method, class, or scenario. The result then keeps only the
+    commits that change that block, and each version's text is the block alone.
     ``root`` is a git repository to read instead of the shared history clone.
     Tests pass a local repository. The indexed checkout is never that root.
     """
@@ -48,9 +55,12 @@ def file_history(
     if not _safe_branch(branch):
         raise ValueError("This repository has no branch recorded")
     relative = clean_history_path(path)
+    name = clean_block_name(block)
     with _lock:
         checkout = root if root is not None else _ensure_clone(repo, branch, url)
         _update(checkout, branch, relative)
+        if name:
+            return _block_history(checkout, repo, branch, relative, name, indexed_sha)
         commits = _log(checkout, branch, relative, VERSION_LIMIT + 1)
         if not commits:
             raise HistoryError(f"No commit on {branch} changes {relative}.")
@@ -60,24 +70,32 @@ def file_history(
         versions = []
         for commit in reversed(commits[:VERSION_LIMIT]):
             text, omitted = _contents(checkout, commit)
-            versions.append({
-                "sha": commit["sha"],
-                "short": commit["sha"][:7],
-                "date": commit["date"],
-                "author": commit["author"],
-                "message": commit["message"],
-                "url": f"https://github.com/{repo}/commit/{commit['sha']}",
-                "indexed": _same_commit(commit["sha"], indexed_sha),
-                "text": text,
-                "omitted": omitted,
-            })
+            versions.append(_version(repo, commit, indexed_sha, text, omitted))
     return {
         "repo": repo,
         "branch": branch,
         "path": relative,
+        "block": "",
+        "symbol": "",
         "truncated": truncated,
         "versions": versions,
     }
+
+
+def clean_block_name(value: str) -> str:
+    """A method, class, or scenario name. Blank means the whole file."""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError("Enter the name of a method, class, or scenario")
+    text = " ".join(value.split())
+    if not text:
+        return ""
+    if len(text) > 160 or any(ord(character) < 32 for character in text):
+        raise ValueError("Enter the name of a method, class, or scenario")
+    if not re.search(r"[A-Za-z0-9_]", text):
+        raise ValueError("Enter the name of a method, class, or scenario")
+    return text
 
 
 def clean_history_path(value: str) -> str:
@@ -196,6 +214,113 @@ def _status(body: str) -> tuple[str, bool]:
         deleted = status.startswith("D")
         path = names.split("\t")[-1]
     return path, deleted
+
+
+def _block_history(
+    checkout: Path,
+    repo: str,
+    branch: str,
+    path: str,
+    name: str,
+    indexed_sha: str,
+) -> dict:
+    language = language_for(Path(path))
+    if language not in _BLOCK_LANGUAGES:
+        raise HistoryError(
+            f"Blocks in {path} cannot be followed. Leave the block blank to show the whole file."
+        )
+    commits = _log(checkout, branch, path, BLOCK_SCAN + 1)
+    if not commits:
+        raise HistoryError(f"No commit on {branch} changes {path}.")
+    extra = commits[BLOCK_SCAN] if len(commits) > BLOCK_SCAN else None
+    window = list(reversed(commits[:BLOCK_SCAN]))
+    loaded = {commit["sha"]: _contents(checkout, commit) for commit in window}
+    if extra:
+        loaded[extra["sha"]] = _contents(checkout, extra)
+    previous = _one_block(language, loaded[extra["sha"]][0] if extra else None, name)
+    symbol = previous[0] if previous else ""
+    present = previous is not None
+    versions = []
+    for commit in window:
+        text, omitted = loaded[commit["sha"]]
+        if omitted or text is None:
+            current = None
+            marker = omitted or "deleted"
+        else:
+            current = _one_block(language, text, name)
+            marker = "deleted"
+            if current:
+                present = True
+                symbol = current[0]
+        current_body = current[1] if current else None
+        previous_body = previous[1] if previous else None
+        if current_body != previous_body and (current is not None or previous is not None):
+            if current:
+                versions.append(_version(
+                    repo, commit, indexed_sha, current[1], None, current[2], current[0],
+                ))
+            else:
+                versions.append(_version(
+                    repo, commit, indexed_sha, None, marker, symbol=symbol,
+                ))
+        previous = current
+    if not versions:
+        if present:
+            raise HistoryError(f"No recent commit changes {name} in {path}.")
+        raise HistoryError(f"No commit on {branch} changes {name} in {path}.")
+    truncated = len(versions) > VERSION_LIMIT or len(commits) > BLOCK_SCAN or _is_shallow(checkout)
+    shown = versions[-VERSION_LIMIT:]
+    if not symbol:
+        symbol = next((item["symbol"] for item in reversed(shown) if item.get("symbol")), name)
+    return {
+        "repo": repo,
+        "branch": branch,
+        "path": path,
+        "block": name,
+        "symbol": symbol,
+        "truncated": truncated,
+        "versions": shown,
+    }
+
+
+def _one_block(language: str, text: str | None, name: str) -> tuple[str, str, int] | None:
+    if not text:
+        return None
+    matches = find_blocks(language, text, name)
+    if not matches:
+        return None
+    symbols = sorted({item.symbol for item in matches})
+    if len(symbols) > 1:
+        raise ValueError(f"That name matches {', '.join(symbols[:6])}. Enter one of those names.")
+    match = matches[0]
+    return match.symbol, match.content, match.start_line
+
+
+def _version(
+    repo: str,
+    commit: dict,
+    indexed_sha: str,
+    text: str | None,
+    omitted: str | None,
+    start_line: int | None = None,
+    symbol: str = "",
+) -> dict:
+    payload = {
+        "sha": commit["sha"],
+        "short": commit["sha"][:7],
+        "date": commit["date"],
+        "author": commit["author"],
+        "message": commit["message"],
+        "url": f"https://github.com/{repo}/commit/{commit['sha']}",
+        "indexed": _same_commit(commit["sha"], indexed_sha),
+        "text": text,
+        "omitted": omitted,
+    }
+    if start_line:
+        payload["start_line"] = start_line
+    if symbol:
+        payload["symbol"] = symbol
+    return payload
 
 
 def _contents(repo: Path, commit: dict) -> tuple[str | None, str | None]:
