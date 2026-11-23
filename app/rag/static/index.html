@@ -1780,9 +1780,10 @@ ${data}
         return { svg, nodes, width: 0, height: 0, spineWidth: 0 };
       }
       const byId = new Map(nodes.map((node) => [node.id, node]));
-      const joinInset = 14;
-      const joinPitch = 10;
-      const joinClearance = 16;
+      const joinInset = 20;
+      const joinPitch = 22;
+      const joinLabelRise = 16;
+      const joinClearance = 12;
       const rejoinMax = new Map();
       const straightInto = new Set();
       for (const edge of chart.edges || []) {
@@ -1794,6 +1795,16 @@ ${data}
         const lane = edge.lane || 0;
         const known = rejoinMax.get(target.id);
         rejoinMax.set(target.id, known === undefined ? lane : Math.max(known, lane));
+      }
+      const laneLeaves = new Map();
+      for (const edge of chart.edges || []) {
+        if (edge.route !== "lane" || !byId.has(edge.from)) continue;
+        const list = laneLeaves.get(edge.from) || [];
+        list.push(edge);
+        laneLeaves.set(edge.from, list);
+      }
+      for (const list of laneLeaves.values()) {
+        list.sort((left, right) => (left.lane || 0) - (right.lane || 0) || String(left.label || "").localeCompare(String(right.label || "")));
       }
       const straightIndex = new Map();
       const straightTotal = new Map();
@@ -1822,7 +1833,7 @@ ${data}
             if (node.row === next && rejoinMax.has(node.id)) depth = Math.max(depth, rejoinMax.get(node.id));
           }
         }
-        const rejoin = depth >= 0 ? joinInset + depth * joinPitch + joinClearance : 0;
+        const rejoin = depth >= 0 ? joinInset + depth * joinPitch + joinLabelRise + joinClearance : 0;
         return Math.max(rowGap, lines * 16 + 14, rejoin);
       };
       const rows = [...new Set(nodes.map((node) => node.row))].sort((left, right) => left - right);
@@ -1872,7 +1883,16 @@ ${data}
         const joinY = depth === undefined || target.y <= source.y || (source.column || 0) !== (target.column || 0)
           ? null
           : target.y - joinInset - (depth - (edge.lane || 0)) * joinPitch;
-        const route = flowRoute(edge, source, target, nodeWidth, laneX, joinY, straightInto.has(target.id));
+        const leaves = laneLeaves.get(source.id) || [];
+        const leaveIndex = leaves.indexOf(edge);
+        let exitY = null;
+        if (edge.route === "lane" && leaves.length > 1) {
+          const room = Math.max(0, source.height - 16);
+          const step = Math.min(24, room / (leaves.length - 1));
+          const used = step * (leaves.length - 1);
+          exitY = source.y + (source.height - used) / 2 + leaveIndex * step;
+        }
+        const route = flowRoute(edge, source, target, nodeWidth, laneX, joinY, straightInto.has(target.id), exitY);
         const stackKey = `${source.column}:${source.row}`;
         const stacked = straightTotal.get(stackKey) || 0;
         if (edge.route === "straight" && stacked > 1) {
@@ -2012,7 +2032,7 @@ ${data}
       return Math.abs(box.top + box.height / 2 - window.innerHeight / 2);
     }
 
-    function flowRoute(edge, source, target, nodeWidth, laneX, joinY, straightIn) {
+    function flowRoute(edge, source, target, nodeWidth, laneX, joinY, straightIn, exitY) {
       const bottom = [source.x + nodeWidth / 2, source.y + source.height];
       const top = [target.x + nodeWidth / 2, target.y];
       if (edge.route === "straight") {
@@ -2040,14 +2060,16 @@ ${data}
         };
       }
       const x = laneX(edge);
-      const y1 = source.y + source.height / 2;
+      const y1 = exitY == null ? source.y + source.height / 2 : exitY;
       const spots = [{ x: source.x + nodeWidth + 8, y: y1 - 6, anchor: "start" }];
       // A lane back to this column meets the spine above the box. The side of the
       // box is where a lane leaves, so arriving there reads as one continuous link.
+      // The second label sits on that join, in the gap above the destination.
       if (joinY !== null && joinY > y1 + 16) {
         const joinX = target.x + nodeWidth / 2;
         let d = `M ${source.x + nodeWidth} ${y1} L ${x} ${y1} L ${x} ${joinY} L ${joinX} ${joinY}`;
         if (!straightIn) d += ` L ${joinX} ${target.y}`;
+        spots.push({ x: joinX + 10, y: joinY - 4, anchor: "start" });
         return { d, labelX: spots[0].x, labelY: spots[0].y, anchor: "start", spots };
       }
       const y2 = target.y + target.height / 2;
