@@ -33,30 +33,7 @@ Ingest clones the repository from GitHub into the `repos` volume, splits it into
 
 The database is published on port 5433. The page and the HTTP API share port 8080.
 
-```mermaid
-flowchart TB
-  Editor[Cursor or Claude] -->|stdio| MCP[MCP server]
-  Browser[Browser] --> API
-  Program[HTTP client] --> API
-  MCP -->|HTTP| API
-
-  subgraph compose [Docker Compose]
-    API[rag serve on port 8080]
-    CLI[one command in the rag image]
-    Work[Ingest and retrieval]
-    Embed[Embedding models]
-    DB[(Postgres 16 with pgvector)]
-    Repos[repos volume]
-    API --> Work
-    CLI --> Work
-    Work --> Embed
-    Work --> DB
-    Work --> Repos
-  end
-
-  Work --> GitHub[GitHub]
-  Work -->|plan and answer| LLM[Ollama or an OpenAI-compatible API]
-```
+![Diagram of the callers, the Docker Compose containers, and the connections to GitHub and a language model.](docs/architecture.svg)
 
 ## What you need
 

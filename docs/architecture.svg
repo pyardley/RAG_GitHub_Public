@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="396" viewBox="0 0 1000 396" role="img" aria-labelledby="title desc">
+  <title id="title">Code RAG architecture</title>
+  <desc id="desc">Cursor or Claude talks to the MCP server over standard input. The MCP server, the browser, and an HTTP client call rag serve. A one-off command in the same image joins that server at ingest and retrieval. Ingest and retrieval uses local embedding models, Postgres, the repos volume, GitHub, and Ollama or an OpenAI-compatible API.</desc>
+  <rect width="1000" height="396" fill="#ffffff"/>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 Z" fill="#334155"/>
+    </marker>
+  </defs>
+  <style>
+    .box { fill: #ffffff; stroke: #1e293b; stroke-width: 1.5; }
+    .hub { fill: #e8eef5; stroke: #1e293b; stroke-width: 1.5; }
+    .label { font-family: "Segoe UI", Helvetica, Arial, sans-serif; font-size: 15px; fill: #0f172a; }
+    .sub { font-family: "Segoe UI", Helvetica, Arial, sans-serif; font-size: 12px; fill: #475569; }
+    .group { font-family: "Segoe UI", Helvetica, Arial, sans-serif; font-size: 13px; font-weight: 600; fill: #334155; }
+    .edge { fill: none; stroke: #334155; stroke-width: 1.5; }
+    .tag { font-family: "Segoe UI", Helvetica, Arial, sans-serif; font-size: 12px; fill: #334155; }
+  </style>
+
+  <rect x="268" y="12" width="500" height="368" rx="12" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5"/>
+  <text class="group" x="284" y="36">Docker Compose</text>
+
+  <rect class="box" x="16" y="8" width="160" height="40" rx="8"/>
+  <text class="label" x="96" y="33" text-anchor="middle">Cursor or Claude</text>
+
+  <line class="edge" x1="96" y1="48" x2="96" y2="68" marker-end="url(#arrow)"/>
+  <text class="tag" x="104" y="62">stdio</text>
+
+  <rect class="box" x="16" y="72" width="160" height="44" rx="8"/>
+  <text class="label" x="96" y="99" text-anchor="middle">MCP server</text>
+
+  <rect class="box" x="16" y="156" width="160" height="44" rx="8"/>
+  <text class="label" x="96" y="183" text-anchor="middle">Browser</text>
+
+  <rect class="box" x="16" y="220" width="160" height="44" rx="8"/>
+  <text class="label" x="96" y="247" text-anchor="middle">HTTP client</text>
+
+  <rect class="box" x="292" y="66" width="190" height="56" rx="8"/>
+  <text class="label" x="387" y="88" text-anchor="middle">rag serve</text>
+  <text class="sub" x="387" y="106" text-anchor="middle">port 8080</text>
+
+  <rect class="box" x="520" y="66" width="220" height="56" rx="8"/>
+  <text class="label" x="630" y="88" text-anchor="middle">one command</text>
+  <text class="sub" x="630" y="106" text-anchor="middle">same image</text>
+
+  <line class="edge" x1="176" y1="94" x2="288" y2="94" marker-end="url(#arrow)"/>
+  <text class="tag" x="198" y="88">HTTP</text>
+
+  <polyline class="edge" points="176,178 248,178 248,116 288,116" marker-end="url(#arrow)"/>
+  <text class="tag" x="186" y="170">HTTP</text>
+
+  <polyline class="edge" points="176,242 232,242 232,122 288,122" marker-end="url(#arrow)"/>
+  <text class="tag" x="186" y="234">HTTP</text>
+
+  <rect class="hub" x="308" y="168" width="400" height="52" rx="8"/>
+  <text class="label" x="508" y="199" text-anchor="middle">Ingest and retrieval</text>
+
+  <line class="edge" x1="387" y1="122" x2="387" y2="146"/>
+  <line class="edge" x1="630" y1="122" x2="630" y2="146"/>
+  <line class="edge" x1="387" y1="146" x2="630" y2="146"/>
+  <line class="edge" x1="508" y1="146" x2="508" y2="164" marker-end="url(#arrow)"/>
+
+  <rect class="box" x="292" y="292" width="146" height="72" rx="8"/>
+  <text class="label" x="365" y="320" text-anchor="middle">Embeddings</text>
+  <text class="sub" x="365" y="340" text-anchor="middle">on CPU</text>
+
+  <rect class="box" x="454" y="292" width="170" height="72" rx="8"/>
+  <text class="label" x="539" y="320" text-anchor="middle">Postgres 16</text>
+  <text class="sub" x="539" y="340" text-anchor="middle">pgvector, port 5433</text>
+
+  <rect class="box" x="640" y="292" width="104" height="72" rx="8"/>
+  <text class="label" x="692" y="320" text-anchor="middle">repos</text>
+  <text class="sub" x="692" y="340" text-anchor="middle">volume</text>
+
+  <line class="edge" x1="508" y1="220" x2="508" y2="268"/>
+  <line class="edge" x1="365" y1="268" x2="692" y2="268"/>
+  <line class="edge" x1="365" y1="268" x2="365" y2="288" marker-end="url(#arrow)"/>
+  <line class="edge" x1="539" y1="268" x2="539" y2="288" marker-end="url(#arrow)"/>
+  <line class="edge" x1="692" y1="268" x2="692" y2="288" marker-end="url(#arrow)"/>
+
+  <rect class="box" x="792" y="156" width="188" height="64" rx="8"/>
+  <text class="label" x="886" y="182" text-anchor="middle">GitHub</text>
+  <text class="sub" x="886" y="202" text-anchor="middle">clone and compare</text>
+
+  <rect class="box" x="792" y="248" width="188" height="80" rx="8"/>
+  <text class="label" x="886" y="274" text-anchor="middle">Ollama or OpenAI</text>
+  <text class="sub" x="886" y="294" text-anchor="middle">compatible API</text>
+  <text class="sub" x="886" y="312" text-anchor="middle">plan and answer</text>
+
+  <line class="edge" x1="708" y1="186" x2="788" y2="186" marker-end="url(#arrow)"/>
+  <polyline class="edge" points="708,206 768,206 768,288 788,288" marker-end="url(#arrow)"/>
+</svg>
