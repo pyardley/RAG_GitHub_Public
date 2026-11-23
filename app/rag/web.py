@@ -40,7 +40,7 @@ from rag.intent import impact_target
 from rag.log import logger
 from rag.plan import retrieval_model
 from rag.search import Hit, impact, retrieve
-from rag.usage import Meter
+from rag.usage import Meter, Stage
 
 _PAGE = Path(__file__).with_name("static") / "index.html"
 _MAX_BODY = 1_000_000
@@ -258,9 +258,22 @@ def run_query(body: dict) -> tuple[int, dict]:
     question = _required_text(body, "question", "Enter a question")
     nodes, edges = _optional_chart(body)
     if nodes and edges:
+        started = time.perf_counter()
         answers = branch_answers(nodes, edges, question)
         if answers:
-            return 200, {"journey": True, "branches": answers, "hits": [], "queries": []}
+            meter = Meter()
+            meter.add(Stage(
+                "Follow the arrows",
+                time.perf_counter() - started,
+                note=f"{len(answers)} answers from this journey.",
+            ))
+            return 200, {
+                "journey": True,
+                "branches": answers,
+                "hits": [],
+                "queries": [],
+                "usage": meter.as_dict(),
+            }
     scopes = _journey_scopes(body, nodes)
     target = impact_target(question)
     if target and not nodes:
@@ -377,24 +390,37 @@ def run_testing(body: dict) -> tuple[int, dict]:
 def run_impact(body: dict) -> tuple[int, dict]:
     target = _required_text(body, "target", "Enter a class, method, or file")
     repo = _optional_repo(body)
+    meter = Meter()
     try:
         conn = connect()
     except SystemExit as exc:
         return 503, {"error": _failure_text(exc)}
     try:
         repositories = resolve_repositories(conn, repo)
+        started = time.perf_counter()
         found = impact(conn, [item["id"] for item in repositories], target)
+        meter.add(Stage("Plan the question", 0.0, note=f"Impact lookup for {target}."))
+        meter.add_search(0.0, time.perf_counter() - started)
     except SystemExit as exc:
         return 400, {"error": _failure_text(exc)}
     finally:
         conn.close()
+    passages = (
+        int(found.get("definition_count") or len(found.get("definitions") or []))
+        + int(found.get("reference_count") or len(found.get("references") or []))
+        + len(found.get("gaps") or [])
+        + len(found.get("related") or [])
+    )
+    meter.finish_retrieval(passages, embedded=False, direct="impact")
     evidence = (
         found["definitions"][:8]
         + found["references"][:8]
         + found.get("gaps", [])[:4]
         + found["related"][:4]
     )
-    written, answer_error = _written_answer(target, evidence, impact_mode=True, enabled=_wants_answer(body))
+    written, answer_error = _written_answer(
+        target, evidence, impact_mode=True, enabled=_wants_answer(body), meter=meter,
+    )
     commits = _indexed_commits(repositories)
     return 200, {
         "repositories": [_scope(item) for item in repositories],
@@ -411,6 +437,7 @@ def run_impact(body: dict) -> tuple[int, dict]:
         "diagram": found.get("diagram") or {"nodes": [], "edges": []},
         "answer": written,
         "answer_error": answer_error,
+        "usage": meter.as_dict(),
         "model": _model_view(),
     }
 
@@ -434,6 +461,7 @@ def run_history(body: dict) -> tuple[int, dict]:
     if len(repositories) != 1:
         raise ValueError("Choose one repository")
     item = repositories[0]
+    started = time.perf_counter()
     try:
         history = file_history(
             item["name"],
@@ -446,7 +474,17 @@ def run_history(body: dict) -> tuple[int, dict]:
     except HistoryError as exc:
         logger.warning("history failed for %s: %s", item.get("name"), exc)
         return 502, {"error": str(exc)}
-    return 200, {"repositories": [_scope(item)], **history}
+    versions = history.get("versions") or []
+    meter = Meter()
+    count = len(versions)
+    if count == 1:
+        note = "1 version."
+    elif count:
+        note = f"{count} versions."
+    else:
+        note = "No versions were returned."
+    meter.add(Stage("Read the file history", time.perf_counter() - started, note=note))
+    return 200, {"repositories": [_scope(item)], **history, "usage": meter.as_dict()}
 
 
 def run_flow(body: dict) -> tuple[int, dict]:
@@ -467,24 +505,30 @@ def run_flow(body: dict) -> tuple[int, dict]:
     missing: list[str] = []
     unmapped: list[str] = []
     missed_start: list[str] = []
+    read_seconds = 0.0
+    compare_seconds = 0.0
     for item in repositories:
         root = checkout_dir(item["name"])
         if not root.is_dir():
             missing.append(item["name"])
             continue
+        started = time.perf_counter()
         built = charts_for(root, start)
         followed = False
         for chart in built:
             if chart.pop("reader", None) == "decision":
                 followed = True
             mark_visits(root, chart)
+        read_seconds += time.perf_counter() - started
         if start and not followed:
             missed_start.append(item["name"])
         if not built:
             if not start:
                 unmapped.append(item["name"])
             continue
+        started = time.perf_counter()
         _compare_branch(item, built, start)
+        compare_seconds += time.perf_counter() - started
         sha = str(item["commit_sha"])
         for chart in built:
             chart["repository"] = item["name"]
@@ -494,10 +538,25 @@ def run_flow(body: dict) -> tuple[int, dict]:
         for chart in charts:
             chart["title"] = f"{chart['repository']} — {chart['title']}"
     message = _flow_message(missing, unmapped, missed_start, start, bool(charts))
+    meter = Meter()
+    count = len(charts)
+    if count == 1:
+        journey_note = "1 journey."
+    elif count:
+        journey_note = f"{count} journeys."
+    else:
+        journey_note = "No journey was found."
+    meter.add(Stage("Read the journeys", read_seconds, note=journey_note))
+    meter.add(Stage(
+        "Compare the branch",
+        compare_seconds,
+        note="The indexed commit was compared with the branch.",
+    ))
     return 200, {
         "repositories": [_scope(item) for item in repositories],
         "charts": charts,
         "message": message,
+        "usage": meter.as_dict(),
     }
 
 

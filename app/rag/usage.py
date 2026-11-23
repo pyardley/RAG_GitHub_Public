@@ -58,6 +58,8 @@ class Meter:
             note = "The regular expression was matched directly, so nothing was embedded."
         elif direct == "text":
             note = "The text was matched directly, so nothing was embedded."
+        elif direct == "impact":
+            note = "The name was looked up in the index, so nothing was embedded."
         else:
             note = "The values were matched directly, so nothing was embedded."
         self.add(Stage(
@@ -65,7 +67,9 @@ class Meter:
             self.embed_seconds,
             note=note,
         ))
-        kept = f"{self.searches} searches, {passages} passages kept."
+        search_word = "search" if self.searches == 1 else "searches"
+        passage_word = "passage" if passages == 1 else "passages"
+        kept = f"{self.searches} {search_word}, {passages} {passage_word} kept."
         if skipped:
             kept += " Left out " + " and ".join(skipped) + "."
         self.add(Stage(

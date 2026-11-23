@@ -38,7 +38,7 @@ from rag.features import behaviour_text, gherkin_lines, is_drafting_request, mat
 from rag.chunker import find_blocks
 from rag.history import HistoryError, file_history
 from rag.testing import command_phrases, resolve_feature_paths, retrieve_testing
-from rag.web import Handler, _progress_view, github_blob_url, public_status, run_features, run_flow, run_history, run_query, run_testing, start_ingest
+from rag.web import Handler, _progress_view, github_blob_url, public_status, run_features, run_flow, run_history, run_impact, run_query, run_testing, start_ingest
 from unittest.mock import patch
 
 from rag.plan import parse_queries, question_needs_plan
@@ -2196,6 +2196,8 @@ class WebTest(unittest.TestCase):
             self.assertIn('setAttribute("target", "_blank")', page)
             self.assertIn("Resources", page)
             self.assertIn("renderUsage", page)
+            self.assertIn("renderUsage(body.usage)", page)
+            self.assertIn("renderUsage(body.usage, result)", page)
             self.assertIn('id="process"', page)
             self.assertIn("This process started", page)
             self.assertIn("[0-9]* matches any amount", page)
@@ -2449,6 +2451,48 @@ class WebTest(unittest.TestCase):
         finally:
             server.shutdown()
             server.server_close()
+
+    def test_impact_response_includes_usage_stages(self):
+        found = {
+            "definitions": [],
+            "references": [],
+            "related": [],
+            "gaps": [],
+            "definition_count": 2,
+            "reference_count": 3,
+            "truncated": False,
+            "callers_omitted": 0,
+            "callers_capped": False,
+            "possible_count": 0,
+            "diagram": {"nodes": [], "edges": []},
+        }
+        repo = {
+            "id": 1,
+            "name": "hmcts/hwf-publicapp",
+            "branch": "master",
+            "commit_sha": "b1d15f83c0a9",
+        }
+
+        class _Connection:
+            def close(self):
+                return None
+
+        with (
+            patch("rag.web.connect", return_value=_Connection()),
+            patch("rag.web.resolve_repositories", return_value=[repo]),
+            patch("rag.web.impact", return_value=found),
+            patch("rag.web.language_model_configured", return_value=False),
+        ):
+            status, body = run_impact({"target": "OnlineApplication", "answer": False})
+        self.assertEqual(status, 200)
+        names = [stage["name"] for stage in body["usage"]["stages"]]
+        self.assertEqual(names, ["Plan the question", "Embed the searches", "Search the index"])
+        embed = next(stage for stage in body["usage"]["stages"] if stage["name"] == "Embed the searches")
+        self.assertIsNone(embed["total_tokens"])
+        self.assertIn("looked up in the index", embed["note"])
+        self.assertEqual(body["usage"]["total_tokens"], 0)
+        search = next(stage for stage in body["usage"]["stages"] if stage["name"] == "Search the index")
+        self.assertIn("5 passages kept", search["note"])
 
 
 class IndexedRetrievalTest(unittest.TestCase):
@@ -3326,6 +3370,9 @@ class FlowTest(unittest.TestCase):
             "https://github.com/hmcts/hwf-publicapp/blob/abc123def456/app/models/forms/fee.rb#L2",
         )
         self.assertEqual(payload["message"], "")
+        names = [stage["name"] for stage in payload["usage"]["stages"]]
+        self.assertEqual(names, ["Read the journeys", "Compare the branch"])
+        self.assertIsNone(payload["usage"]["stages"][0]["total_tokens"])
 
     def test_a_missing_checkout_is_reported(self):
         repo = {"id": 1, "name": "hmcts/hwf-publicapp", "branch": "master", "commit_sha": "abc123def456"}

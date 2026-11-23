@@ -1138,6 +1138,7 @@
         }
         if ((body.gaps || []).length) renderGroup("Unresolved", body.gaps, body.gaps.length);
         renderGroup("Related", body.related, (body.related || []).length);
+        renderUsage(body.usage);
         return;
       }
       if (body.drafting) {
@@ -1361,7 +1362,7 @@ ${data}
       output.append(box);
     }
 
-    function renderUsage(usage) {
+    function renderUsage(usage, parent) {
       if (!usage || !usage.stages || !usage.stages.length) return;
       const box = document.createElement("div");
       box.className = "usage";
@@ -1381,7 +1382,7 @@ ${data}
         list.append(item);
       }
       box.append(heading, total, list);
-      output.append(box);
+      (parent || output).append(box);
     }
 
     // The written answer is Markdown. It is built as elements and text nodes,
@@ -1541,7 +1542,10 @@ ${data}
         note.textContent = body.message;
         output.append(note);
       }
-      if (!body.charts || !body.charts.length) return;
+      if (!body.charts || !body.charts.length) {
+        renderUsage(body.usage);
+        return;
+      }
       for (const chart of body.charts) {
         const section = document.createElement("section");
         section.className = "group";
@@ -1564,6 +1568,7 @@ ${data}
         section.append(flowView(drawn));
         output.append(section);
       }
+      renderUsage(body.usage);
     }
 
     let journeyAskCount = 0;
@@ -1674,11 +1679,13 @@ ${data}
     }
 
     function fillJourney(result, body) {
+      const finish = () => renderUsage(body.usage, result);
       if (body.branches && body.branches.length) {
         const note = document.createElement("p");
         note.className = "scope";
         note.textContent = "Taken from the arrows on this journey.";
         result.append(note, branchList(body.branches));
+        finish();
         return;
       }
       if (body.message) {
@@ -1705,12 +1712,14 @@ ${data}
           empty.textContent = "No matching code in the files on this journey.";
           result.append(empty);
         }
+        finish();
         return;
       }
       const group = document.createElement("div");
       group.className = "group";
       for (const hit of body.hits) group.append(hitArticle(hit, false));
       result.append(group);
+      finish();
     }
 
     function branchList(branches) {
@@ -2845,6 +2854,7 @@ ${data}
           ? "No versions were returned for that block."
           : "No versions were returned for that file.";
         output.append(empty);
+        renderUsage(body.usage);
         return;
       }
       const live = document.contains(output);
@@ -2910,6 +2920,7 @@ ${data}
       stage.append(filebar);
       section.append(kicker, message, meta, note, transport, stage);
       output.append(section);
+      renderUsage(body.usage);
 
       let index = null;
       let token = 0;
