@@ -531,7 +531,19 @@
     const prompt = document.querySelector("#prompt");
     const status = document.querySelector("#status");
     const results = document.querySelector("#results");
-    let output = results;
+    // Each tab keeps the result of its last query. A query replaces only its own panel.
+    const panels = {};
+    for (const name of Object.keys(modes)) {
+      const panel = document.createElement("div");
+      panel.className = "tab-result";
+      panel.dataset.mode = name;
+      panel.hidden = true;
+      results.append(panel);
+      panels[name] = panel;
+    }
+    let output = panels.query;
+    let pageStatus = null;
+    const tabStatus = {};
 
     const modeTabs = document.querySelector(".modes");
     modeTabs.addEventListener("click", (event) => {
@@ -602,6 +614,7 @@
     }
 
     function setMode(next) {
+      if (next !== mode) stopHistory();
       prompts[mode] = prompt.value;
       mode = next;
       if (next === "flow" && !prompts[next]) prompts[next] = storedFlowStart();
@@ -627,9 +640,14 @@
         button.tabIndex = selected ? 0 : -1;
       });
       document.querySelector("#ask").setAttribute("aria-labelledby", `tab-${next}`);
-      stopHistory();
-      results.replaceChildren();
-      setStatus("");
+      showPanel(next);
+      pageStatus = null;
+      paintStatus();
+    }
+
+    function showPanel(next) {
+      for (const name of Object.keys(panels)) panels[name].hidden = name !== next;
+      output = panels[next];
     }
 
     // Code or text alone works best with reciprocal rank fusion. Both indexes
@@ -1015,69 +1033,77 @@
       event.preventDefault();
       const requested = mode;
       const spec = modes[requested];
+      const asked = prompt.value;
+      const panel = panels[requested];
       const go = document.querySelector("#go");
       go.disabled = true;
-      stopHistory();
-      results.replaceChildren();
-      if (mode === "history" && !repoSelect.value) {
-        setStatus("Choose one repository", true);
+      if (requested === "history") stopHistory();
+      panel.replaceChildren();
+      if (requested === "history" && !repoSelect.value) {
+        setTabStatus(requested, "Choose one repository", true);
         go.disabled = false;
         return;
       }
-      const historyBlock = mode === "history" ? document.querySelector("#history-block").value.trim() : "";
-      setStatus(mode === "flow"
+      const historyBlock = requested === "history" ? document.querySelector("#history-block").value.trim() : "";
+      setTabStatus(requested, requested === "flow"
         ? "Drawing the journey…"
-        : mode === "history"
+        : requested === "history"
           ? (historyBlock ? "Reading the history of that block…" : "Reading the history of that file…")
           : spec.answer && document.querySelector("#answer").checked ? "Searching and writing an answer…" : "Searching the index…");
       const payload = { repo: repoSelect.value };
-      if (mode === "impact") payload.target = prompt.value;
-      else if (mode === "history") {
-        payload.path = prompt.value.trim();
+      if (requested === "impact") payload.target = asked;
+      else if (requested === "history") {
+        payload.path = asked.trim();
         if (historyBlock) payload.block = historyBlock;
       }
-      else if (mode === "flow") payload.start = prompt.value.trim();
-      else if (mode === "features" || mode === "testing") {
-        payload.question = prompt.value;
+      else if (requested === "flow") payload.start = asked.trim();
+      else if (requested === "features" || requested === "testing") {
+        payload.question = asked;
         payload.k = Number(document.querySelector("#k").value);
       } else {
-        payload.question = prompt.value;
+        payload.question = asked;
         payload.k = Number(document.querySelector("#k").value);
         payload.index = document.querySelector("#search-index").value;
         payload.fusion = document.querySelector("#fusion").value;
       }
       if (spec.answer) payload.answer = document.querySelector("#answer").checked;
       try {
-        const response = await fetch(`/api/${mode}`, {
+        const response = await fetch(`/api/${requested}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload)
         });
         const body = await response.json();
         if (!response.ok) {
-          setStatus(body.error || "The request failed", true);
+          setTabStatus(requested, body.error || "The request failed", true);
           return;
         }
-        if (requested === "flow") rememberFlowStart(prompt.value.trim());
+        if (requested === "flow") rememberFlowStart(asked.trim());
         render(body, requested);
-        setStatus("");
+        setTabStatus(requested, "");
       } catch (error) {
-        setStatus("The request failed before a response arrived", true);
+        setTabStatus(requested, "The request failed before a response arrived", true);
       } finally {
         go.disabled = false;
       }
     }
 
     function render(body, requested) {
-      results.replaceChildren();
+      const panel = panels[requested];
+      panel.replaceChildren();
       const save = document.createElement("button");
       save.type = "button";
       save.className = "secondary";
       save.textContent = "Save as HTML";
       save.addEventListener("click", () => downloadResult(body, requested, requested === "flow" ? repoSelect.value : prompt.value));
-      results.append(save);
-      output = results;
-      fillResult(body, requested);
+      panel.append(save);
+      const previous = output;
+      output = panel;
+      try {
+        fillResult(body, requested);
+      } finally {
+        output = previous;
+      }
     }
 
     function fillResult(body, requested) {
@@ -3149,8 +3175,20 @@ ${data}
     }
 
     function setStatus(message, isError) {
-      status.textContent = message;
-      status.className = isError ? "error" : "";
+      pageStatus = message ? { message, error: Boolean(isError) } : null;
+      paintStatus();
+    }
+
+    function setTabStatus(which, message, isError) {
+      tabStatus[which] = message ? { message, error: Boolean(isError) } : null;
+      if (message) pageStatus = null;
+      if (which === mode) paintStatus();
+    }
+
+    function paintStatus() {
+      const current = pageStatus || tabStatus[mode] || { message: "", error: false };
+      status.textContent = current.message;
+      status.className = current.error ? "error" : "";
     }
 
     setMode("query");
