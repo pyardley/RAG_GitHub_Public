@@ -42,6 +42,11 @@ services:
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
       OPENAI_RETRIEVAL_MODEL: ${OPENAI_RETRIEVAL_MODEL:-gpt-4o-mini}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-https://api.anthropic.com}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-5-5}
+      ANTHROPIC_RETRIEVAL_MODEL: ${ANTHROPIC_RETRIEVAL_MODEL:-claude-haiku-5-5}
+      ANTHROPIC_TIMEOUT: ${ANTHROPIC_TIMEOUT:-180}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5-coder:7b}
       OLLAMA_RETRIEVAL_MODEL: ${OLLAMA_RETRIEVAL_MODEL:-qwen2.5-coder:7b}

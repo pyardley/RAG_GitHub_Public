@@ -13,8 +13,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 
 from rag.answer import (
+    AnswerError,
     _query_instructions,
     _with_matches,
+    active_model,
+    anthropic_payload,
+    anthropic_root,
+    anthropic_text,
+    language_model_configured,
     matching_lines,
     ollama_payload,
     passage_limits,
@@ -41,7 +47,7 @@ from rag.testing import command_phrases, resolve_feature_paths, retrieve_testing
 from rag.web import Handler, _progress_view, github_blob_url, public_status, run_features, run_flow, run_history, run_impact, run_query, run_testing, start_ingest
 from unittest.mock import patch
 
-from rag.plan import parse_queries, question_needs_plan
+from rag.plan import parse_queries, question_needs_plan, retrieval_model
 from rag.usage import Meter, token_counts
 from rag.intent import impact_target
 from rag.search import (
@@ -1765,6 +1771,21 @@ class PlanTest(unittest.TestCase):
         ordered = merge_hits([[weaker_first], [stronger_second]], 2)
         self.assertEqual([hit.chunk_id for hit in ordered], [4, 3])
 
+    def test_claude_plans_with_the_retrieval_model_when_the_key_is_set(self):
+        with (
+            patch("rag.plan.LLM_PROVIDER", "anthropic"),
+            patch("rag.plan.ANTHROPIC_API_KEY", "sk-ant"),
+            patch("rag.plan.ANTHROPIC_RETRIEVAL_MODEL", "claude-haiku-5-5"),
+        ):
+            self.assertEqual(retrieval_model(), "claude-haiku-5-5")
+
+    def test_claude_does_not_plan_without_a_key(self):
+        with (
+            patch("rag.plan.LLM_PROVIDER", "anthropic"),
+            patch("rag.plan.ANTHROPIC_API_KEY", ""),
+        ):
+            self.assertIsNone(retrieval_model())
+
 
 class AnswerTest(unittest.TestCase):
     def test_a_quoted_step_pattern_counts_as_a_match(self):
@@ -1864,6 +1885,65 @@ class AnswerTest(unittest.TestCase):
         self.assertLessEqual(passages.count("\n\n["), 8)
         self.assertIn("app/file_0.rb:1-4", passages)
         self.assertNotIn("app/file_11.rb", passages)
+
+    def test_claude_is_configured_when_the_key_is_set(self):
+        with (
+            patch("rag.answer.LLM_PROVIDER", "anthropic"),
+            patch("rag.answer.ANTHROPIC_API_KEY", "sk-ant"),
+            patch("rag.answer.ANTHROPIC_MODEL", "claude-sonnet-5-5"),
+        ):
+            self.assertTrue(language_model_configured())
+            self.assertEqual(active_model(), "claude-sonnet-5-5")
+            self.assertEqual(active_model("claude-haiku-5-5"), "claude-haiku-5-5")
+
+    def test_claude_is_not_configured_without_a_key(self):
+        with (
+            patch("rag.answer.LLM_PROVIDER", "anthropic"),
+            patch("rag.answer.ANTHROPIC_API_KEY", ""),
+        ):
+            self.assertFalse(language_model_configured())
+
+    def test_an_unknown_provider_is_rejected(self):
+        with patch("rag.answer.LLM_PROVIDER", "bedrock"):
+            with self.assertRaises(ValueError) as caught:
+                language_model_configured()
+        self.assertIn("anthropic", str(caught.exception))
+
+    def test_anthropic_payload_puts_the_system_prompt_beside_the_user_message(self):
+        payload = anthropic_payload(
+            "claude-sonnet-5-5",
+            [
+                {"role": "system", "content": "Cite the passages."},
+                {"role": "user", "content": "Where is it saved?"},
+            ],
+            max_tokens=8192,
+        )
+        self.assertEqual(payload["model"], "claude-sonnet-5-5")
+        self.assertEqual(payload["max_tokens"], 8192)
+        self.assertEqual(payload["system"], "Cite the passages.")
+        self.assertEqual(
+            payload["messages"],
+            [{"role": "user", "content": "Where is it saved?"}],
+        )
+        self.assertNotIn("temperature", payload)
+
+    def test_a_copied_v1_suffix_is_removed_from_the_claude_host(self):
+        with patch("rag.answer.ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1"):
+            self.assertEqual(anthropic_root(), "https://api.anthropic.com")
+
+    def test_anthropic_text_keeps_the_reply_and_drops_the_thinking(self):
+        text = anthropic_text({
+            "content": [
+                {"type": "thinking", "thinking": "walk the callers"},
+                {"type": "text", "text": "<think>again</think>\nDefined in application_controller.rb:44."},
+            ],
+        })
+        self.assertEqual(text, "Defined in application_controller.rb:44.")
+
+    def test_anthropic_text_rejects_a_thinking_trace_with_no_reply(self):
+        with self.assertRaises(AnswerError) as caught:
+            anthropic_text({"content": [{"type": "thinking", "thinking": "only this"}]})
+        self.assertEqual(str(caught.exception), "Claude returned no answer text.")
 
 
 class HistoryTest(unittest.TestCase):

@@ -83,8 +83,8 @@
   <text class="sub" x="886" y="202" text-anchor="middle">clone and compare</text>
 
   <rect class="box" x="792" y="248" width="188" height="80" rx="8"/>
-  <text class="label" x="886" y="274" text-anchor="middle">Ollama or OpenAI</text>
-  <text class="sub" x="886" y="294" text-anchor="middle">compatible API</text>
+  <text class="label" x="886" y="274" text-anchor="middle">Ollama, OpenAI,</text>
+  <text class="sub" x="886" y="294" text-anchor="middle">or Claude</text>
   <text class="sub" x="886" y="312" text-anchor="middle">plan and answer</text>
 
   <line class="edge" x1="708" y1="186" x2="788" y2="186" marker-end="url(#arrow)"/>

@@ -1,4 +1,4 @@
-"""Optional written answer from a hosted OpenAI-compatible API or local Ollama."""
+"""Optional written answer from Claude, an OpenAI-compatible API, or local Ollama."""
 
 from __future__ import annotations
 
@@ -9,6 +9,10 @@ import urllib.error
 import urllib.request
 
 from rag.config import (
+    ANTHROPIC_API_KEY,
+    ANTHROPIC_BASE_URL,
+    ANTHROPIC_MODEL,
+    ANTHROPIC_TIMEOUT,
     LLM_PROVIDER,
     OLLAMA_BASE_URL,
     OLLAMA_MODEL,
@@ -111,7 +115,9 @@ def language_model_configured() -> bool:
         return bool(OLLAMA_MODEL)
     if LLM_PROVIDER == "openai":
         return bool(OPENAI_API_KEY)
-    raise ValueError("LLM_PROVIDER must be openai or ollama")
+    if LLM_PROVIDER == "anthropic":
+        return bool(ANTHROPIC_API_KEY)
+    raise ValueError("LLM_PROVIDER must be openai, anthropic, or ollama")
 
 
 def active_model(override: str | None = None) -> str:
@@ -119,12 +125,15 @@ def active_model(override: str | None = None) -> str:
         return override.strip()
     if LLM_PROVIDER == "ollama":
         return OLLAMA_MODEL
+    if LLM_PROVIDER == "anthropic":
+        return ANTHROPIC_MODEL
     return OPENAI_MODEL
 
 
 def configuration_hint() -> str:
     return (
         "Set LLM_PROVIDER=ollama to use a local Ollama model, "
+        "set ANTHROPIC_API_KEY to use Claude, "
         "or set OPENAI_API_KEY to use a hosted model."
     )
 
@@ -148,6 +157,11 @@ def answer(
     try:
         if LLM_PROVIDER == "ollama":
             text, body = _complete_ollama(
+                question, hits, impact=impact, model=chosen, draft=draft, phrases=phrases,
+                testing=testing,
+            )
+        elif LLM_PROVIDER == "anthropic":
+            text, body = _complete_anthropic(
                 question, hits, impact=impact, model=chosen, draft=draft, phrases=phrases,
                 testing=testing,
             )
@@ -216,6 +230,105 @@ def ollama_payload(
         ),
         "options": {"temperature": 0.1, "num_ctx": num_ctx, "num_predict": 1024},
     }
+
+
+_ANTHROPIC_ANSWER_TOKENS = 8192
+_ANTHROPIC_VERSION = "2023-06-01"
+
+
+def anthropic_root() -> str:
+    """Host root for the Messages API. A copied /v1 suffix is removed."""
+    root = ANTHROPIC_BASE_URL.rstrip("/")
+    if root.endswith("/v1"):
+        root = root[:-3]
+    return root
+
+
+def anthropic_payload(
+    model: str,
+    messages: list[dict[str, str]],
+    *,
+    max_tokens: int,
+) -> dict:
+    """Messages API body. The system text sits beside the chat, not inside it."""
+    system = "\n\n".join(
+        item["content"] for item in messages if item.get("role") == "system" and item.get("content")
+    )
+    chat = [
+        {"role": item["role"], "content": item["content"]}
+        for item in messages
+        if item.get("role") in {"user", "assistant"} and item.get("content")
+    ]
+    payload = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "messages": chat,
+    }
+    if system:
+        payload["system"] = system
+    return payload
+
+
+def anthropic_text(body: dict) -> str:
+    """Reply text. A thinking block is left out."""
+    content = body.get("content") if isinstance(body, dict) else None
+    if not isinstance(content, list) or not content:
+        raise AnswerError("Claude returned an unexpected response.")
+    parts = [
+        block["text"]
+        for block in content
+        if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str)
+    ]
+    text = visible_answer("\n".join(parts))
+    if text:
+        return text
+    raise AnswerError("Claude returned no answer text.")
+
+
+def complete_anthropic(
+    model: str,
+    messages: list[dict[str, str]],
+    *,
+    max_tokens: int,
+    timeout: int,
+    unreachable: str,
+) -> tuple[str, dict]:
+    payload = anthropic_payload(model, messages, max_tokens=max_tokens)
+    request = urllib.request.Request(
+        f"{anthropic_root()}/v1/messages",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "x-api-key": ANTHROPIC_API_KEY,
+            "anthropic-version": _ANTHROPIC_VERSION,
+            "content-type": "application/json",
+        },
+        method="POST",
+    )
+    body = _post_json(request, timeout=timeout, unreachable=unreachable)
+    return anthropic_text(body), body
+
+
+def _complete_anthropic(
+    question: str,
+    hits: list[Hit],
+    *,
+    impact: bool,
+    model: str,
+    draft: bool = False,
+    phrases: list[str] | None = None,
+    testing: bool = False,
+) -> tuple[str, dict]:
+    messages = _messages(
+        question, hits, impact=impact, max_hits=12, per_passage=3500, total_chars=None,
+        draft=draft, phrases=phrases, testing=testing,
+    )
+    return complete_anthropic(
+        model,
+        messages,
+        max_tokens=_ANTHROPIC_ANSWER_TOKENS,
+        timeout=ANTHROPIC_TIMEOUT,
+        unreachable="Could not reach Claude. Check ANTHROPIC_BASE_URL",
+    )
 
 
 def _complete_openai(

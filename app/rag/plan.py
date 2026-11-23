@@ -10,8 +10,11 @@ import json
 import re
 import time
 
-from rag.answer import AnswerError, visible_answer
+from rag.answer import AnswerError, complete_anthropic, visible_answer
 from rag.config import (
+    ANTHROPIC_API_KEY,
+    ANTHROPIC_RETRIEVAL_MODEL,
+    ANTHROPIC_TIMEOUT,
     LLM_PROVIDER,
     OLLAMA_BASE_URL,
     OLLAMA_RETRIEVAL_MODEL,
@@ -42,6 +45,8 @@ def retrieval_model() -> str | None:
         return OLLAMA_RETRIEVAL_MODEL or None
     if LLM_PROVIDER == "openai" and OPENAI_API_KEY:
         return OPENAI_RETRIEVAL_MODEL or None
+    if LLM_PROVIDER == "anthropic" and ANTHROPIC_API_KEY:
+        return ANTHROPIC_RETRIEVAL_MODEL or None
     return None
 
 
@@ -145,6 +150,14 @@ def _complete(model: str, system: str, user: str) -> tuple[str, dict]:
     ]
     if LLM_PROVIDER == "ollama":
         return _complete_ollama(model, messages)
+    if LLM_PROVIDER == "anthropic":
+        return complete_anthropic(
+            model,
+            messages,
+            max_tokens=2048,
+            timeout=min(60, ANTHROPIC_TIMEOUT),
+            unreachable="Search planning failed",
+        )
     return _complete_openai(model, messages)
 
 

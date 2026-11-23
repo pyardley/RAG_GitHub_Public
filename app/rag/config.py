@@ -39,6 +39,15 @@ OPENAI_BASE_URL = os.environ.get(
 ).strip().rstrip("/")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini").strip()
 OPENAI_RETRIEVAL_MODEL = os.environ.get("OPENAI_RETRIEVAL_MODEL", "gpt-4o-mini").strip()
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+ANTHROPIC_BASE_URL = os.environ.get(
+    "ANTHROPIC_BASE_URL", "https://api.anthropic.com"
+).strip().rstrip("/")
+ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5-5").strip()
+ANTHROPIC_RETRIEVAL_MODEL = os.environ.get(
+    "ANTHROPIC_RETRIEVAL_MODEL", "claude-haiku-5-5"
+).strip()
+ANTHROPIC_TIMEOUT = int(os.environ.get("ANTHROPIC_TIMEOUT", "180"))
 OLLAMA_BASE_URL = os.environ.get(
     "OLLAMA_BASE_URL", "http://host.docker.internal:11434"
 ).strip().rstrip("/")

@@ -20,6 +20,7 @@ The first repository to index is [hmcts/hwf-publicapp](https://github.com/hmcts/
   - [Search model and answer model](#search-model-and-answer-model)
   - [Local model with Ollama](#local-model-with-ollama)
   - [Hosted model](#hosted-model)
+  - [Claude](#claude)
 - [How the index is built](#how-the-index-is-built)
 - [Data](#data)
 - [Evaluate the indexes](#evaluate-the-indexes)
@@ -29,7 +30,7 @@ The first repository to index is [hmcts/hwf-publicapp](https://github.com/hmcts/
 
 The browser and any HTTP client call the server on port 8080. The MCP server runs on the host, speaks JSON-RPC to Cursor or Claude on standard input, and calls that same server. A command such as `docker compose run` starts another container from the same image and runs one command against Postgres directly.
 
-Ingest clones the repository from GitHub into the `repos` volume, splits it into chunks, and embeds those chunks on CPU. The vectors and the keyword index live in Postgres. A question is embedded with the same models, then matched against a vector index and the keyword index. When a language model is configured, it turns the question into a few short searches and can write the answer. That call goes to Ollama on the host or to an OpenAI-compatible API.
+Ingest clones the repository from GitHub into the `repos` volume, splits it into chunks, and embeds those chunks on CPU. The vectors and the keyword index live in Postgres. A question is embedded with the same models, then matched against a vector index and the keyword index. When a language model is configured, it turns the question into a few short searches and can write the answer. That call goes to Ollama on the host, to Claude, or to an OpenAI-compatible API.
 
 The database is published on port 5433. The page and the HTTP API share port 8080.
 
@@ -320,7 +321,7 @@ Questions that ask for a list of features, or that name a `.feature` file, skip 
 
 Each response reports the elapsed time and the language-model tokens for planning the question, embedding the searches, searching the index, and writing the answer. Embedding runs locally, so that stage has a time and no token count. The total is the sum of those stages.
 
-With Ollama, `OLLAMA_RETRIEVAL_MODEL` plans the searches and `OLLAMA_MODEL` writes the answer. With a hosted API, `OPENAI_RETRIEVAL_MODEL` plans the searches and `OPENAI_MODEL` writes the answer. Leave the retrieval model on the small one.
+With Ollama, `OLLAMA_RETRIEVAL_MODEL` plans the searches and `OLLAMA_MODEL` writes the answer. With Claude, `ANTHROPIC_RETRIEVAL_MODEL` plans the searches and `ANTHROPIC_MODEL` writes the answer. With another hosted API, `OPENAI_RETRIEVAL_MODEL` plans the searches and `OPENAI_MODEL` writes the answer. Leave the retrieval model on the small one.
 
 ### Local model with Ollama
 
@@ -355,6 +356,17 @@ OPENAI_MODEL=gpt-4o
 ```
 
 `OPENAI_BASE_URL` can point at any OpenAI-compatible chat API.
+
+### Claude
+
+```
+LLM_PROVIDER=anthropic
+ANTHROPIC_API_KEY=...
+ANTHROPIC_RETRIEVAL_MODEL=claude-haiku-5-5
+ANTHROPIC_MODEL=claude-sonnet-5-5
+```
+
+`ANTHROPIC_BASE_URL` defaults to `https://api.anthropic.com`. The request is sent to `/v1/messages` on that host. Haiku plans the searches. Sonnet writes the answer from the passages. Claude may think before it writes. The written answer is the text, and the thinking is left out. `ANTHROPIC_TIMEOUT` defaults to 180 seconds.
 
 ### After you change `.env`
 

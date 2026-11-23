@@ -23,7 +23,7 @@ A failed call returns an object with one field:
 | 502 | File history could not be read from git. |
 | 503 | Postgres could not be reached. `GET /api/status` also includes `ingest` and `started`. |
 
-A written answer waits on the language model. With Ollama that wait can run to `OLLAMA_TIMEOUT`, which defaults to 600 seconds. Give `query`, `features`, `testing`, and `impact` at least that long when `answer` is left on. `search` does not call the model.
+A written answer waits on the language model. With Ollama that wait can run to `OLLAMA_TIMEOUT`, which defaults to 600 seconds. With Claude it can run to `ANTHROPIC_TIMEOUT`, which defaults to 180 seconds. Give `query`, `features`, `testing`, and `impact` at least that long when `answer` is left on. `search` does not call the model.
 
 `answer` defaults to true on these routes. Set it to false when you only want the passages. The MCP tools default the other way and leave the app's written answer off unless you ask for it.
 
@@ -112,7 +112,7 @@ A retrieval response uses a shorter repository object: `name`, `branch`, and `co
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `configured` | boolean | A language model is available to write answers. |
-| `provider` | string | `openai` or `ollama`. |
+| `provider` | string | `openai`, `anthropic`, or `ollama`. |
 | `name` | string or null | Model that writes the answer. Null when none is configured. |
 | `retrieval` | string or null | Model that turns a question into searches. |
 | `hint` | string or null | How to configure a model, when none is configured. |
