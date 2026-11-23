@@ -6,6 +6,7 @@ The first repository to index is [hmcts/hwf-publicapp](https://github.com/hmcts/
 
 ## Table of contents
 
+- [Architecture](#architecture)
 - [What you need](#what-you-need)
 - [Start](#start)
 - [Web](#web)
@@ -23,6 +24,39 @@ The first repository to index is [hmcts/hwf-publicapp](https://github.com/hmcts/
 - [Data](#data)
 - [Evaluate the indexes](#evaluate-the-indexes)
 - [Tests](#tests)
+
+## Architecture
+
+The browser and any HTTP client call the server on port 8080. The MCP server runs on the host, speaks JSON-RPC to Cursor or Claude on standard input, and calls that same server. A command such as `docker compose run` starts another container from the same image and runs one command against Postgres directly.
+
+Ingest clones the repository from GitHub into the `repos` volume, splits it into chunks, and embeds those chunks on CPU. The vectors and the keyword index live in Postgres. A question is embedded with the same models, then matched against a vector index and the keyword index. When a language model is configured, it turns the question into a few short searches and can write the answer. That call goes to Ollama on the host or to an OpenAI-compatible API.
+
+The database is published on port 5433. The page and the HTTP API share port 8080.
+
+```mermaid
+flowchart TB
+  Editor[Cursor or Claude] -->|stdio| MCP[MCP server]
+  Browser[Browser] --> API
+  Program[HTTP client] --> API
+  MCP -->|HTTP| API
+
+  subgraph compose [Docker Compose]
+    API[rag serve on port 8080]
+    CLI[one command in the rag image]
+    Work[Ingest and retrieval]
+    Embed[Embedding models]
+    DB[(Postgres 16 with pgvector)]
+    Repos[repos volume]
+    API --> Work
+    CLI --> Work
+    Work --> Embed
+    Work --> DB
+    Work --> Repos
+  end
+
+  Work --> GitHub[GitHub]
+  Work -->|plan and answer| LLM[Ollama or an OpenAI-compatible API]
+```
 
 ## What you need
 
