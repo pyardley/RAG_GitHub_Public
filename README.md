@@ -10,6 +10,7 @@ The first repository to index is [hmcts/hwf-publicapp](https://github.com/hmcts/
 - [Start](#start)
 - [Web](#web)
 - [MCP](#mcp)
+- [HTTP API](API.md)
 - [Ask questions](#ask-questions)
 - [Examples](#examples)
 - [Logs](#logs)
@@ -60,7 +61,7 @@ When the page opens, it asks GitHub which commit each indexed branch is at. A re
 
 ## MCP
 
-A Model Context Protocol server lets another language model call the running app. It speaks JSON-RPC on standard input and uses the web API, so start the app first with `docker compose up -d`. The server needs only Python on the host. It does not open the database itself.
+A Model Context Protocol server lets another language model call the running app. It speaks JSON-RPC on standard input and uses the web API, so start the app first with `docker compose up -d`. The server needs only Python on the host. It does not open the database itself. The HTTP routes are documented in [API.md](API.md). A program can call those routes itself.
 
 ```powershell
 python mcp/server.py
