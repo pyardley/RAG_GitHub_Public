@@ -1,6 +1,6 @@
 # Plan: a second flow layout that keeps arrows from crossing
 
-**Status (24 November 2026):** Done. The spine layout stays the default. Spread is offered when it places branches in another column and crosses less.
+**Status (24 November 2026):** Done. Spine stays the default. Spread is offered when it places branches in another column and crosses less. ELK, Dagre, d3-dag, and Graphviz are offered as well. The comparison of all six is below.
 
 The spine layout is the right drawing for a short journey. Help with Fees, the staff paper journey, and a page-object journey are a single column, read from top to bottom, with a short lane when an answer leaves the page and comes back. `ministryofjustice/c100-application`, started at its opening step, is a different shape. On the indexed checkout that chart is **98 steps, all in column 0, rows 0–97, and 113 arrows: 71 straight and 42 lanes**. The longest lane covers 77 rows. The median lane covers 53. Up to 33 lanes sit side by side. There are no side arrows, because a side arrow is only used when the two boxes are already in neighbouring columns.
 
@@ -111,7 +111,7 @@ Update the Flow hint so it names the control when a chart has both drawings. In 
 ## Out of scope
 
 - Reordering the spine. The usual answer stays the left-hand column.
-- A general graph library (Graphviz, ELK, or a force-directed layout). C100 is under a hundred steps, and the saved page would have to carry the same geometry. The three route kinds already drawn are enough if the columns are right.
+- Replacing Spine with a library drawing. ELK, Dagre, d3-dag, and Graphviz were left out of the first Spread work, because the three route kinds were enough for a short journey once the columns were right. They are now extra drawings of the same steps, scored in "How the drawings compared". A force-directed layout is still out.
 - Dropping the label highlight, the zoom controls, or the pinned left column.
 - Changing which steps the decision tree includes. This plan only changes where those steps are drawn.
 
@@ -122,3 +122,26 @@ Update the Flow hint so it names the control when a chart has both drawings. In 
 - A blank start path on that repository still draws **Start or continue an application**. Spine is selected until Spread is chosen.
 - Choosing a label in either drawing highlights one arrow and scrolls to the other end.
 - A short chart, such as the public Help with Fees journey, has no Spread control and looks as it does today.
+
+## How the drawings compared
+
+Measured on 24 November 2026, on the Flow page, for the indexed `ministryofjustice/c100-application` chart (commit `e009daaac8fd`) drawn from a blank start path. The drawing on screen had 126 boxes and 174 arrows.
+
+The number on each button is a geometric count of the SVG, and it is the same measure for every drawing. Two arrow segments cross when their lines cross and they do not share an endpoint within 0.8px. Touching at a box does not count. Boxes overlap when their rectangles overlap after a 1px inset, so boxes that only touch do not count. Spine and Spread are also counted this way, from the lines `drawFlow` painted, so the button can be read next to a library drawing. The server still keeps its own route count on `crossings`.
+
+| Drawing | Arrow crossings | Overlapping boxes |
+| --- | ---: | ---: |
+| Spine | 2779 | 0 |
+| Spread | 44 | 0 |
+| ELK | 14 | 0 |
+| Dagre | 10 | 0 |
+| d3-dag | 12 | 0 |
+| Graphviz | 4 | 0 |
+
+Spine is the tall single column, and it is the drawing that opens when nothing has been chosen. It keeps the pinned left column. Spread places each branch beside the step that leaves it and reuses `straight`, `side`, and `lane`. ELK, Dagre, d3-dag, and Graphviz place the same steps and return polylines. Their scripts are served from `/vendor/`. ELK is layered and orthogonal, downward. Dagre ranks top to bottom. d3-dag uses a Sugiyama layering. Graphviz is `dot` with orthogonal splines.
+
+d3-dag cannot lay out a loop. On this chart it opened 11 edges, laid out the rest, and drew those 11 as straight lines from border to border. The button title says how many were opened.
+
+A label on a library drawing still highlights its arrow, and the highlight still continues through a box with a single way on. On the Graphviz drawing, "No research consent" continued through the following "Continue". Choosing Spine brings the original column back.
+
+The last button selected is stored in `localStorage` under `flow-layout`. All six stay on the page. The lower crossing counts are a reason to keep the library drawings available while a large flow is compared. They leave the default as Spine.
