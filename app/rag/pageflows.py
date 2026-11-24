@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from rag.flows import _dedupe, _mark_choices, _node, _place, _route, _short
+from rag.flows import _dedupe, _mark_choices, _node, _place, _route, _short, seal_chart
 
 _SKIP_DIRS = {".git", "tmp", "vendor", "node_modules", "coverage", "log", "dist"}
 _HEADER = re.compile(
@@ -198,16 +198,21 @@ def _chart_for(
         if edge["from"] == entry.id and edge["to"] not in {item[0] for item in spine}
     }
     _mark_choices(nodes, edges)
-    _place(list(nodes.values()), [page_id for page_id in order if page_id in nodes], shared=side)
+    placed = [page_id for page_id in order if page_id in nodes]
+    _place(list(nodes.values()), placed, shared=side)
     _route(list(nodes.values()), edges)
     description = locales.get(entry.description_key, "")
     note = f"{description} {_NOTE}" if description else _NOTE
-    return {
+    spine_ids: list[str] = []
+    for page_id, _action in spine:
+        if page_id not in spine_ids:
+            spine_ids.append(page_id)
+    return seal_chart({
         "title": entry.label,
         "note": note,
         "nodes": list(nodes.values()),
         "edges": edges,
-    }
+    }, spine_ids)
 
 
 def _reaches(body: str, entry: Page, by_name: dict[str, Routine], depth: int = 0) -> bool:

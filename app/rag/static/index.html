@@ -263,6 +263,7 @@
     .flow-chart { display: grid; gap: 0.45rem; }
     .flow-tools { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; }
     .flow-tools button { padding: 0.3rem 0.7rem; font-size: 0.85rem; }
+    .flow-tools button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
     .flow-zoom { color: var(--muted); font-size: 0.85rem; min-width: 3.2rem; }
     .flow-frame {
       overflow: auto;
@@ -506,7 +507,7 @@
         button: "Show",
         answer: false,
         k: false,
-        hint: "Leave this blank to draw a question list, redirects, or page objects. A decision tree with none of those starts at its opening step, such as /steps/opening/start_or_continue. Type a path to start at that step instead. Each box opens that step in the indexed commit on GitHub. Ask about this journey once the chart is drawn."
+        hint: "Leave this blank to draw a question list, redirects, or page objects. A decision tree with none of those starts at its opening step, such as /steps/opening/start_or_continue. Type a path to start at that step instead. When a chart offers Spine and Spread, Spread draws each branch beside the step that leaves it so fewer arrows cross. Each box opens that step in the indexed commit on GitHub. Ask about this journey once the chart is drawn."
       },
       features: {
         label: "Feature or step",
@@ -1600,17 +1601,21 @@ ${data}
         if (chart.note || (chart.edges || []).some((edge) => edge.label)) {
           const note = document.createElement("p");
           note.className = "scope";
-          const hint = "Choose a label to highlight that arrow and move to its other end. The label at that end brings you back.";
+          let hint = "Choose a label to highlight that arrow and move to its other end. The label at that end brings you back.";
+          if (chart.layouts && chart.layouts.spread) {
+            hint += " Spine and Spread are two drawings of this journey. Spread puts each branch beside the step that leaves it.";
+          }
           note.textContent = chart.note ? `${chart.note} ${hint}` : hint;
           section.append(note);
         }
         const changes = flowChanges(chart.changes);
         if (changes) section.append(changes);
         if (output === results) section.append(journeyAsk(chart));
-        const drawn = drawFlow(chart);
+        const chartKey = `flow-${flowMarker += 1}`;
+        const drawn = drawFlow(chart, chartKey);
         const unmarked = unmarkedList(drawn.nodes);
         if (unmarked) section.append(unmarked);
-        section.append(flowView(drawn));
+        section.append(flowView(chart, chartKey));
         output.append(section);
       }
       renderUsage(body.usage);
@@ -1787,7 +1792,7 @@ ${data}
       return list;
     }
 
-    function drawFlow(chart) {
+    function drawFlow(chart, chartKey) {
       const svgNs = "http://www.w3.org/2000/svg";
       const nodeWidth = 200;
       const lineHeight = 15;
@@ -1800,14 +1805,24 @@ ${data}
         if (!source || !target || source.row !== target.row) return widest;
         return Math.max(widest, edge.label.length);
       }, 0);
-      const columnGap = Math.max(40, sideLabel * 6.6 + 18);
+      const laneLabel = (chart.edges || []).reduce((widest, edge) => {
+        if (edge.route !== "lane" || edge.gutter === "left" || !edge.label) return widest;
+        return Math.max(widest, edge.label.length);
+      }, 0);
+      const columnGap = Math.max(40, sideLabel * 6.6 + 18, laneLabel * 6.6 + 28);
       const leftLabel = (chart.edges || []).reduce((widest, edge) => {
-        if (edge.route !== "straight" || !edge.label) return widest;
+        const onTheLeft = edge.route === "straight" || (edge.route === "lane" && edge.gutter === "left");
+        if (!onTheLeft || !edge.label) return widest;
         const source = (chart.nodes || []).find((node) => node.id === edge.from);
         if (!source || (source.column || 0) !== 0) return widest;
         return Math.max(widest, edge.label.length);
       }, 0);
-      const labelGutter = leftLabel ? Math.min(210, Math.max(28, leftLabel * 6.6 + 20)) : 12;
+      const hasLeftLane = (chart.edges || []).some((edge) => edge.route === "lane" && edge.gutter === "left");
+      const labelGutter = leftLabel ? Math.min(hasLeftLane ? 280 : 210, Math.max(28, leftLabel * 6.6 + 20)) : 12;
+      const leftLaneCount = Math.max(0, ...(chart.edges || []).map((edge) => (
+        edge.route === "lane" && edge.gutter === "left" ? (edge.lane || 0) + 1 : 0
+      )));
+      const leftLaneSpace = leftLaneCount ? 14 + leftLaneCount * 8 + 12 : 0;
       const lanePitch = 8;
       const laneInset = 14;
       const formerLanePitch = 168;
@@ -1825,7 +1840,7 @@ ${data}
       const svg = document.createElementNS(svgNs, "svg");
       svg.setAttribute("role", "img");
       svg.setAttribute("aria-label", chart.title || "Journey");
-      const chartId = `flow-${flowMarker += 1}`;
+      const chartId = chartKey || `flow-${flowMarker += 1}`;
       const usedIds = new Set();
       for (const node of nodes) node.domId = flowDomId(chartId, node, usedIds);
       if (!nodes.length) {
@@ -1901,27 +1916,70 @@ ${data}
         y += height + trailing;
       }
       for (const node of nodes) {
-        node.x = labelGutter + node.column * (nodeWidth + columnGap);
+        node.x = labelGutter + leftLaneSpace + node.column * (nodeWidth + columnGap);
         node.y = rowY.get(node.row);
+        if (node.column === 0 && leftLaneSpace) node.straightLabelX = labelGutter - 6;
       }
       const right = Math.max(...nodes.map((node) => node.x + nodeWidth));
       const laneCount = Math.max(0, ...(chart.edges || []).map((edge) => edge.route === "lane" ? (edge.lane || 0) + 1 : 0));
       const laneX = (edge) => {
         const source = byId.get(edge.from);
         const target = byId.get(edge.to);
-        const top = Math.min(source.y + source.height / 2, target.y + target.height / 2);
-        const bottom = Math.max(source.y + source.height / 2, target.y + target.height / 2);
+        const lane = edge.lane || 0;
+        const top = Math.min(source.y, target.y);
+        const bottom = Math.max(source.y + source.height, target.y + target.height);
+        if (Number.isInteger(edge.channel)) {
+          if (edge.gutter === "left") {
+            let edgeLeft = Infinity;
+            for (const node of nodes) {
+              if ((node.column || 0) !== edge.channel) continue;
+              if (node.y + node.height <= top || node.y >= bottom) continue;
+              edgeLeft = Math.min(edgeLeft, node.x);
+            }
+            if (!Number.isFinite(edgeLeft)) {
+              const sample = nodes.find((node) => (node.column || 0) === edge.channel);
+              edgeLeft = sample ? sample.x : 0;
+            }
+            return edgeLeft - laneInset - lane * lanePitch;
+          }
+          let edgeRight = 0;
+          for (const node of nodes) {
+            if ((node.column || 0) !== edge.channel) continue;
+            if (node.y + node.height <= top || node.y >= bottom) continue;
+            edgeRight = Math.max(edgeRight, node.x + nodeWidth);
+          }
+          if (!edgeRight) {
+            const sample = nodes.find((node) => (node.column || 0) === edge.channel);
+            edgeRight = sample ? sample.x + nodeWidth : 0;
+          }
+          return edgeRight + laneInset + lane * lanePitch;
+        }
+        const midTop = Math.min(source.y + source.height / 2, target.y + target.height / 2);
+        const midBottom = Math.max(source.y + source.height / 2, target.y + target.height / 2);
         let edgeRight = 0;
         for (const node of nodes) {
-          if (node.y + node.height <= top || node.y >= bottom) continue;
+          if (node.y + node.height <= midTop || node.y >= midBottom) continue;
           edgeRight = Math.max(edgeRight, node.x + nodeWidth);
         }
-        const lane = edge.lane || 0;
         const tight = edgeRight + laneInset + lane * lanePitch;
         const former = right + formerLaneInset + lane * formerLanePitch;
         return (tight + former) / 2;
       };
       const height = y - trailing + marginY;
+      const fans = new Map();
+      for (const edge of chart.edges || []) {
+        const key = `${edge.from}\0${edge.to}\0${edge.route}`;
+        const list = fans.get(key) || [];
+        list.push(edge);
+        fans.set(key, list);
+      }
+      for (const list of fans.values()) {
+        if (list.length < 2) continue;
+        list.forEach((edge, index) => {
+          edge.fan = index;
+          edge.fanCount = list.length;
+        });
+      }
       const prepared = [];
       let maxX = right + 20;
       for (const edge of chart.edges || []) {
@@ -1940,7 +1998,13 @@ ${data}
         const leaves = laneLeaves.get(source.id) || [];
         const leaveIndex = leaves.indexOf(edge);
         let exitY = null;
-        if (edge.route === "lane" && leaves.length > 1) {
+        const beside = (chart.edges || []).some((other) => (
+          other.route === "side" && other.from === source.id && other !== edge
+          && (byId.get(other.to) || {}).row === source.row
+        ));
+        if (edge.route === "lane" && Number.isInteger(edge.channel) && edge.gutter !== "left" && beside) {
+          exitY = source.y + source.height - 12;
+        } else if (edge.route === "lane" && leaves.length > 1 && !Number.isInteger(edge.channel)) {
           const room = Math.max(0, source.height - 16);
           const step = Math.min(24, room / (leaves.length - 1));
           const used = step * (leaves.length - 1);
@@ -1962,7 +2026,7 @@ ${data}
         for (const spot of item.spots) maxX = Math.max(maxX, labelExtent(spot, item.edge.label));
       }
       const width = maxX + 16;
-      const spineWidth = nodes.some((node) => node.column > 0) || laneCount > 0 ? labelGutter + nodeWidth + 2 : 0;
+      const spineWidth = nodes.some((node) => node.column > 0) || laneCount > 0 ? labelGutter + leftLaneSpace + nodeWidth + 2 : 0;
       svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
       svg.setAttribute("width", String(width));
       svg.setAttribute("height", String(height));
@@ -2157,10 +2221,11 @@ ${data}
     function flowRoute(edge, source, target, nodeWidth, laneX, joinY, straightIn, exitY) {
       const bottom = [source.x + nodeWidth / 2, source.y + source.height];
       const top = [target.x + nodeWidth / 2, target.y];
+      const fanY = ((edge.fan || 0) - ((edge.fanCount || 1) - 1) / 2) * 22;
       if (edge.route === "straight") {
         return {
           d: `M ${bottom[0]} ${bottom[1]} L ${top[0]} ${top[1]}`,
-          labelX: source.x - 8,
+          labelX: source.straightLabelX || source.x - 8,
           labelY: (bottom[1] + top[1]) / 2 + 4,
           anchor: "end"
         };
@@ -2170,7 +2235,7 @@ ${data}
           const forward = source.x < target.x;
           const x1 = forward ? source.x + nodeWidth : source.x;
           const x2 = forward ? target.x : target.x + nodeWidth;
-          const y = source.y + source.height / 2;
+          const y = source.y + source.height / 2 + fanY;
           return { d: `M ${x1} ${y} L ${x2} ${y}`, labelX: (x1 + x2) / 2, labelY: y - 8, anchor: "middle" };
         }
         const mid = bottom[1] + Math.max(12, (top[1] - bottom[1]) / 2);
@@ -2183,23 +2248,40 @@ ${data}
       }
       const x = laneX(edge);
       const y1 = exitY == null ? source.y + source.height / 2 : exitY;
-      const spots = [{ x: source.x + nodeWidth + 8, y: y1 - 6, anchor: "start" }];
+      const channeled = Number.isInteger(edge.channel);
+      const leftGutter = edge.gutter === "left";
+      const leaveRight = !leftGutter && (!channeled || (source.column || 0) <= edge.channel);
+      const arriveRight = !leftGutter && (!channeled || (target.column || 0) <= edge.channel);
+      const x1 = leaveRight ? source.x + nodeWidth : source.x;
+      const x2 = arriveRight ? target.x + nodeWidth : target.x;
+      const y2 = target.y + target.height / 2 + fanY;
+      const spots = channeled
+        ? (leftGutter
+          ? [{ x: (source.straightLabelX || source.x - 8), y: y2 + 4, anchor: "end" }]
+          : [{ x: (x + x2) / 2, y: y2 - 10, anchor: "middle" }])
+        : [{
+          x: leaveRight ? source.x + nodeWidth + 8 : source.x - 8,
+          y: y1 - 6,
+          anchor: leaveRight ? "start" : "end"
+        }];
+      if (leftGutter && (edge.fanCount || 1) < 2 && Math.abs(y2 - y1) > 420) {
+        spots.push({ x: spots[0].x, y: (y1 + y2) / 2, anchor: spots[0].anchor });
+      }
       // A lane back to this column meets the spine above the box. The side of the
       // box is where a lane leaves, so arriving there reads as one continuous link.
       // The second label sits on that join, in the gap above the destination.
-      if (joinY !== null && joinY > y1 + 16) {
+      if (joinY !== null && joinY > y1 + 16 && arriveRight) {
         const joinX = target.x + nodeWidth / 2;
-        let d = `M ${source.x + nodeWidth} ${y1} L ${x} ${y1} L ${x} ${joinY} L ${joinX} ${joinY}`;
+        let d = `M ${x1} ${y1} L ${x} ${y1} L ${x} ${joinY} L ${joinX} ${joinY}`;
         if (!straightIn) d += ` L ${joinX} ${target.y}`;
         spots.push({ x: joinX + 10, y: joinY - 4, anchor: "start" });
-        return { d, labelX: spots[0].x, labelY: spots[0].y, anchor: "start", spots };
+        return { d, labelX: spots[0].x, labelY: spots[0].y, anchor: spots[0].anchor, spots };
       }
-      const y2 = target.y + target.height / 2;
       return {
-        d: `M ${source.x + nodeWidth} ${y1} L ${x} ${y1} L ${x} ${y2} L ${target.x + nodeWidth} ${y2}`,
+        d: `M ${x1} ${y1} L ${x} ${y1} L ${x} ${y2} L ${x2} ${y2}`,
         labelX: spots[0].x,
         labelY: spots[0].y,
-        anchor: "start",
+        anchor: spots[0].anchor,
         spots
       };
     }
@@ -2233,7 +2315,46 @@ ${data}
       }
     }
 
-    function flowView(drawn) {
+    function laidOut(chart, layout) {
+      const nodes = (chart.nodes || []).map((node) => ({ ...node }));
+      const edges = (chart.edges || []).map((edge) => ({ ...edge }));
+      const spread = layout === "spread" && chart.layouts ? chart.layouts.spread : null;
+      if (!spread) return { ...chart, nodes, edges };
+      const placed = new Map((spread.nodes || []).map((node) => [node.id, node]));
+      for (const node of nodes) {
+        const next = placed.get(node.id);
+        if (!next) continue;
+        node.row = next.row;
+        node.column = next.column;
+      }
+      const key = (edge) => `${edge.from}\0${edge.to}\0${edge.label || ""}`;
+      const routed = new Map((spread.edges || []).map((edge) => [key(edge), edge]));
+      for (const edge of edges) {
+        const next = routed.get(key(edge));
+        if (!next) continue;
+        edge.route = next.route;
+        if (next.lane == null) delete edge.lane;
+        else edge.lane = next.lane;
+        if (next.channel == null) delete edge.channel;
+        else edge.channel = next.channel;
+        if (next.gutter == null) delete edge.gutter;
+        else edge.gutter = next.gutter;
+      }
+      return { ...chart, nodes, edges };
+    }
+
+    function storedFlowLayout(chart) {
+      let saved = "";
+      try {
+        saved = localStorage.getItem("flow-layout") || "";
+      } catch (error) {
+        saved = "";
+      }
+      if (saved === "spread" && chart.layouts && chart.layouts.spread) return "spread";
+      return "spine";
+    }
+
+    function flowView(chart, chartKey) {
       const chartBox = document.createElement("div");
       chartBox.className = "flow-chart";
       const tools = document.createElement("div");
@@ -2245,8 +2366,10 @@ ${data}
       frame.title = "Drag to move the chart. Hold Ctrl and scroll to zoom.";
       const canvas = document.createElement("div");
       canvas.className = "flow-canvas";
+      let layout = storedFlowLayout(chart);
+      let drawn = drawFlow(laidOut(chart, layout), chartKey);
+      let spine = flowSpine(drawn);
       canvas.append(drawn.svg);
-      const spine = flowSpine(drawn);
       if (spine) canvas.append(spine);
       frame.append(canvas);
       let scale = 1;
@@ -2302,6 +2425,40 @@ ${data}
         frame.scrollTop = pointY * scale - frame.clientHeight / 2;
         pinSpine();
       };
+      const redraw = () => {
+        drawn = drawFlow(laidOut(chart, layout), chartKey);
+        spine = flowSpine(drawn);
+        canvas.replaceChildren(drawn.svg);
+        if (spine) canvas.append(spine);
+        fit();
+      };
+      const paintLayout = () => {
+        for (const button of tools.querySelectorAll("[data-layout]")) {
+          button.setAttribute("aria-pressed", String(button.dataset.layout === layout));
+        }
+      };
+      const chooseLayout = (name) => {
+        layout = name;
+        try {
+          localStorage.setItem("flow-layout", name);
+        } catch (error) {
+          // The chart still switches. The next visit starts on Spine.
+        }
+        redraw();
+        paintLayout();
+      };
+      if (chart.layouts && chart.layouts.spread) {
+        const spineCount = chart.crossings;
+        const spreadCount = chart.layouts.spread.crossings;
+        const spineButton = toolButton(`Spine (${spineCount})`, () => chooseLayout("spine"));
+        const spreadButton = toolButton(`Spread (${spreadCount})`, () => chooseLayout("spread"));
+        spineButton.dataset.layout = "spine";
+        spreadButton.dataset.layout = "spread";
+        spineButton.title = "Keep the main path in one column";
+        spreadButton.title = "Put each branch beside the step that leaves it";
+        tools.append(spineButton, spreadButton);
+        paintLayout();
+      }
       tools.append(
         toolButton("Zoom out", () => zoomBy(1 / 1.25)),
         toolButton("Zoom in", () => zoomBy(1.25)),

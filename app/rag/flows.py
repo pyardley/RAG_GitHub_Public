@@ -126,9 +126,10 @@ def public_chart(root: Path) -> dict | None:
     if len(nodes) < 2 or not edges:
         return None
     _mark_choices(nodes, edges)
-    _place(list(nodes.values()), _public_order(pages), shared={"refund": ("confirmation", 1)})
+    order = _public_order(pages)
+    _place(list(nodes.values()), order, shared={"refund": ("confirmation", 1)})
     _route(list(nodes.values()), edges)
-    return {
+    return seal_chart({
         "title": "Apply for help with fees",
         "note": (
             "Each box opens the file for that step. "
@@ -137,7 +138,7 @@ def public_chart(root: Path) -> dict | None:
         ),
         "nodes": list(nodes.values()),
         "edges": edges,
-    }
+    }, order)
 
 
 def staff_charts(root: Path) -> list[dict]:
@@ -224,12 +225,12 @@ def paper_chart(root: Path) -> dict | None:
     ]
     _place(list(nodes.values()), order)
     _route(list(nodes.values()), edges)
-    return {
+    return seal_chart({
         "title": "Process a paper application",
         "note": "Staff enter a paper application. An arrow is a redirect in that step's controller.",
         "nodes": list(nodes.values()),
         "edges": edges,
-    }
+    }, order)
 
 
 def evidence_chart(root: Path) -> dict | None:
@@ -267,14 +268,15 @@ def evidence_chart(root: Path) -> dict | None:
     _mark_choices(nodes, edges)
     if "confirmation" in nodes:
         nodes["confirmation"]["kind"] = "end"
-    _place(list(nodes.values()), ["accuracy", "incorrect", "income", "result", "summary", "confirmation"])
+    evidence_order = ["accuracy", "incorrect", "income", "result", "summary", "confirmation"]
+    _place(list(nodes.values()), evidence_order)
     _route(list(nodes.values()), edges)
-    return {
+    return seal_chart({
         "title": "Check evidence",
         "note": "An evidence check. Arrows are the redirects, and the Next button on the income result.",
         "nodes": list(nodes.values()),
         "edges": edges,
-    }
+    }, evidence_order)
 
 
 def part_payment_chart(root: Path) -> dict | None:
@@ -299,14 +301,15 @@ def part_payment_chart(root: Path) -> dict | None:
     _mark_choices(nodes, edges)
     if "confirmation" in nodes:
         nodes["confirmation"]["kind"] = "end"
-    _place(list(nodes.values()), ["accuracy", "summary", "confirmation"])
+    payment_order = ["accuracy", "summary", "confirmation"]
+    _place(list(nodes.values()), payment_order)
     _route(list(nodes.values()), edges)
-    return {
+    return seal_chart({
         "title": "Check a part payment",
         "note": "A part-payment check. An arrow is a redirect in the part-payment controller.",
         "nodes": list(nodes.values()),
         "edges": edges,
-    }
+    }, payment_order)
 
 
 def _public_edges(
@@ -681,6 +684,227 @@ def _route(nodes: list[dict], edges: list[dict]) -> None:
         else:
             lanes[lane] = end
         edge["lane"] = lane
+
+
+_COLUMN_CAP = 4
+
+
+def count_crossings(nodes: list[dict], edges: list[dict]) -> int:
+    """How many arrow segments cross. Touching at a box does not count."""
+    placed = {node["id"]: (node.get("column", 0), node.get("row", 0)) for node in nodes}
+    segments: list[tuple] = []
+    for edge in edges:
+        if edge["from"] not in placed or edge["to"] not in placed:
+            continue
+        segments.extend(_segments(edge, placed))
+    crossings = 0
+    horizontals = [segment for segment in segments if segment[0] == "h"]
+    verticals = [segment for segment in segments if segment[0] == "v"]
+    for _kind, y, x1, x2 in horizontals:
+        left, right = (x1, x2) if x1 <= x2 else (x2, x1)
+        if left == right:
+            continue
+        for _other, x, y1, y2 in verticals:
+            top, bottom = (y1, y2) if y1 <= y2 else (y2, y1)
+            if top == bottom:
+                continue
+            if left < x < right and top < y < bottom:
+                crossings += 1
+    return crossings
+
+
+def _segments(edge: dict, placed: dict[str, tuple[int, int]]) -> list[tuple]:
+    source_column, source_row = placed[edge["from"]]
+    target_column, target_row = placed[edge["to"]]
+    route = edge.get("route") or "straight"
+    if route == "straight":
+        return [("v", source_column, source_row, target_row)]
+    if route == "side":
+        if source_row == target_row:
+            return [("h", source_row, source_column, target_column)]
+        mid = (source_row + target_row) / 2
+        return [
+            ("v", source_column, source_row, mid),
+            ("h", mid, source_column, target_column),
+            ("v", target_column, mid, target_row),
+        ]
+    channel = edge.get("channel")
+    if channel is None:
+        channel = source_column if source_column == target_column else min(source_column, target_column)
+    lane = edge.get("lane") or 0
+    if edge.get("gutter") == "left":
+        gutter = channel - 0.5 - (lane + 1) * 0.01
+    else:
+        gutter = channel + 0.5 + (lane + 1) * 0.01
+    return [
+        ("h", source_row, source_column, gutter),
+        ("v", gutter, source_row, target_row),
+        ("h", target_row, gutter, target_column),
+    ]
+
+
+def spread_layout(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Rows and columns that put each branch beside the step that reaches it.
+
+    The spine stays in column 0, in its present order. A step past four columns
+    stays in the last column and is reached by a lane.
+    """
+    by_id = {node["id"]: node for node in nodes}
+    spine_ids = [
+        node["id"]
+        for node in sorted(nodes, key=lambda item: (item.get("row", 0), item.get("column", 0)))
+        if node.get("spine")
+    ]
+    if not spine_ids:
+        spine_ids = [
+            node["id"] for node in sorted(nodes, key=lambda item: (item.get("row", 0), item["id"]))
+            if node.get("column", 0) == 0
+        ]
+    spine = set(spine_ids)
+    outgoing: dict[str, list[dict]] = {}
+    for edge in edges:
+        outgoing.setdefault(edge["from"], []).append(edge)
+    for items in outgoing.values():
+        items.sort(key=lambda edge: (edge.get("label") or "", edge["to"]))
+    column: dict[str, int] = {step_id: 0 for step_id in spine_ids}
+    children: dict[str, list[str]] = {step_id: [] for step_id in by_id}
+    seen = set(spine_ids)
+    queue = list(spine_ids)
+    head = 0
+    while head < len(queue):
+        source = queue[head]
+        head += 1
+        for edge in outgoing.get(source, []):
+            target = edge["to"]
+            if target in seen or target not in by_id or target in spine:
+                continue
+            seen.add(target)
+            column[target] = min(_COLUMN_CAP, column[source] + 1)
+            children[source].append(target)
+            queue.append(target)
+
+    def rows_needed(step_id: str) -> int:
+        kids = children.get(step_id, [])
+        if not kids:
+            return 1
+        beside = [kid for kid in kids if column[kid] != column[step_id]]
+        below = [kid for kid in kids if column[kid] == column[step_id]]
+        beside_span = sum(rows_needed(kid) for kid in beside)
+        below_span = sum(rows_needed(kid) for kid in below)
+        return max(beside_span or 1, 1 + below_span)
+
+    row_of: dict[str, int] = {}
+    cursor = 0
+    for step_id in spine_ids:
+        row_of[step_id] = cursor
+        cursor += rows_needed(step_id)
+
+    def place(step_id: str) -> None:
+        kids = children.get(step_id, [])
+        beside = [kid for kid in kids if column[kid] != column[step_id]]
+        below = [kid for kid in kids if column[kid] == column[step_id]]
+        row = row_of[step_id]
+        for kid in beside:
+            row_of[kid] = row
+            place(kid)
+            row += rows_needed(kid)
+        row = row_of[step_id] + 1
+        for kid in below:
+            row_of[kid] = row
+            place(kid)
+            row += rows_needed(kid)
+
+    for step_id in spine_ids:
+        place(step_id)
+    last = max(row_of.values(), default=-1)
+    for node in nodes:
+        if node["id"] in row_of:
+            continue
+        last += 1
+        row_of[node["id"]] = last
+        column.setdefault(node["id"], 1)
+    placed = [
+        {"id": step_id, "row": row_of[step_id], "column": column.get(step_id, 0)}
+        for step_id in row_of
+    ]
+    return placed, _spread_routes(placed, edges)
+
+
+def _spread_routes(placed: list[dict], edges: list[dict]) -> list[dict]:
+    position = {node["id"]: node for node in placed}
+    routed: list[dict] = []
+    lanes: list[dict] = []
+    for edge in edges:
+        source = position.get(edge["from"])
+        target = position.get(edge["to"])
+        if source is None or target is None:
+            continue
+        item = {"from": edge["from"], "to": edge["to"], "label": edge.get("label") or ""}
+        source_column, source_row = source["column"], source["row"]
+        target_column, target_row = target["column"], target["row"]
+        if source_column == target_column and target_row == source_row + 1:
+            item["route"] = "straight"
+        elif abs(source_column - target_column) == 1 and source_row == target_row:
+            item["route"] = "side"
+        else:
+            item["route"] = "lane"
+            if source_column == target_column:
+                item["channel"] = source_column
+                item["gutter"] = "left"
+            else:
+                item["channel"] = min(source_column, target_column)
+            lanes.append(item)
+        routed.append(item)
+    grouped: dict[tuple, list[dict]] = {}
+    for item in lanes:
+        grouped.setdefault((item["channel"], item.get("gutter") or ""), []).append(item)
+
+    def span(item: dict) -> int:
+        return abs(position[item["to"]]["row"] - position[item["from"]]["row"])
+
+    for group in grouped.values():
+        lanes_open: list[list[tuple[int, int, str]]] = []
+        for item in sorted(group, key=lambda edge: (span(edge), edge["from"], edge["to"], edge["label"])):
+            start = min(position[item["from"]]["row"], position[item["to"]]["row"])
+            end = max(position[item["from"]]["row"], position[item["to"]]["row"])
+            chosen = None
+            for index, occupied in enumerate(lanes_open):
+                # Answers leaving one step share a line. A second step needs the next line.
+                clear = all(
+                    end <= other_start or start >= other_end or other_from == item["from"]
+                    for other_start, other_end, other_from in occupied
+                )
+                if clear:
+                    occupied.append((start, end, item["from"]))
+                    chosen = index
+                    break
+            if chosen is None:
+                lanes_open.append([(start, end, item["from"])])
+                chosen = len(lanes_open) - 1
+            item["lane"] = chosen
+    return routed
+
+
+def seal_chart(chart: dict, spine_ids: list[str]) -> dict:
+    """Record the spine, and attach Spread when it crosses less than Spine."""
+    spine = set(spine_ids)
+    for node in chart.get("nodes") or []:
+        if node.get("id") in spine:
+            node["spine"] = True
+    chart["crossings"] = count_crossings(chart.get("nodes") or [], chart.get("edges") or [])
+    spread_nodes, spread_edges = spread_layout(chart.get("nodes") or [], chart.get("edges") or [])
+    spread_count = count_crossings(spread_nodes, spread_edges)
+    spine_column = {node["id"]: node.get("column", 0) for node in chart.get("nodes") or []}
+    moved = any(node.get("column", 0) != spine_column.get(node["id"], 0) for node in spread_nodes)
+    if spread_count < chart["crossings"] and moved:
+        chart["layouts"] = {
+            "spread": {
+                "crossings": spread_count,
+                "nodes": spread_nodes,
+                "edges": spread_edges,
+            }
+        }
+    return chart
 
 
 def _dedupe(edges: list[dict]) -> list[dict]:

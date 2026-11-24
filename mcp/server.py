@@ -164,6 +164,8 @@ _TOOLS = [
             "Set repo to owner/name when more than one repository is indexed. "
             "A decision tree with no other journey starts at its opening step. "
             "Set start to a step path such as /steps/opening/start_or_continue to begin there instead. "
+            "nodes and edges are the spine drawing, with the main path in one column. "
+            "A large decision tree may include layouts.spread, a second drawing with fewer crossings. "
             "A visited node is named by a feature or step definition. "
             "changes lists steps added, removed, or rewired since the indexed commit."
         ),

@@ -39,7 +39,7 @@ from rag.follow import (
 )
 from rag.gitrepo import branch_list, default_branch_name
 from rag.journey import branch_answers, diff_chart, journey_scopes, mark_visits
-from rag.flows import charts_for, parse_navigation, question_texts
+from rag.flows import charts_for, count_crossings, parse_navigation, question_texts, seal_chart, spread_layout
 from rag.features import behaviour_text, gherkin_lines, is_drafting_request, matched_step_texts, retrieve_features
 from rag.chunker import find_blocks
 from rag.history import HistoryError, file_history
@@ -3333,6 +3333,7 @@ class FlowTest(unittest.TestCase):
         self.assertEqual(refund["row"], confirmation["row"])
         self.assertEqual(refund["column"], 1)
         self.assertEqual(chart["title"], "Apply for help with fees")
+        self.assertNotIn("layouts", chart)
 
     def test_staff_paper_journey_follows_the_redirects(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3419,6 +3420,132 @@ class FlowTest(unittest.TestCase):
         self.assertEqual(nowhere["kind"], "end")
         self.assertGreater(last["row"], needed["row"])
         self.assertGreater(needed["row"], start["row"])
+
+    def test_a_long_inner_lane_crosses_a_shorter_one(self):
+        nodes = [
+            {"id": "a", "row": 0, "column": 0},
+            {"id": "b", "row": 1, "column": 0},
+            {"id": "c", "row": 2, "column": 0},
+            {"id": "d", "row": 3, "column": 0},
+        ]
+        longer = {"from": "a", "to": "d", "route": "lane", "channel": 0}
+        shorter = {"from": "b", "to": "c", "route": "lane", "channel": 0}
+        inner = count_crossings(nodes, [{**longer, "lane": 0}, {**shorter, "lane": 1}])
+        outer = count_crossings(nodes, [{**longer, "lane": 1}, {**shorter, "lane": 0}])
+        self.assertGreater(inner, 0)
+        self.assertEqual(outer, 0)
+
+    def test_spread_puts_a_branch_beside_its_source(self):
+        nodes = [
+            {"id": name, "label": name, "row": index, "column": 0, "spine": True}
+            for index, name in enumerate("abcd")
+        ]
+        nodes.append({"id": "x", "label": "Branch", "row": 4, "column": 0})
+        edges = [
+            {"from": "a", "to": "b", "label": "Next", "route": "straight"},
+            {"from": "b", "to": "c", "label": "Next", "route": "straight"},
+            {"from": "c", "to": "d", "label": "Next", "route": "straight"},
+            {"from": "a", "to": "x", "label": "Other", "route": "lane", "lane": 0},
+        ]
+        placed, routed = spread_layout(nodes, edges)
+        position = {node["id"]: node for node in placed}
+        spine_rows = [position[name]["row"] for name in "abcd"]
+        self.assertEqual(spine_rows, sorted(spine_rows))
+        self.assertEqual(len(set(spine_rows)), 4)
+        self.assertEqual([position[name]["column"] for name in "abcd"], [0, 0, 0, 0])
+        self.assertEqual(position["x"]["column"], 1)
+        self.assertEqual(position["x"]["row"], position["a"]["row"])
+        branch = next(edge for edge in routed if edge["from"] == "a" and edge["to"] == "x")
+        self.assertEqual(branch["route"], "side")
+
+    def test_a_lower_branch_stays_in_the_gutter(self):
+        nodes = [
+            {"id": name, "label": name, "row": index, "column": 0, "spine": True}
+            for index, name in enumerate("abc")
+        ]
+        nodes.extend([
+            {"id": "early", "label": "Early", "row": 3, "column": 0},
+            {"id": "later", "label": "Later", "row": 4, "column": 0},
+        ])
+        _placed, routed = spread_layout(nodes, [
+            {"from": "a", "to": "b", "label": ""},
+            {"from": "b", "to": "c", "label": ""},
+            {"from": "a", "to": "early", "label": "First"},
+            {"from": "a", "to": "later", "label": "Second"},
+        ])
+        first = next(edge for edge in routed if edge["label"] == "First")
+        second = next(edge for edge in routed if edge["label"] == "Second")
+        self.assertEqual(first["route"], "side")
+        self.assertEqual(second["route"], "lane")
+        self.assertNotIn("gutter", second)
+
+    def test_a_skip_along_the_spine_runs_down_the_left(self):
+        nodes = [
+            {"id": name, "label": name, "row": index, "column": 0, "spine": True}
+            for index, name in enumerate("abc")
+        ]
+        _placed, routed = spread_layout(nodes, [
+            {"from": "a", "to": "b", "label": ""},
+            {"from": "b", "to": "c", "label": ""},
+            {"from": "a", "to": "c", "label": "Skip"},
+        ])
+        skip = next(edge for edge in routed if edge["label"] == "Skip")
+        self.assertEqual(skip["route"], "lane")
+        self.assertEqual(skip["gutter"], "left")
+        self.assertEqual(skip["channel"], 0)
+
+    def test_overlapping_lanes_keep_the_longer_one_outside(self):
+        nodes = [
+            {"id": name, "row": index, "column": 0, "spine": True}
+            for index, name in enumerate("abcde")
+        ]
+        _placed, routed = spread_layout(nodes, [
+            {"from": "a", "to": "e", "label": "Long"},
+            {"from": "b", "to": "d", "label": "Short"},
+        ])
+        longer = next(edge for edge in routed if edge["label"] == "Long")
+        shorter = next(edge for edge in routed if edge["label"] == "Short")
+        self.assertEqual(longer["route"], "lane")
+        self.assertEqual(shorter["route"], "lane")
+        self.assertGreater(longer["lane"], shorter["lane"])
+
+    def test_a_straight_journey_has_no_second_layout(self):
+        chart = {
+            "nodes": [
+                {"id": name, "label": name, "row": index, "column": 0}
+                for index, name in enumerate("abc")
+            ],
+            "edges": [
+                {"from": "a", "to": "b", "label": "", "route": "straight"},
+                {"from": "b", "to": "c", "label": "", "route": "straight"},
+            ],
+        }
+        seal_chart(chart, ["a", "b", "c"])
+        self.assertEqual(chart["crossings"], 0)
+        self.assertNotIn("layouts", chart)
+
+    def test_a_chart_offers_spread_when_it_crosses_less(self):
+        nodes = [
+            {"id": name, "label": name, "row": index, "column": 0, "spine": True}
+            for index, name in enumerate("abcd")
+        ]
+        nodes.extend([
+            {"id": "x", "label": "Early branch", "row": 4, "column": 0},
+            {"id": "y", "label": "Later branch", "row": 5, "column": 0},
+        ])
+        edges = [
+            {"from": "a", "to": "b", "label": "", "route": "straight"},
+            {"from": "b", "to": "c", "label": "", "route": "straight"},
+            {"from": "c", "to": "d", "label": "", "route": "straight"},
+            {"from": "a", "to": "x", "label": "Other", "route": "lane", "lane": 0},
+            {"from": "b", "to": "y", "label": "Else", "route": "lane", "lane": 1},
+        ]
+        chart = {"nodes": nodes, "edges": edges}
+        seal_chart(chart, ["a", "b", "c", "d"])
+        self.assertGreater(chart["crossings"], 0)
+        self.assertLess(chart["layouts"]["spread"]["crossings"], chart["crossings"])
+        self.assertEqual(chart["nodes"][0]["row"], 0)
+        self.assertEqual(chart["edges"][3]["route"], "lane")
 
     def test_an_unmapped_checkout_has_no_chart(self):
         with tempfile.TemporaryDirectory() as tmp:

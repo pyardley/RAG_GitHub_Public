@@ -23,6 +23,7 @@ from rag.flows import (
     _route,
     _short,
     _yaml_scalar,
+    seal_chart,
 )
 
 _SKIP_DIRS = {".git", "tmp", "vendor", "node_modules", "coverage", "log", "dist"}
@@ -135,13 +136,14 @@ def decision_chart(root: Path, start: str) -> dict | None:
     _place(list(nodes.values()), order)
     _route(list(nodes.values()), edges)
     title = nodes[order[0]]["label"] if order else "Journey"
-    return {
+    spine_ids = [_node_id(step) for step in spine]
+    return seal_chart({
         "title": title,
         "note": _NOTE,
         "reader": "decision",
         "nodes": list(nodes.values()),
         "edges": edges,
-    }
+    }, spine_ids)
 
 
 def _normalise(start: str) -> str:

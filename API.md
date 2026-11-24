@@ -470,6 +470,8 @@ Both fields are optional. Omit `repo` to read every indexed repository. Omit `st
 
 When more than one repository is drawn, each `title` is prefixed with `owner/name — `. An arrow label is the answer that chooses it. An empty label follows the question list.
 
+`nodes` and `edges` are the spine drawing: the main path in one column. `crossings` is how many of those arrows cross. When another drawing crosses less and moves a branch into another column, `layouts.spread` is present. Its `nodes` give each step a `row` and `column`, its `edges` give each arrow a `route` (`straight`, `side`, or `lane`), and a lane may name a `lane` and a `channel`. A lane that stays on the main path sets `gutter` to `left`. `layouts.spread.crossings` is the lower count. The page offers Spine and Spread only then. A short journey that stays in one column has no second drawing.
+
 A node may include `visited` true, `visit_count`, and `visits` (up to four feature or step-definition paths) when a feature names that step. `kind` is `step` or `end`.
 
 When the branch has commits newer than the index, a chart includes `changes`:
