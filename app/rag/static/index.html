@@ -2082,6 +2082,7 @@ ${data}
         clearFlowTrace(svg.closest(".flow-canvas") || svg);
       });
       const nodeElements = new Map(nodes.map((node) => [node.id, flowNode(svgNs, node, nodeWidth, lineHeight, padY)]));
+      const outgoing = new Map();
       let edgeCount = 0;
       for (const item of prepared) {
         const edgeId = `${chartId}-e${edgeCount += 1}`;
@@ -2091,6 +2092,11 @@ ${data}
         path.setAttribute("marker-end", `url(#${markerId})`);
         path.dataset.edge = edgeId;
         path.dataset.marker = markerId;
+        path.dataset.from = item.edge.from;
+        path.dataset.to = item.edge.to;
+        const leaving = outgoing.get(item.edge.from) || [];
+        leaving.push(edgeId);
+        outgoing.set(item.edge.from, leaving);
         if (item.edge.label) {
           const title = document.createElementNS(svgNs, "title");
           title.textContent = item.edge.label;
@@ -2115,9 +2121,11 @@ ${data}
           const showOtherEnd = (event) => {
             if (event.type === "keydown" && event.key !== "Enter" && event.key !== " ") return;
             event.preventDefault();
-            highlightFlowEdge(label);
+            const ids = highlightFlowEdge(label);
             const sourceEl = nodeElements.get(item.edge.from);
-            const targetEl = nodeElements.get(item.edge.to);
+            const lastId = ids[ids.length - 1];
+            const last = lastId && svg.querySelector(`:scope > path.flow-edge[data-edge="${CSS.escape(lastId)}"]`);
+            const targetEl = nodeElements.get((last && last.dataset.to) || item.edge.to);
             if (!sourceEl || !targetEl) return;
             const destination = viewDistance(targetEl) >= viewDistance(sourceEl) ? targetEl : sourceEl;
             destination.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
@@ -2129,8 +2137,23 @@ ${data}
         }
       }
       for (const node of nodes) svg.append(nodeElements.get(node.id));
+      svg.flowOutgoing = outgoing;
       widenFlowLabels(svg);
       return { svg, nodes, width, height, spineWidth };
+    }
+
+    function continuedEdgeIds(svg, edgeId) {
+      const ids = [];
+      const seen = new Set();
+      let current = edgeId;
+      while (current && !seen.has(current)) {
+        seen.add(current);
+        ids.push(current);
+        const path = svg.querySelector(`:scope > path.flow-edge[data-edge="${CSS.escape(current)}"]`);
+        const next = path && svg.flowOutgoing && svg.flowOutgoing.get(path.dataset.to);
+        current = next && next.length === 1 ? next[0] : "";
+      }
+      return ids;
     }
 
     function widenFlowLabels(svg) {
@@ -2209,18 +2232,23 @@ ${data}
     function highlightFlowEdge(label) {
       const root = label.closest(".flow-canvas") || label.ownerSVGElement;
       const edgeId = label.dataset.edge;
-      if (!root || !edgeId) return;
+      const svg = label.ownerSVGElement;
+      if (!root || !edgeId || !svg) return [];
       clearFlowTrace(root);
       root.classList.add("tracing");
-      root.querySelectorAll(`[data-edge="${CSS.escape(edgeId)}"]`).forEach((item) => {
-        item.classList.add("traced");
-        if (item.classList.contains("flow-edge")) {
-          if (item.dataset.marker) item.setAttribute("marker-end", `url(#${item.dataset.marker}-traced)`);
-          placeTraceHalo(item);
-        } else if (item.getAttribute("role") === "button") {
-          item.setAttribute("aria-pressed", "true");
-        }
-      });
+      const ids = continuedEdgeIds(svg, edgeId);
+      for (const id of ids) {
+        root.querySelectorAll(`[data-edge="${CSS.escape(id)}"]`).forEach((item) => {
+          item.classList.add("traced");
+          if (item.classList.contains("flow-edge")) {
+            if (item.dataset.marker) item.setAttribute("marker-end", `url(#${item.dataset.marker}-traced)`);
+            placeTraceHalo(item);
+          } else if (item.getAttribute("role") === "button") {
+            item.setAttribute("aria-pressed", "true");
+          }
+        });
+      }
+      return ids;
     }
 
     function clearFlowTrace(root) {
