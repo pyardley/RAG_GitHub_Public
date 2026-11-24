@@ -2862,47 +2862,49 @@ ${data}
       return finishPlacement(new Map(measured.map((node) => [node.id, node])), nodes, laid, opened.opened.concat(extra));
     }
 
-    function parsePlain(text, names) {
-      const idOf = new Map([...names.entries()].map(([id, name]) => [name, id]));
-      let height = 0;
-      const nodes = [];
-      const pending = new Map();
-      const edges = [];
-      const scale = 72;
-      for (const raw of text.split(/\r?\n/)) {
-        const line = raw.trim();
-        const parts = line.split(/\s+/);
-        if (line.startsWith("graph ")) {
-          height = Number(parts[3]) || 0;
-        } else if (line.startsWith("node ")) {
-          const name = parts[1];
-          const x = Number(parts[2]);
-          const y = Number(parts[3]);
-          const width = Number(parts[4]);
-          const boxHeight = Number(parts[5]);
-          nodes.push({
-            id: idOf.get(name),
-            x: (x - width / 2) * scale,
-            y: (height - (y + boxHeight / 2)) * scale
-          });
-        } else if (line.startsWith("edge ")) {
-          const tail = parts[1];
-          const head = parts[2];
-          const count = Number(parts[3]) || 0;
-          const points = [];
-          for (let index = 0; index < count; index += 1) {
-            points.push({
-              x: Number(parts[4 + index * 2]) * scale,
-              y: (height - Number(parts[5 + index * 2])) * scale
-            });
-          }
-          const key = `${tail} ${head}`;
-          const queue = pending.get(key) || [];
-          queue.push(points);
-          pending.set(key, queue);
-          edges.push({ from: idOf.get(tail), to: idOf.get(head), points });
+    function graphvizRoute(pos, top) {
+      const parts = String(pos || "").trim().split(/\s+/);
+      let tip = null;
+      const raw = [];
+      for (const part of parts) {
+        if (part.startsWith("e,")) {
+          const [x, y] = part.slice(2).split(",").map(Number);
+          tip = { x, y };
+          continue;
         }
+        if (part.startsWith("s,")) continue;
+        const [x, y] = part.split(",").map(Number);
+        if (Number.isFinite(x) && Number.isFinite(y)) raw.push({ x, y });
       }
+      if (tip && Number.isFinite(tip.x) && Number.isFinite(tip.y)) raw.push(tip);
+      const points = [];
+      for (const point of raw) {
+        const screen = { x: point.x, y: top - point.y };
+        const previous = points[points.length - 1];
+        if (previous && Math.hypot(screen.x - previous.x, screen.y - previous.y) < 0.5) continue;
+        points.push(screen);
+      }
+      return points;
+    }
+
+    function parseGraphviz(graph, names) {
+      const idOf = new Map([...names.entries()].map(([id, name]) => [name, id]));
+      const box = String(graph.bb || "0,0,0,0").split(",").map(Number);
+      const top = box[3] || 0;
+      const nodes = (graph.objects || []).map((node) => {
+        const id = idOf.get(node.name);
+        if (!id || !node.pos) return null;
+        const [x, y] = String(node.pos).split(",").map(Number);
+        const width = Number(node.width) * 72;
+        const boxHeight = Number(node.height) * 72;
+        return { id, x: x - width / 2, y: top - (y + boxHeight / 2) };
+      }).filter(Boolean);
+      const gvid = new Map((graph.objects || []).map((node) => [node._gvid, idOf.get(node.name)]));
+      const edges = (graph.edges || []).map((edge) => ({
+        from: gvid.get(edge.tail) || idOf.get(edge.tail),
+        to: gvid.get(edge.head) || idOf.get(edge.head),
+        points: graphvizRoute(edge.pos, top)
+      })).filter((edge) => edge.from && edge.to);
       return { nodes, edges };
     }
 
@@ -2928,8 +2930,7 @@ ${data}
         lines.push(`${names.get(edge.from)} -> ${names.get(edge.to)}${label};`);
       }
       lines.push("}");
-      const plain = graphviz.layout(lines.join("\n"), "plain", "dot");
-      const parsed = parsePlain(String(plain), names);
+      const parsed = parseGraphviz(JSON.parse(graphviz.layout(lines.join("\n"), "json", "dot")), names);
       const byPair = new Map();
       for (const edge of edges) {
         const key = `${edge.from}\0${edge.to}`;
@@ -3034,12 +3035,19 @@ ${data}
         const source = nodes.find((node) => node.id === edge.from);
         const target = nodes.find((node) => node.id === edge.to);
         if (!source || !target) continue;
-        const points = (edge.points && edge.points.length > 1)
+        const given = (edge.points && edge.points.length > 1)
           ? edge.points.map((point) => ({ x: point.x, y: point.y }))
           : [
             borderPoint(source, { x: target.x + nodeWidth / 2, y: target.y + target.height / 2 }),
             borderPoint(target, { x: source.x + nodeWidth / 2, y: source.y + source.height / 2 })
           ];
+        const points = [];
+        for (const point of given) {
+          const previous = points[points.length - 1];
+          if (previous && Math.hypot(point.x - previous.x, point.y - previous.y) < 0.5) continue;
+          points.push(point);
+        }
+        if (points.length < 2) points.push(...given);
         const edgeId = `${chartId}-e${edgeCount += 1}`;
         const path = document.createElementNS(svgNs, "path");
         path.setAttribute("class", "flow-edge");
