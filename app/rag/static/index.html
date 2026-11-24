@@ -2158,8 +2158,6 @@ ${data}
 
     function widenFlowLabels(svg) {
       const svgNs = "http://www.w3.org/2000/svg";
-      const padX = 14;
-      const padY = 8;
       const orphan = !svg.isConnected;
       const holder = orphan ? document.createElement("div") : null;
       if (holder) {
@@ -2168,6 +2166,7 @@ ${data}
         document.body.append(holder);
       }
       try {
+        let hitIndex = 0;
         for (const label of svg.querySelectorAll(":scope > .flow-label")) {
           const text = label.querySelector("text");
           if (!text) continue;
@@ -2178,16 +2177,74 @@ ${data}
             hit.setAttribute("class", "flow-label-hit");
             label.insertBefore(hit, text);
           }
-          hit.setAttribute("x", String(box.x - padX));
-          hit.setAttribute("y", String(box.y - padY));
-          hit.setAttribute("width", String(box.width + padX * 2));
-          hit.setAttribute("height", String(box.height + padY * 2));
+          hit.dataset.flowLabel = String(hitIndex += 1);
+          label.textBox = box;
           label.hitTarget = hit;
+          label.hitCenter = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
         }
         parkFlowLabelHits(svg);
+        fitFlowLabelHits(svg, 1);
       } finally {
         if (holder) holder.remove();
       }
+    }
+
+    function fitFlowLabelHits(svg, scale) {
+      const minScreen = 48;
+      const minPadX = 28;
+      const minPadY = 18;
+      const safe = scale > 0.05 ? scale : 1;
+      const hits = [...svg.querySelectorAll(":scope > .flow-label")];
+      for (const label of hits) {
+        const box = label.textBox;
+        const hit = label.hitTarget;
+        if (!box || !hit) continue;
+        const padX = Math.max(minPadX, (minScreen / safe - box.width) / 2);
+        const padY = Math.max(minPadY, (minScreen / safe - box.height) / 2);
+        hit.setAttribute("x", String(box.x - padX));
+        hit.setAttribute("y", String(box.y - padY));
+        hit.setAttribute("width", String(box.width + padX * 2));
+        hit.setAttribute("height", String(box.height + padY * 2));
+      }
+      const spine = svg.parentElement && svg.parentElement.querySelector(".flow-spine");
+      if (!spine) return;
+      for (const clone of spine.querySelectorAll(".flow-label-hit")) {
+        const hit = svg.querySelector(`:scope > .flow-label-hits > .flow-label-hit[data-flow-label="${CSS.escape(clone.dataset.flowLabel || "")}"]`);
+        if (!hit) continue;
+        clone.setAttribute("x", hit.getAttribute("x"));
+        clone.setAttribute("y", hit.getAttribute("y"));
+        clone.setAttribute("width", hit.getAttribute("width"));
+        clone.setAttribute("height", hit.getAttribute("height"));
+      }
+    }
+
+    function svgPoint(svg, event) {
+      const point = svg.createSVGPoint();
+      point.x = event.clientX;
+      point.y = event.clientY;
+      const matrix = svg.getScreenCTM();
+      return matrix ? point.matrixTransform(matrix.inverse()) : null;
+    }
+
+    function nearestLabel(labels, x, y) {
+      let best = null;
+      let bestDist = Infinity;
+      for (const label of labels) {
+        const hit = label.hitTarget;
+        const center = label.hitCenter;
+        if (!hit || !center) continue;
+        const left = Number(hit.getAttribute("x"));
+        const top = Number(hit.getAttribute("y"));
+        const width = Number(hit.getAttribute("width"));
+        const height = Number(hit.getAttribute("height"));
+        if (x < left || y < top || x > left + width || y > top + height) continue;
+        const dist = (center.x - x) ** 2 + (center.y - y) ** 2;
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = label;
+        }
+      }
+      return best;
     }
 
     function parkFlowLabelHits(svg) {
@@ -2197,18 +2254,28 @@ ${data}
       const underlay = document.createElementNS(svgNs, "g");
       underlay.setAttribute("class", "flow-label-hits");
       svg.insertBefore(underlay, labels[0]);
+      const choose = (event) => {
+        const point = svgPoint(svg, event);
+        return point ? nearestLabel(labels, point.x, point.y) : null;
+      };
       for (const label of labels) {
-        const hit = label.hitTarget;
-        if (!hit) continue;
-        underlay.append(hit);
-        hit.addEventListener("pointerenter", () => label.classList.add("hot"));
-        hit.addEventListener("pointerleave", () => label.classList.remove("hot"));
-        hit.addEventListener("click", (event) => {
-          event.preventDefault();
-          label.focus({ preventScroll: true });
-          label.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-        });
+        if (label.hitTarget) underlay.append(label.hitTarget);
       }
+      underlay.addEventListener("pointermove", (event) => {
+        const label = choose(event);
+        for (const item of labels) item.classList.toggle("hot", item === label);
+      });
+      underlay.addEventListener("pointerleave", () => {
+        for (const item of labels) item.classList.remove("hot");
+      });
+      underlay.addEventListener("click", (event) => {
+        const label = choose(event);
+        if (!label) return;
+        event.preventDefault();
+        event.stopPropagation();
+        label.focus({ preventScroll: true });
+        label.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      });
     }
 
     function labelBox(text) {
@@ -2579,6 +2646,7 @@ ${data}
         if (spine) spine.style.width = `${Math.round(drawn.spineWidth * scale)}px`;
         readout.textContent = `${Math.round(scale * 100)}%`;
         fitted = fittingNow;
+        fitFlowLabelHits(drawn.svg, scale);
         pinSpine();
       };
       const fit = () => {
@@ -2730,13 +2798,18 @@ ${data}
         const text = label.querySelector("text");
         return Number((text || label).getAttribute("x")) <= drawn.spineWidth;
       });
+      const activatePinned = (event) => {
+        const point = svgPoint(copy, event);
+        const label = point ? nearestLabel(pinned, point.x, point.y) : null;
+        if (!label) return;
+        event.preventDefault();
+        event.stopPropagation();
+        label.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      };
       for (const label of pinned) {
         if (!label.hitTarget) continue;
         const hitClone = label.hitTarget.cloneNode(true);
-        hitClone.addEventListener("click", (event) => {
-          event.preventDefault();
-          label.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-        });
+        hitClone.addEventListener("click", activatePinned);
         copy.append(hitClone);
       }
       for (const node of drawn.nodes) {
