@@ -300,6 +300,25 @@
       paint-order: stroke fill;
     }
     .flow-label:hover, .flow-label:focus { fill: var(--ink); }
+    .flow-canvas.tracing .flow-edge:not(.traced) { opacity: 0.35; }
+    .flow-canvas.tracing .flow-label:not(.traced) { opacity: 0.55; }
+    .flow-edge.traced {
+      stroke: var(--accent);
+      stroke-width: 2.8;
+      stroke-linejoin: round;
+      stroke-linecap: round;
+    }
+    .flow-edge-halo {
+      fill: none;
+      stroke: #fff;
+      stroke-width: 6;
+      stroke-linejoin: round;
+      stroke-linecap: round;
+      pointer-events: none;
+    }
+    .flow-label.traced,
+    .flow-label.traced:hover,
+    .flow-label.traced:focus { fill: var(--accent); font-weight: 650; }
     .flow-node { scroll-margin: 1.5rem; }
     .flow-node:focus { outline: none; }
     .flow-node:focus rect { stroke: var(--ink); stroke-width: 2; }
@@ -1581,7 +1600,7 @@ ${data}
         if (chart.note || (chart.edges || []).some((edge) => edge.label)) {
           const note = document.createElement("p");
           note.className = "scope";
-          const hint = "Choose a label to move to the other end of that arrow. The label at that end brings you back.";
+          const hint = "Choose a label to highlight that arrow and move to its other end. The label at that end brings you back.";
           note.textContent = chart.note ? `${chart.note} ${hint}` : hint;
           section.append(note);
         }
@@ -1961,14 +1980,25 @@ ${data}
       head.setAttribute("d", "M 0 0 L 10 5 L 0 10 z");
       head.setAttribute("fill", "#5e574c");
       marker.append(head);
-      defs.append(marker);
+      const tracedMarker = marker.cloneNode(true);
+      tracedMarker.id = `${markerId}-traced`;
+      tracedMarker.querySelector("path").setAttribute("fill", "#1f4d3a");
+      defs.append(marker, tracedMarker);
       svg.append(defs);
+      svg.addEventListener("keydown", (event) => {
+        if (event.key !== "Escape") return;
+        clearFlowTrace(svg.closest(".flow-canvas") || svg);
+      });
       const nodeElements = new Map(nodes.map((node) => [node.id, flowNode(svgNs, node, nodeWidth, lineHeight, padY)]));
+      let edgeCount = 0;
       for (const item of prepared) {
+        const edgeId = `${chartId}-e${edgeCount += 1}`;
         const path = document.createElementNS(svgNs, "path");
         path.setAttribute("class", "flow-edge");
         path.setAttribute("d", item.route.d);
         path.setAttribute("marker-end", `url(#${markerId})`);
+        path.dataset.edge = edgeId;
+        path.dataset.marker = markerId;
         if (item.edge.label) {
           const title = document.createElementNS(svgNs, "title");
           title.textContent = item.edge.label;
@@ -1984,17 +2014,21 @@ ${data}
           text.setAttribute("text-anchor", spot.anchor || item.route.anchor);
           text.setAttribute("tabindex", "0");
           text.setAttribute("role", "button");
-          text.setAttribute("aria-label", `${item.edge.label}. Show the other end of this arrow.`);
+          text.setAttribute("aria-pressed", "false");
+          text.setAttribute("aria-label", `${item.edge.label}. Highlight this arrow and show its other end.`);
+          text.dataset.edge = edgeId;
           text.textContent = item.edge.label;
           const showOtherEnd = (event) => {
             if (event.type === "keydown" && event.key !== "Enter" && event.key !== " ") return;
             event.preventDefault();
+            highlightFlowEdge(text);
             const sourceEl = nodeElements.get(item.edge.from);
             const targetEl = nodeElements.get(item.edge.to);
             if (!sourceEl || !targetEl) return;
             const destination = viewDistance(targetEl) >= viewDistance(sourceEl) ? targetEl : sourceEl;
             destination.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
           };
+          text.addEventListener("focus", () => highlightFlowEdge(text));
           text.addEventListener("click", showOtherEnd);
           text.addEventListener("keydown", showOtherEnd);
           svg.append(text);
@@ -2002,6 +2036,59 @@ ${data}
       }
       for (const node of nodes) svg.append(nodeElements.get(node.id));
       return { svg, nodes, width, height, spineWidth };
+    }
+
+    function highlightFlowEdge(label) {
+      const root = label.closest(".flow-canvas") || label.ownerSVGElement;
+      const edgeId = label.dataset.edge;
+      if (!root || !edgeId) return;
+      clearFlowTrace(root);
+      root.classList.add("tracing");
+      root.querySelectorAll(`[data-edge="${CSS.escape(edgeId)}"]`).forEach((item) => {
+        item.classList.add("traced");
+        if (item.classList.contains("flow-edge")) {
+          if (item.dataset.marker) item.setAttribute("marker-end", `url(#${item.dataset.marker}-traced)`);
+          placeTraceHalo(item);
+        } else if (item.getAttribute("role") === "button") {
+          item.setAttribute("aria-pressed", "true");
+        }
+      });
+    }
+
+    function clearFlowTrace(root) {
+      if (!root) return;
+      root.classList.remove("tracing");
+      root.querySelectorAll(".flow-edge-halo").forEach((halo) => halo.remove());
+      root.querySelectorAll(".flow-edge.traced").forEach((edge) => {
+        edge.classList.remove("traced");
+        if (edge.dataset.marker) edge.setAttribute("marker-end", `url(#${edge.dataset.marker})`);
+      });
+      root.querySelectorAll(".flow-label.traced").forEach((label) => {
+        label.classList.remove("traced");
+        if (label.getAttribute("role") === "button") label.setAttribute("aria-pressed", "false");
+      });
+    }
+
+    function placeTraceHalo(edge) {
+      const parent = edge.parentNode;
+      if (!parent) return;
+      const svgNs = "http://www.w3.org/2000/svg";
+      let halo = edge.previousElementSibling;
+      if (!halo || halo.dataset.halo !== edge.dataset.edge) {
+        halo = document.createElementNS(svgNs, "path");
+        halo.setAttribute("class", "flow-edge-halo");
+        halo.dataset.halo = edge.dataset.edge;
+        parent.insertBefore(halo, edge);
+      }
+      halo.setAttribute("d", edge.getAttribute("d"));
+      const anchor = Array.from(parent.children).find((child) =>
+        child.localName === "line" ||
+        child.classList.contains("flow-node") ||
+        child.classList.contains("flow-label")
+      );
+      if (!anchor) return;
+      parent.insertBefore(halo, anchor);
+      parent.insertBefore(edge, anchor);
     }
 
     function flowDomId(chartId, node, usedIds) {

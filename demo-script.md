@@ -82,7 +82,7 @@ Subtitle: The list is every box with no corner mark. Choosing a name moves the p
 
 Scroll back to the top of the chart. Choose the "No court" label beside the first box. Wait until "Sorry, you cannot apply online" is centred. Choose the "No court" label beside that box, and wait until the first box returns.
 
-Subtitle: Choose a label to move to the other end of that arrow. The label at that end brings you back.
+Subtitle: Choose a label to highlight that arrow and move to its other end. The label at that end brings you back.
 
 ### 13. Ask the journey
 
