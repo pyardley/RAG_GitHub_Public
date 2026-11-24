@@ -2608,6 +2608,62 @@ ${data}
       return { x: cx + dx * scale, y: cy + dy * scale };
     }
 
+    function pointInBox(point, box) {
+      const inset = 0.5;
+      return point.x > box.x + inset && point.x < box.x + box.width - inset
+        && point.y > box.y + inset && point.y < box.y + box.height - inset;
+    }
+
+    function segmentHitsBox(outside, inside, box) {
+      const dx = inside.x - outside.x;
+      const dy = inside.y - outside.y;
+      const times = [];
+      if (dx) {
+        times.push((box.x - outside.x) / dx);
+        times.push((box.x + box.width - outside.x) / dx);
+      }
+      if (dy) {
+        times.push((box.y - outside.y) / dy);
+        times.push((box.y + box.height - outside.y) / dy);
+      }
+      let best = null;
+      let bestTime = Infinity;
+      for (const time of times) {
+        if (time < -0.001 || time > 1.001) continue;
+        const x = outside.x + dx * time;
+        const y = outside.y + dy * time;
+        if (x < box.x - 0.6 || x > box.x + box.width + 0.6) continue;
+        if (y < box.y - 0.6 || y > box.y + box.height + 0.6) continue;
+        if (time < bestTime) {
+          bestTime = time;
+          best = { x, y };
+        }
+      }
+      return best;
+    }
+
+    function dockEnds(points, source, target) {
+      if (!points.length) return points;
+      let route = points.map((point) => ({ x: point.x, y: point.y }));
+      if (pointInBox(route[0], source)) {
+        let index = 0;
+        while (index < route.length - 1 && pointInBox(route[index], source)) index += 1;
+        const hit = segmentHitsBox(route[index], route[Math.max(0, index - 1)], source);
+        route = [hit || borderPoint(source, route[index])].concat(route.slice(index));
+      }
+      if (pointInBox(route[route.length - 1], target)) {
+        let index = route.length - 1;
+        while (index > 0 && pointInBox(route[index], target)) index -= 1;
+        const hit = segmentHitsBox(route[index], route[Math.min(route.length - 1, index + 1)], target);
+        route = route.slice(0, index + 1).concat([hit || borderPoint(target, route[index])]);
+      }
+      if (route.length >= 2) return route;
+      return [
+        borderPoint(source, { x: target.x + target.width / 2, y: target.y + target.height / 2 }),
+        borderPoint(target, { x: source.x + source.width / 2, y: source.y + source.height / 2 })
+      ];
+    }
+
     function openCycles(nodes, edges) {
       const outgoing = new Map(nodes.map((node) => [node.id, []]));
       edges.forEach((edge, index) => {
@@ -3035,12 +3091,16 @@ ${data}
         const source = nodes.find((node) => node.id === edge.from);
         const target = nodes.find((node) => node.id === edge.to);
         if (!source || !target) continue;
-        const given = (edge.points && edge.points.length > 1)
-          ? edge.points.map((point) => ({ x: point.x, y: point.y }))
-          : [
-            borderPoint(source, { x: target.x + nodeWidth / 2, y: target.y + target.height / 2 }),
-            borderPoint(target, { x: source.x + nodeWidth / 2, y: source.y + source.height / 2 })
-          ];
+        const given = dockEnds(
+          (edge.points && edge.points.length > 1)
+            ? edge.points.map((point) => ({ x: point.x, y: point.y }))
+            : [
+              borderPoint(source, { x: target.x + nodeWidth / 2, y: target.y + target.height / 2 }),
+              borderPoint(target, { x: source.x + nodeWidth / 2, y: source.y + source.height / 2 })
+            ],
+          source,
+          target
+        );
         const points = [];
         for (const point of given) {
           const previous = points[points.length - 1];
