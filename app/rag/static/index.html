@@ -1235,21 +1235,56 @@
     // A result is saved as one HTML file. Markdown cannot open and close the
     // grouped boxes in the diagram, and this file can. The page builds it and
     // the browser downloads it. Nothing is stored on the server.
-    function downloadResult(body, requested, asked) {
+    // A flow chart is copied from the screen. ELK, Dagre, d3-dag, and Graphviz
+    // replace the first drawing after they finish, so a fresh render would save
+    // that first drawing with the chosen button still waiting.
+    async function downloadResult(body, requested, asked) {
       const saved = { mode: requested, asked: asked.trim(), body };
       const host = document.createElement("div");
       host.id = "results";
-      const previous = output;
-      output = host;
-      try {
-        fillResult(body, requested);
-      } finally {
-        output = previous;
+      const flowPanel = requested === "flow" ? panels.flow : null;
+      if (flowPanel && flowPanel.querySelector(".flow-chart")) {
+        await settleFlowLayouts(flowPanel);
+        host.append(flowSaveCopy(flowPanel));
+      } else {
+        const previous = output;
+        output = host;
+        try {
+          fillResult(body, requested);
+        } finally {
+          output = previous;
+        }
       }
       savedHeadings(host);
       host.prepend(contentsNav(host));
       host.prepend(savedBanner(saved));
       downloadText(resultFileName(saved), savedPage(saved, host), "text/html");
+    }
+
+    async function settleFlowLayouts(panel) {
+      for (const chartBox of panel.querySelectorAll(".flow-chart")) {
+        let ready = chartBox.layoutReady;
+        while (ready) {
+          await ready;
+          if (chartBox.layoutReady === ready) break;
+          ready = chartBox.layoutReady;
+        }
+      }
+    }
+
+    function flowSaveCopy(panel) {
+      const copy = document.createDocumentFragment();
+      for (const child of panel.children) {
+        if (child.tagName === "BUTTON" && child.textContent === "Save as HTML") continue;
+        copy.append(child.cloneNode(true));
+      }
+      for (const form of copy.querySelectorAll(".journey-ask")) form.remove();
+      for (const spine of copy.querySelectorAll(".flow-spine")) {
+        spine.classList.remove("active");
+        spine.style.transform = "";
+      }
+      for (const label of copy.querySelectorAll("[data-pinned]")) label.style.visibility = "";
+      return copy;
     }
 
     function resultFileName(saved) {
@@ -3288,6 +3323,7 @@ ${data}
       };
       const scores = new Map();
       let layoutToken = 0;
+      let layoutReady = Promise.resolve();
       const showDrawing = () => {
         canvas.replaceChildren(drawn.svg);
         if (spine) canvas.append(spine);
@@ -3305,7 +3341,12 @@ ${data}
           button.setAttribute("aria-pressed", String(button.dataset.layout === layout));
         }
       };
-      const chooseLayout = async (name) => {
+      const chooseLayout = (name) => {
+        const run = applyLayout(name);
+        layoutReady = run.then(() => {}, () => {});
+        return run;
+      };
+      const applyLayout = async (name) => {
         const token = layoutToken += 1;
         layout = name;
         try {
@@ -3340,6 +3381,7 @@ ${data}
         }
         showDrawing();
       };
+      Object.defineProperty(chartBox, "layoutReady", { get: () => layoutReady });
       const layoutButton = (id, label, blurb) => {
         const button = toolButton(label, () => chooseLayout(id));
         button.dataset.layout = id;
