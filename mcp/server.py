@@ -162,8 +162,8 @@ _TOOLS = [
             "Draw the main end-to-end journeys in an indexed repository. "
             "Each node has the file it opens on GitHub. "
             "Set repo to owner/name when more than one repository is indexed. "
-            "Set start to a step path such as /steps/opening/start_or_continue when the "
-            "application chooses the next screen in a decision tree. "
+            "A decision tree with no other journey starts at its opening step. "
+            "Set start to a step path such as /steps/opening/start_or_continue to begin there instead. "
             "A visited node is named by a feature or step definition. "
             "changes lists steps added, removed, or rewired since the indexed commit."
         ),

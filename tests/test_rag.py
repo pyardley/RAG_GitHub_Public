@@ -3390,7 +3390,8 @@ class FlowTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _write_decision_checkout(root)
-            self.assertEqual(charts_for(root), [])
+            blank = charts_for(root)
+            self.assertEqual([chart["title"] for chart in blank], ["Start or continue an application"])
             charts = charts_for(
                 root,
                 "https://apply-to-court-about-child-arrangements.service.justice.gov.uk/steps/opening/start_or_continue",

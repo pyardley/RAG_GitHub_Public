@@ -4,8 +4,9 @@ Three readers share one chart. An application that lists its questions in
 ``config/settings.yml``, or sends the next page with ``redirect_to``, is read
 from those files. A test suite that describes screens as page objects is read
 from the page objects and the journey that clicks through them. An application
-that chooses the next step in a decision tree is read from that tree, starting
-at the path it was given. None of the readers names a repository. Each uses
+that chooses the next step in a decision tree is read from that tree. A path
+starts at that step. With no path, and no other journey, the opening step is
+used. None of the readers names a repository. Each uses
 the checkout of the indexed commit, so the chart stays with that commit. A box
 links to the file that implements the step.
 """
@@ -38,6 +39,7 @@ def charts_for(root: Path, start: str | None = None) -> list[dict]:
 
     ``start`` is a step path such as ``/steps/opening/start_or_continue``. When
     it names a screen whose controller has a decision tree, that journey is added.
+    With no path, and no other journey, the opening step is used.
     """
     if not root.is_dir():
         return []
@@ -50,10 +52,11 @@ def charts_for(root: Path, start: str | None = None) -> list[dict]:
     from rag.pageflows import page_object_charts
 
     charts.extend(page_object_charts(root))
-    if start:
-        from rag.decisionflows import decision_chart
+    from rag.decisionflows import decision_chart, decision_entry
 
-        chart = decision_chart(root, start)
+    chosen = start or (decision_entry(root) if not charts else "")
+    if chosen:
+        chart = decision_chart(root, chosen)
         if chart:
             charts.append(chart)
     return charts

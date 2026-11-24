@@ -55,6 +55,19 @@ _SPINE_LIMIT = 72
 _ORDINARY_GAP = 8
 
 
+def decision_entry(root: Path) -> str:
+    """The opening step drawn when no start path was given."""
+    opening_start = ""
+    for route in _routes(_read(root / "config/routes.rb")):
+        if route["namespace"] != "opening":
+            continue
+        if route["step"] == "start_or_continue":
+            return route["path"]
+        if route["step"] == "start" and not opening_start:
+            opening_start = route["path"]
+    return opening_start
+
+
 def decision_chart(root: Path, start: str) -> dict | None:
     """The journey that begins at ``start``, or None when that step is not here."""
     path = _normalise(start)

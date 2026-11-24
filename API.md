@@ -437,7 +437,7 @@ Journeys found in the indexed checkout. Help with Fees comes from the applicatio
 }
 ```
 
-Both fields are optional. Omit `repo` to read every indexed repository. Omit `start` unless you want a decision-tree journey.
+Both fields are optional. Omit `repo` to read every indexed repository. Omit `start` to use a question list, redirects, page objects, or, when none of those exist, the opening step of a decision tree. Set `start` to begin at another step.
 
 ```json
 {
