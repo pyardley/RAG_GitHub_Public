@@ -43,6 +43,7 @@ from rag.search import Hit, impact, retrieve
 from rag.usage import Meter, Stage
 
 _PAGE = Path(__file__).with_name("static") / "index.html"
+_VENDOR = Path(__file__).with_name("static") / "vendor"
 _MAX_BODY = 1_000_000
 _STARTED_AT = datetime.now(timezone.utc).replace(microsecond=0)
 _STARTED_LABEL = _STARTED_AT.strftime("%Y-%m-%d %H:%M UTC")
@@ -62,6 +63,21 @@ _ingest_state: dict[str, Any] = {
 }
 
 
+def _vendor_file(path: str) -> Path | None:
+    """A layout script under /vendor/, or nothing when the path leaves that folder."""
+    prefix = "/vendor/"
+    if not path.startswith(prefix):
+        return None
+    name = path[len(prefix):]
+    if not name or "/" in name or "\\" in name or name.startswith("."):
+        return None
+    folder = _VENDOR.resolve()
+    file = (folder / name).resolve()
+    if file.parent != folder or not file.is_file():
+        return None
+    return file
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "CodeRAG/0.1"
 
@@ -70,6 +86,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/":
             page = _PAGE.read_bytes()
             self._send(200, "text/html; charset=utf-8", page)
+            return
+        vendor = _vendor_file(path)
+        if vendor is not None:
+            self._send(200, "text/javascript; charset=utf-8", vendor.read_bytes())
             return
         if path == "/api/status":
             status, payload = public_status()

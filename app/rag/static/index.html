@@ -513,7 +513,7 @@
         button: "Show",
         answer: false,
         k: false,
-        hint: "Leave this blank to draw a question list, redirects, or page objects. A decision tree with none of those starts at its opening step, such as /steps/opening/start_or_continue. Type a path to start at that step instead. When a chart offers Spine and Spread, Spread draws each branch beside the step that leaves it so fewer arrows cross. Each box opens that step in the indexed commit on GitHub. Ask about this journey once the chart is drawn."
+        hint: "Leave this blank to draw a question list, redirects, or page objects. A decision tree with none of those starts at its opening step, such as /steps/opening/start_or_continue. Type a path to start at that step instead. Spine keeps the main path in one column. Spread, ELK, Dagre, d3-dag, and Graphviz draw the same steps another way. The number on each button is how many arrows cross, and overlapping boxes are counted beside it. Each box opens that step in the indexed commit on GitHub. Ask about this journey once the chart is drawn."
       },
       features: {
         label: "Feature or step",
@@ -1609,8 +1609,9 @@ ${data}
           note.className = "scope";
           let hint = "Choose a label to highlight that arrow and move to its other end. The label at that end brings you back.";
           if (chart.layouts && chart.layouts.spread) {
-            hint += " Spine and Spread are two drawings of this journey. Spread puts each branch beside the step that leaves it.";
+            hint += " Spread puts each branch beside the step that leaves it.";
           }
+          hint += " ELK, Dagre, d3-dag, and Graphviz are other drawings of these same steps. Compare the crossings on the buttons before keeping one as the usual drawing.";
           note.textContent = chart.note ? `${chart.note} ${hint}` : hint;
           section.append(note);
         }
@@ -2559,6 +2560,552 @@ ${data}
       }
     }
 
+    const layoutEngines = [
+      { id: "elk", label: "ELK", title: "Layered layout with orthogonal arrows" },
+      { id: "dagre", label: "Dagre", title: "Layered layout from Dagre" },
+      { id: "d3dag", label: "d3-dag", title: "Layered layout from d3-dag. A loop is opened so the layout can run" },
+      { id: "graphviz", label: "Graphviz", title: "Graphviz dot, with orthogonal arrows" }
+    ];
+
+    function loadScript(src) {
+      const existing = document.querySelector(`script[src="${src}"]`);
+      if (existing) return existing.loaded || Promise.resolve();
+      const script = document.createElement("script");
+      const ready = new Promise((resolve, reject) => {
+        script.onload = () => resolve();
+        script.onerror = () => reject(new Error(`Could not load ${src}`));
+      });
+      script.loaded = ready;
+      script.src = src;
+      document.head.append(script);
+      return ready;
+    }
+
+    function measuredNodes(chart) {
+      const nodeWidth = 200;
+      const lineHeight = 15;
+      const padY = 10;
+      return (chart.nodes || []).map((node) => {
+        const lines = wrapLabel(node.label || node.id || "", 27);
+        return {
+          ...node,
+          lines,
+          width: nodeWidth,
+          height: Math.max(44, lines.length * lineHeight + padY * 2)
+        };
+      });
+    }
+
+    function borderPoint(rect, toward) {
+      const cx = rect.x + rect.width / 2;
+      const cy = rect.y + rect.height / 2;
+      const dx = toward.x - cx;
+      const dy = toward.y - cy;
+      if (!dx && !dy) return { x: cx, y: rect.y };
+      const scaleX = dx === 0 ? Infinity : (rect.width / 2) / Math.abs(dx);
+      const scaleY = dy === 0 ? Infinity : (rect.height / 2) / Math.abs(dy);
+      const scale = Math.min(scaleX, scaleY);
+      return { x: cx + dx * scale, y: cy + dy * scale };
+    }
+
+    function openCycles(nodes, edges) {
+      const outgoing = new Map(nodes.map((node) => [node.id, []]));
+      edges.forEach((edge, index) => {
+        const list = outgoing.get(edge.from);
+        if (list) list.push(index);
+      });
+      const seen = new Map();
+      const keep = new Set(edges.map((_, index) => index));
+      const opened = [];
+      const visit = (id) => {
+        seen.set(id, 1);
+        for (const index of outgoing.get(id) || []) {
+          const next = edges[index].to;
+          const state = seen.get(next) || 0;
+          if (state === 1) {
+            keep.delete(index);
+            opened.push(edges[index]);
+          } else if (state === 0) visit(next);
+        }
+        seen.set(id, 2);
+      };
+      for (const node of nodes) if (!seen.get(node.id)) visit(node.id);
+      return { edges: edges.filter((_, index) => keep.has(index)), opened };
+    }
+
+    function orient(a, b, c) {
+      return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+    }
+
+    function pointsNear(a, b) {
+      return Math.abs(a.x - b.x) < 0.8 && Math.abs(a.y - b.y) < 0.8;
+    }
+
+    function segmentsCross(first, second) {
+      const [a, b] = first;
+      const [c, d] = second;
+      if (pointsNear(a, c) || pointsNear(a, d) || pointsNear(b, c) || pointsNear(b, d)) return false;
+      return orient(a, b, c) * orient(a, b, d) < 0 && orient(c, d, a) * orient(c, d, b) < 0;
+    }
+
+    function scorePlacement(nodes, edges) {
+      const segments = [];
+      for (const edge of edges) {
+        const points = edge.points || [];
+        for (let index = 1; index < points.length; index += 1) {
+          const start = points[index - 1];
+          const end = points[index];
+          if (Math.hypot(end.x - start.x, end.y - start.y) < 1) continue;
+          segments.push([start, end]);
+        }
+      }
+      let crossings = 0;
+      for (let left = 0; left < segments.length; left += 1) {
+        for (let right = left + 1; right < segments.length; right += 1) {
+          if (segmentsCross(segments[left], segments[right])) crossings += 1;
+        }
+      }
+      let overlaps = 0;
+      for (let left = 0; left < nodes.length; left += 1) {
+        const a = nodes[left];
+        for (let right = left + 1; right < nodes.length; right += 1) {
+          const b = nodes[right];
+          const separated = a.x + 1 >= b.x + b.width || b.x + 1 >= a.x + a.width || a.y + 1 >= b.y + b.height || b.y + 1 >= a.y + a.height;
+          if (!separated) overlaps += 1;
+        }
+      }
+      return { crossings, overlaps };
+    }
+
+    function scoreDrawing(svg) {
+      const nodes = [...svg.querySelectorAll(":scope > a.flow-node rect")].map((rect) => ({
+        x: Number(rect.getAttribute("x")),
+        y: Number(rect.getAttribute("y")),
+        width: Number(rect.getAttribute("width")),
+        height: Number(rect.getAttribute("height"))
+      }));
+      const edges = [...svg.querySelectorAll(":scope > path.flow-edge")].map((path) => {
+        const numbers = String(path.getAttribute("d") || "").match(/-?\d*\.?\d+/g) || [];
+        const points = [];
+        for (let index = 0; index < numbers.length; index += 2) {
+          points.push({ x: Number(numbers[index]), y: Number(numbers[index + 1]) });
+        }
+        return { points };
+      });
+      return scorePlacement(nodes, edges);
+    }
+
+    function scoreText(label, score) {
+      if (!score) return label;
+      const extra = score.overlaps ? `, ${score.overlaps} overlapping` : "";
+      return `${label} (${score.crossings}${extra})`;
+    }
+
+    function scoreTitle(base, score) {
+      if (!score) return base;
+      const opened = score.opened ? ` ${score.opened} edges were opened where the graph loops.` : "";
+      return `${base}. ${score.crossings} arrow crossings, ${score.overlaps} overlapping boxes.${opened}`;
+    }
+
+    function normalizePlacement(nodes, edges) {
+      let minX = Infinity;
+      let minY = Infinity;
+      for (const node of nodes) {
+        minX = Math.min(minX, node.x);
+        minY = Math.min(minY, node.y);
+      }
+      for (const edge of edges) {
+        for (const point of edge.points || []) {
+          minX = Math.min(minX, point.x);
+          minY = Math.min(minY, point.y);
+        }
+      }
+      if (!Number.isFinite(minX)) return { nodes, edges };
+      const dx = 16 - minX;
+      const dy = 16 - minY;
+      return {
+        nodes: nodes.map((node) => ({ ...node, x: node.x + dx, y: node.y + dy })),
+        edges: edges.map((edge) => ({
+          ...edge,
+          points: (edge.points || []).map((point) => ({ x: point.x + dx, y: point.y + dy }))
+        }))
+      };
+    }
+
+    function finishPlacement(measured, nodes, edges, opened) {
+      const byId = new Map(nodes.map((node) => [node.id, node]));
+      const restored = opened.map((edge) => {
+        const source = byId.get(edge.from);
+        const target = byId.get(edge.to);
+        if (!source || !target) return null;
+        const sourceBox = { x: source.x, y: source.y, width: measured.get(source.id).width, height: measured.get(source.id).height };
+        const targetBox = { x: target.x, y: target.y, width: measured.get(target.id).width, height: measured.get(target.id).height };
+        return {
+          ...edge,
+          points: [
+            borderPoint(sourceBox, { x: targetBox.x + targetBox.width / 2, y: targetBox.y + targetBox.height / 2 }),
+            borderPoint(targetBox, { x: sourceBox.x + sourceBox.width / 2, y: sourceBox.y + sourceBox.height / 2 })
+          ]
+        };
+      }).filter(Boolean);
+      const placed = normalizePlacement(nodes, edges.concat(restored));
+      const sized = placed.nodes.map((node) => {
+        const source = measured.get(node.id);
+        return {
+          ...node,
+          width: source ? source.width : node.width || 0,
+          height: source ? source.height : node.height || 0
+        };
+      });
+      const score = scorePlacement(sized, placed.edges);
+      if (opened.length) score.opened = opened.length;
+      return { ...placed, nodes: sized, score };
+    }
+
+    function dotEscape(value) {
+      return String(value || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    }
+
+    async function placeElk(measured, edges) {
+      await loadScript("/vendor/elk.bundled.js");
+      if (typeof ELK !== "function") throw new Error("ELK did not load");
+      const elk = new ELK();
+      const graph = await elk.layout({
+        id: "root",
+        layoutOptions: {
+          "elk.algorithm": "layered",
+          "elk.direction": "DOWN",
+          "elk.edgeRouting": "ORTHOGONAL",
+          "elk.spacing.nodeNode": "36",
+          "elk.layered.spacing.nodeNodeBetweenLayers": "48",
+          "elk.layered.considerModelOrder.strategy": "NODES_AND_EDGES"
+        },
+        children: measured.map((node) => ({ id: node.id, width: node.width, height: node.height })),
+        edges: edges.map((edge, index) => ({
+          id: `e${index}`,
+          sources: [edge.from],
+          targets: [edge.to],
+          labels: edge.label ? [{ text: edge.label, width: Math.min(180, edge.label.length * 7), height: 14 }] : []
+        }))
+      });
+      const nodes = (graph.children || []).map((node) => ({ id: node.id, x: node.x, y: node.y }));
+      const laid = (graph.edges || []).map((edge) => {
+        const index = Number(String(edge.id || "").replace(/^e/, ""));
+        const points = [];
+        for (const section of edge.sections || []) {
+          if (section.startPoint) points.push(section.startPoint);
+          for (const bend of section.bendPoints || []) points.push(bend);
+          if (section.endPoint) points.push(section.endPoint);
+        }
+        return { ...(edges[index] || {}), points };
+      });
+      return finishPlacement(new Map(measured.map((node) => [node.id, node])), nodes, laid, []);
+    }
+
+    function placeRanked(graph, measured, edges) {
+      const nodes = measured.map((node) => {
+        const at = graph.node(node.id);
+        return { id: node.id, x: at.x - node.width / 2, y: at.y - node.height / 2 };
+      });
+      const laid = edges.map((edge, index) => {
+        const found = graph.edge(edge.from, edge.to, String(index)) || graph.edge(edge.from, edge.to);
+        return { ...edge, points: (found && found.points) || [] };
+      });
+      return finishPlacement(new Map(measured.map((node) => [node.id, node])), nodes, laid, []);
+    }
+
+    async function placeDagre(measured, edges) {
+      await loadScript("/vendor/dagre.js");
+      if (!window.dagre || !dagre.graphlib) throw new Error("Dagre did not load");
+      const graph = new dagre.graphlib.Graph({ multigraph: true });
+      graph.setGraph({ rankdir: "TB", nodesep: 36, ranksep: 48, ranker: "network-simplex" });
+      graph.setDefaultEdgeLabel(() => ({}));
+      for (const node of measured) graph.setNode(node.id, { width: node.width, height: node.height });
+      edges.forEach((edge, index) => {
+        graph.setEdge(edge.from, edge.to, {
+          width: edge.label ? Math.min(180, edge.label.length * 7) : 0,
+          height: edge.label ? 14 : 0,
+          labelpos: "c"
+        }, String(index));
+      });
+      dagre.layout(graph);
+      return placeRanked(graph, measured, edges);
+    }
+
+    async function placeD3Dag(measured, edges) {
+      await loadScript("/vendor/d3-dag.js");
+      const engine = window.d3 && d3.dagre;
+      if (!engine) throw new Error("d3-dag did not load");
+      const opened = openCycles(measured, edges);
+      const seenPairs = new Set();
+      const unique = [];
+      const extra = [];
+      for (const edge of opened.edges) {
+        const key = `${edge.from}\0${edge.to}`;
+        if (seenPairs.has(key)) extra.push(edge);
+        else {
+          seenPairs.add(key);
+          unique.push(edge);
+        }
+      }
+      const graph = new engine.graphlib.Graph();
+      graph.setGraph({ rankdir: "TB", nodesep: 36, ranksep: 48, quality: "medium", algorithm: "sugiyama" });
+      graph.setDefaultEdgeLabel(() => ({}));
+      for (const node of measured) graph.setNode(node.id, { width: node.width, height: node.height });
+      for (const edge of unique) graph.setEdge(edge.from, edge.to, {});
+      engine.layout(graph);
+      const nodes = measured.map((node) => {
+        const at = graph.node(node.id);
+        return { id: node.id, x: at.x - node.width / 2, y: at.y - node.height / 2 };
+      });
+      const laid = unique.map((edge) => ({ ...edge, points: (graph.edge(edge.from, edge.to) || {}).points || [] }));
+      return finishPlacement(new Map(measured.map((node) => [node.id, node])), nodes, laid, opened.opened.concat(extra));
+    }
+
+    function parsePlain(text, names) {
+      const idOf = new Map([...names.entries()].map(([id, name]) => [name, id]));
+      let height = 0;
+      const nodes = [];
+      const pending = new Map();
+      const edges = [];
+      const scale = 72;
+      for (const raw of text.split(/\r?\n/)) {
+        const line = raw.trim();
+        const parts = line.split(/\s+/);
+        if (line.startsWith("graph ")) {
+          height = Number(parts[3]) || 0;
+        } else if (line.startsWith("node ")) {
+          const name = parts[1];
+          const x = Number(parts[2]);
+          const y = Number(parts[3]);
+          const width = Number(parts[4]);
+          const boxHeight = Number(parts[5]);
+          nodes.push({
+            id: idOf.get(name),
+            x: (x - width / 2) * scale,
+            y: (height - (y + boxHeight / 2)) * scale
+          });
+        } else if (line.startsWith("edge ")) {
+          const tail = parts[1];
+          const head = parts[2];
+          const count = Number(parts[3]) || 0;
+          const points = [];
+          for (let index = 0; index < count; index += 1) {
+            points.push({
+              x: Number(parts[4 + index * 2]) * scale,
+              y: (height - Number(parts[5 + index * 2])) * scale
+            });
+          }
+          const key = `${tail} ${head}`;
+          const queue = pending.get(key) || [];
+          queue.push(points);
+          pending.set(key, queue);
+          edges.push({ from: idOf.get(tail), to: idOf.get(head), points });
+        }
+      }
+      return { nodes, edges };
+    }
+
+    async function placeGraphviz(measured, edges) {
+      const module = await import("/vendor/graphviz.js");
+      const Graphviz = module.Graphviz;
+      if (!Graphviz) throw new Error("Graphviz did not load");
+      const graphviz = await Graphviz.load();
+      const names = new Map(measured.map((node, index) => [node.id, `n${index}`]));
+      const lines = [
+        "digraph {",
+        "rankdir=TB;",
+        "splines=ortho;",
+        "nodesep=0.45;",
+        "ranksep=0.55;",
+        'node [shape=box, fixedsize=true];'
+      ];
+      for (const node of measured) {
+        lines.push(`${names.get(node.id)} [width=${(node.width / 72).toFixed(3)}, height=${(node.height / 72).toFixed(3)}, label="${dotEscape(node.label)}"];`);
+      }
+      for (const edge of edges) {
+        const label = edge.label ? ` [label="${dotEscape(edge.label)}"]` : "";
+        lines.push(`${names.get(edge.from)} -> ${names.get(edge.to)}${label};`);
+      }
+      lines.push("}");
+      const plain = graphviz.layout(lines.join("\n"), "plain", "dot");
+      const parsed = parsePlain(String(plain), names);
+      const byPair = new Map();
+      for (const edge of edges) {
+        const key = `${edge.from}\0${edge.to}`;
+        const list = byPair.get(key) || [];
+        list.push(edge);
+        byPair.set(key, list);
+      }
+      const laid = parsed.edges.map((edge) => {
+        const list = byPair.get(`${edge.from}\0${edge.to}`) || [];
+        const source = list.length ? list.shift() : edge;
+        return { ...source, points: edge.points };
+      });
+      return finishPlacement(new Map(measured.map((node) => [node.id, node])), parsed.nodes.filter((node) => node.id), laid, []);
+    }
+
+    async function placeEngine(id, chart) {
+      const measured = measuredNodes(chart);
+      const edges = (chart.edges || []).filter((edge) => edge.from && edge.to && edge.from !== edge.to);
+      if (measured.length < 2) throw new Error("This journey has too few steps to lay out");
+      if (id === "elk") return placeElk(measured, edges);
+      if (id === "dagre") return placeDagre(measured, edges);
+      if (id === "d3dag") return placeD3Dag(measured, edges);
+      if (id === "graphviz") return placeGraphviz(measured, edges);
+      throw new Error("Unknown layout");
+    }
+
+    function pointLabel(points) {
+      let best = 1;
+      let bestLength = -1;
+      for (let index = 1; index < points.length; index += 1) {
+        const length = Math.hypot(points[index].x - points[index - 1].x, points[index].y - points[index - 1].y);
+        if (length > bestLength) {
+          bestLength = length;
+          best = index;
+        }
+      }
+      const start = points[Math.max(0, best - 1)];
+      const end = points[best] || start;
+      const x = (start.x + end.x) / 2;
+      const y = (start.y + end.y) / 2;
+      if (Math.abs(end.x - start.x) >= Math.abs(end.y - start.y)) return { x, y: y - 8, anchor: "middle" };
+      return { x: x - 8, y: y + 4, anchor: "end" };
+    }
+
+    function drawLayoutNote(message) {
+      const svgNs = "http://www.w3.org/2000/svg";
+      const svg = document.createElementNS(svgNs, "svg");
+      svg.setAttribute("viewBox", "0 0 640 72");
+      svg.setAttribute("width", "640");
+      svg.setAttribute("height", "72");
+      const text = document.createElementNS(svgNs, "text");
+      text.setAttribute("x", "16");
+      text.setAttribute("y", "40");
+      text.textContent = message;
+      svg.append(text);
+      return { svg, nodes: [], width: 640, height: 72, spineWidth: 0 };
+    }
+
+    function drawPointFlow(chart, chartKey, placed) {
+      const svgNs = "http://www.w3.org/2000/svg";
+      const nodeWidth = 200;
+      const measured = new Map(measuredNodes(chart).map((node) => [node.id, node]));
+      const nodes = (placed.nodes || []).map((node) => {
+        const source = measured.get(node.id) || { id: node.id, label: node.id, lines: [node.id], height: 44, width: nodeWidth };
+        return { ...source, x: node.x, y: node.y, width: source.width || nodeWidth, column: 0 };
+      });
+      const svg = document.createElementNS(svgNs, "svg");
+      svg.setAttribute("role", "img");
+      svg.setAttribute("aria-label", chart.title || "Journey");
+      const chartId = chartKey || `flow-${flowMarker += 1}`;
+      const usedIds = new Set();
+      for (const node of nodes) node.domId = flowDomId(chartId, node, usedIds);
+      const nodeElements = new Map(nodes.map((node) => [node.id, flowNode(svgNs, node, nodeWidth, 15, 10)]));
+      let maxX = 32;
+      let maxY = 32;
+      for (const node of nodes) {
+        maxX = Math.max(maxX, node.x + nodeWidth);
+        maxY = Math.max(maxY, node.y + node.height);
+      }
+      const markerId = `${chartId}-arrow`;
+      const defs = document.createElementNS(svgNs, "defs");
+      const marker = document.createElementNS(svgNs, "marker");
+      marker.setAttribute("id", markerId);
+      marker.setAttribute("viewBox", "0 0 10 10");
+      marker.setAttribute("refX", "9");
+      marker.setAttribute("refY", "5");
+      marker.setAttribute("markerWidth", "7");
+      marker.setAttribute("markerHeight", "7");
+      marker.setAttribute("orient", "auto");
+      const head = document.createElementNS(svgNs, "path");
+      head.setAttribute("d", "M 0 0 L 10 5 L 0 10 z");
+      head.setAttribute("fill", "#5e574c");
+      marker.append(head);
+      const tracedMarker = marker.cloneNode(true);
+      tracedMarker.id = `${markerId}-traced`;
+      tracedMarker.querySelector("path").setAttribute("fill", "#1f4d3a");
+      defs.append(marker, tracedMarker);
+      svg.append(defs);
+      const outgoing = new Map();
+      let edgeCount = 0;
+      for (const edge of placed.edges || []) {
+        const source = nodes.find((node) => node.id === edge.from);
+        const target = nodes.find((node) => node.id === edge.to);
+        if (!source || !target) continue;
+        const points = (edge.points && edge.points.length > 1)
+          ? edge.points.map((point) => ({ x: point.x, y: point.y }))
+          : [
+            borderPoint(source, { x: target.x + nodeWidth / 2, y: target.y + target.height / 2 }),
+            borderPoint(target, { x: source.x + nodeWidth / 2, y: source.y + source.height / 2 })
+          ];
+        const edgeId = `${chartId}-e${edgeCount += 1}`;
+        const path = document.createElementNS(svgNs, "path");
+        path.setAttribute("class", "flow-edge");
+        path.setAttribute("d", points.map((point, index) => `${index ? "L" : "M"} ${point.x} ${point.y}`).join(" "));
+        path.setAttribute("marker-end", `url(#${markerId})`);
+        path.dataset.edge = edgeId;
+        path.dataset.marker = markerId;
+        path.dataset.from = edge.from;
+        path.dataset.to = edge.to;
+        const leaving = outgoing.get(edge.from) || [];
+        leaving.push(edgeId);
+        outgoing.set(edge.from, leaving);
+        if (edge.label) {
+          const title = document.createElementNS(svgNs, "title");
+          title.textContent = edge.label;
+          path.append(title);
+        }
+        svg.append(path);
+        for (const point of points) {
+          maxX = Math.max(maxX, point.x);
+          maxY = Math.max(maxY, point.y);
+        }
+        if (!edge.label) continue;
+        const spot = pointLabel(points);
+        maxX = Math.max(maxX, labelExtent(spot, edge.label));
+        const label = document.createElementNS(svgNs, "g");
+        label.setAttribute("class", "flow-label");
+        label.setAttribute("tabindex", "0");
+        label.setAttribute("role", "button");
+        label.setAttribute("aria-pressed", "false");
+        label.setAttribute("aria-label", `${edge.label}. Highlight this arrow and show its other end.`);
+        label.dataset.edge = edgeId;
+        const text = document.createElementNS(svgNs, "text");
+        text.setAttribute("x", String(spot.x));
+        text.setAttribute("y", String(spot.y));
+        text.setAttribute("text-anchor", spot.anchor);
+        text.textContent = edge.label;
+        label.append(text);
+        const showOtherEnd = (event) => {
+          if (event.type === "keydown" && event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          const ids = highlightFlowEdge(label);
+          const sourceEl = nodeElements.get(edge.from);
+          const lastId = ids[ids.length - 1];
+          const last = lastId && svg.querySelector(`:scope > path.flow-edge[data-edge="${CSS.escape(lastId)}"]`);
+          const targetEl = nodeElements.get((last && last.dataset.to) || edge.to);
+          if (!sourceEl || !targetEl) return;
+          const destination = viewDistance(targetEl) >= viewDistance(sourceEl) ? targetEl : sourceEl;
+          destination.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
+        };
+        label.addEventListener("focus", () => highlightFlowEdge(label));
+        label.addEventListener("click", showOtherEnd);
+        label.addEventListener("keydown", showOtherEnd);
+        svg.append(label);
+      }
+      for (const node of nodes) svg.append(nodeElements.get(node.id));
+      svg.flowOutgoing = outgoing;
+      const width = maxX + 24;
+      const height = maxY + 24;
+      svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+      svg.setAttribute("width", String(width));
+      svg.setAttribute("height", String(height));
+      widenFlowLabels(svg);
+      return { svg, nodes, width, height, spineWidth: 0 };
+    }
+
     function laidOut(chart, layout) {
       const nodes = (chart.nodes || []).map((node) => ({ ...node }));
       const edges = (chart.edges || []).map((edge) => ({ ...edge }));
@@ -2594,6 +3141,7 @@ ${data}
       } catch (error) {
         saved = "";
       }
+      if (layoutEngines.some((engine) => engine.id === saved)) return saved;
       if (saved === "spread" && chart.layouts && chart.layouts.spread) return "spread";
       return "spine";
     }
@@ -2670,40 +3218,80 @@ ${data}
         frame.scrollTop = pointY * scale - frame.clientHeight / 2;
         pinSpine();
       };
-      const redraw = () => {
-        drawn = drawFlow(laidOut(chart, layout), chartKey);
-        spine = flowSpine(drawn);
+      const scores = new Map();
+      let layoutToken = 0;
+      const showDrawing = () => {
         canvas.replaceChildren(drawn.svg);
         if (spine) canvas.append(spine);
         fit();
+      };
+      const rememberScore = (name, score) => {
+        scores.set(name, score);
+        const button = tools.querySelector(`[data-layout="${name}"]`);
+        if (!button || !score) return;
+        button.textContent = scoreText(button.dataset.label, score);
+        button.title = scoreTitle(button.dataset.blurb, score);
       };
       const paintLayout = () => {
         for (const button of tools.querySelectorAll("[data-layout]")) {
           button.setAttribute("aria-pressed", String(button.dataset.layout === layout));
         }
       };
-      const chooseLayout = (name) => {
+      const chooseLayout = async (name) => {
+        const token = layoutToken += 1;
         layout = name;
         try {
           localStorage.setItem("flow-layout", name);
         } catch (error) {
           // The chart still switches. The next visit starts on Spine.
         }
-        redraw();
         paintLayout();
+        if (name === "spine" || name === "spread") {
+          drawn = drawFlow(laidOut(chart, name), chartKey);
+          spine = flowSpine(drawn);
+          rememberScore(name, scoreDrawing(drawn.svg));
+          showDrawing();
+          return;
+        }
+        const button = tools.querySelector(`[data-layout="${name}"]`);
+        if (button && !scores.has(name)) button.textContent = `${button.dataset.label} …`;
+        try {
+          const placed = await placeEngine(name, chart);
+          if (token !== layoutToken) return;
+          drawn = drawPointFlow(chart, chartKey, placed);
+          spine = null;
+          rememberScore(name, placed.score);
+        } catch (error) {
+          if (token !== layoutToken) return;
+          drawn = drawLayoutNote(error && error.message ? error.message : "This layout failed");
+          spine = null;
+          if (button) {
+            button.textContent = button.dataset.label;
+            button.title = error && error.message ? error.message : "This layout failed";
+          }
+        }
+        showDrawing();
       };
+      const layoutButton = (id, label, blurb) => {
+        const button = toolButton(label, () => chooseLayout(id));
+        button.dataset.layout = id;
+        button.dataset.label = label;
+        button.dataset.blurb = blurb;
+        button.title = blurb;
+        return button;
+      };
+      tools.append(layoutButton("spine", "Spine", "Keep the main path in one column"));
       if (chart.layouts && chart.layouts.spread) {
-        const spineCount = chart.crossings;
-        const spreadCount = chart.layouts.spread.crossings;
-        const spineButton = toolButton(`Spine (${spineCount})`, () => chooseLayout("spine"));
-        const spreadButton = toolButton(`Spread (${spreadCount})`, () => chooseLayout("spread"));
-        spineButton.dataset.layout = "spine";
-        spreadButton.dataset.layout = "spread";
-        spineButton.title = "Keep the main path in one column";
-        spreadButton.title = "Put each branch beside the step that leaves it";
-        tools.append(spineButton, spreadButton);
-        paintLayout();
+        tools.append(layoutButton("spread", "Spread", "Put each branch beside the step that leaves it"));
       }
+      for (const engine of layoutEngines) tools.append(layoutButton(engine.id, engine.label, engine.title));
+      paintLayout();
+      for (const name of ["spine", "spread"]) {
+        if (name === "spread" && !(chart.layouts && chart.layouts.spread)) continue;
+        const scored = name === layout ? drawn.svg : drawFlow(laidOut(chart, name), chartKey).svg;
+        rememberScore(name, scoreDrawing(scored));
+      }
+      if (layout !== "spine" && layout !== "spread") chooseLayout(layout);
       tools.append(
         toolButton("Zoom out", () => zoomBy(1 / 1.25)),
         toolButton("Zoom in", () => zoomBy(1.25)),
