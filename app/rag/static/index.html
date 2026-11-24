@@ -265,6 +265,16 @@
     .flow-tools button { padding: 0.3rem 0.7rem; font-size: 0.85rem; }
     .flow-tools button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
     .flow-zoom { color: var(--muted); font-size: 0.85rem; min-width: 3.2rem; }
+    .flow-find { display: flex; gap: 0.4rem; align-items: center; flex: 1 1 18rem; }
+    .flow-find input {
+      width: auto;
+      flex: 1 1 12rem;
+      min-width: 10rem;
+      padding: 0.3rem 0.55rem;
+      font-size: 0.85rem;
+    }
+    .flow-find-note { color: var(--muted); font-size: 0.85rem; white-space: nowrap; }
+    .flow-node.flow-found rect { stroke: var(--ink); stroke-width: 3; vector-effect: non-scaling-stroke; }
     .flow-frame {
       overflow: auto;
       max-height: 70vh;
@@ -1647,6 +1657,7 @@ ${data}
             hint += " Spread puts each branch beside the step that leaves it.";
           }
           hint += " ELK, Dagre, d3-dag, and Graphviz are other drawings of these same steps. Compare the crossings on the buttons before keeping one as the usual drawing.";
+          hint += " Type a box name and press Enter to centre the chart on it.";
           note.textContent = chart.note ? `${chart.note} ${hint}` : hint;
           section.append(note);
         }
@@ -2389,6 +2400,100 @@ ${data}
       if (!anchor) return;
       parent.insertBefore(halo, anchor);
       parent.insertBefore(edge, anchor);
+    }
+
+    function flowBoxRank(query, node) {
+      const wanted = query.trim().toLowerCase();
+      if (!wanted) return 0;
+      const name = (node.dataset.name || "").toLowerCase();
+      const path = (node.dataset.path || "").toLowerCase();
+      if (name === wanted) return 4;
+      if (name.startsWith(wanted)) return 3;
+      if (name.includes(wanted)) return 2;
+      if (path.includes(wanted.replace(/ /g, "_")) || path.includes(wanted)) return 1;
+      return 0;
+    }
+
+    function flowFinder(chart, chartKey, svgOf, centerOn) {
+      const box = document.createElement("div");
+      box.className = "flow-find";
+      const field = document.createElement("input");
+      field.type = "text";
+      field.placeholder = "Find a box";
+      field.setAttribute("aria-label", "Find a box");
+      field.setAttribute("list", `${chartKey}-boxes`);
+      const list = document.createElement("datalist");
+      list.id = `${chartKey}-boxes`;
+      const seen = new Set();
+      const names = [];
+      for (const node of chart.nodes || []) {
+        const label = String(node.label || "").trim();
+        const key = label.toLowerCase();
+        if (!label || seen.has(key)) continue;
+        seen.add(key);
+        names.push(label);
+      }
+      names.sort((left, right) => left.localeCompare(right));
+      for (const name of names) {
+        const option = document.createElement("option");
+        option.value = name;
+        list.append(option);
+      }
+      const note = document.createElement("span");
+      note.className = "flow-find-note";
+      note.setAttribute("aria-live", "polite");
+      let findQuery = "";
+      let findAt = 0;
+      const showMatch = (advance) => {
+        const query = field.value;
+        const wanted = query.trim().toLowerCase();
+        if (!wanted) {
+          note.textContent = "";
+          field.removeAttribute("aria-invalid");
+          return;
+        }
+        const svg = svgOf();
+        const matches = [...svg.querySelectorAll("a.flow-node")]
+          .map((node) => ({ node, rank: flowBoxRank(query, node) }))
+          .filter((item) => item.rank > 0);
+        if (!matches.length) {
+          field.setAttribute("aria-invalid", "true");
+          note.textContent = "No box with that name";
+          return;
+        }
+        field.removeAttribute("aria-invalid");
+        matches.sort((left, right) => {
+          if (right.rank !== left.rank) return right.rank - left.rank;
+          const leftRect = left.node.querySelector("rect");
+          const rightRect = right.node.querySelector("rect");
+          const leftY = Number(leftRect && leftRect.getAttribute("y"));
+          const rightY = Number(rightRect && rightRect.getAttribute("y"));
+          if (leftY !== rightY) return leftY - rightY;
+          return Number(leftRect && leftRect.getAttribute("x")) - Number(rightRect && rightRect.getAttribute("x"));
+        });
+        const best = matches.filter((item) => item.rank === matches[0].rank);
+        if (query !== findQuery) {
+          findQuery = query;
+          findAt = 0;
+        }
+        const index = advance ? findAt % best.length : 0;
+        centerOn(best[index].node);
+        note.textContent = best.length > 1 ? `${index + 1} of ${best.length}` : "";
+        findAt = index + 1;
+      };
+      field.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        showMatch(true);
+      });
+      field.addEventListener("input", (event) => {
+        note.textContent = "";
+        field.removeAttribute("aria-invalid");
+        // A choice from the list arrives as a replacement, not as typed letters.
+        if (event.inputType === "insertReplacementText") showMatch(false);
+      });
+      box.append(field, toolButton("Find", () => showMatch(true)), list, note);
+      return box;
     }
 
     function flowDomId(chartId, node, usedIds) {
@@ -3406,7 +3511,18 @@ ${data}
         toolButton("Zoom out", () => zoomBy(1 / 1.25)),
         toolButton("Zoom in", () => zoomBy(1.25)),
         toolButton("Fit", fit),
-        readout
+        readout,
+        flowFinder(chart, chartKey, () => drawn.svg, (node) => {
+          const rect = node.querySelector("rect");
+          if (!rect) return;
+          const x = Number(rect.getAttribute("x")) + Number(rect.getAttribute("width")) / 2;
+          const y = Number(rect.getAttribute("y")) + Number(rect.getAttribute("height")) / 2;
+          frame.scrollLeft = x * scale - frame.clientWidth / 2;
+          frame.scrollTop = y * scale - frame.clientHeight / 2;
+          pinSpine();
+          drawn.svg.querySelectorAll(".flow-found").forEach((item) => item.classList.remove("flow-found"));
+          node.classList.add("flow-found");
+        })
       );
       chartBox.append(tools, frame);
       frame.addEventListener("scroll", pinSpine);
@@ -3543,6 +3659,8 @@ ${data}
       }
       const visited = node.visited ? " A feature names this step." : "";
       link.setAttribute("aria-label", `${node.label}. ${node.path || ""}.${visited}`);
+      link.dataset.name = node.label || "";
+      link.dataset.path = node.path || node.id || "";
       const title = document.createElementNS(svgNs, "title");
       const visits = (node.visits || []).join("\n");
       title.textContent = visits ? `${node.detail || node.label}\n${visits}` : (node.detail || node.label);
