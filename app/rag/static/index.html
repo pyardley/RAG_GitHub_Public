@@ -292,15 +292,20 @@
     .flow-node.end text { fill: var(--accent-ink); }
     .flow-node text { font: 12px/1.25 "Segoe UI", "Helvetica Neue", sans-serif; fill: var(--ink); }
     .flow-edge { fill: none; stroke: var(--muted); stroke-width: 1.4; }
-    .flow-label {
+    .flow-label { cursor: pointer; }
+    .flow-label text {
       font: 11px "Segoe UI", "Helvetica Neue", sans-serif;
       fill: var(--muted);
-      cursor: pointer;
       stroke: #fff;
       stroke-width: 3px;
       paint-order: stroke fill;
     }
-    .flow-label:hover, .flow-label:focus { fill: var(--ink); }
+    .flow-label-hit {
+      fill: transparent;
+      stroke: none;
+      pointer-events: all;
+    }
+    .flow-label.hot text, .flow-label:hover text, .flow-label:focus text { fill: var(--ink); }
     .flow-canvas.tracing .flow-edge:not(.traced) { opacity: 0.35; }
     .flow-canvas.tracing .flow-label:not(.traced) { opacity: 0.55; }
     .flow-edge.traced {
@@ -317,9 +322,10 @@
       stroke-linecap: round;
       pointer-events: none;
     }
-    .flow-label.traced,
-    .flow-label.traced:hover,
-    .flow-label.traced:focus { fill: var(--accent); font-weight: 650; }
+    .flow-label.traced text,
+    .flow-label.traced.hot text,
+    .flow-label.traced:hover text,
+    .flow-label.traced:focus text { fill: var(--accent); font-weight: 650; }
     .flow-node { scroll-margin: 1.5rem; }
     .flow-node:focus { outline: none; }
     .flow-node:focus rect { stroke: var(--ink); stroke-width: 2; }
@@ -1810,19 +1816,25 @@ ${data}
         return Math.max(widest, edge.label.length);
       }, 0);
       const columnGap = Math.max(40, sideLabel * 6.6 + 18, laneLabel * 6.6 + 28);
-      const leftLabel = (chart.edges || []).reduce((widest, edge) => {
-        const onTheLeft = edge.route === "straight" || (edge.route === "lane" && edge.gutter === "left");
-        if (!onTheLeft || !edge.label) return widest;
+      const straightLeft = (chart.edges || []).reduce((widest, edge) => {
+        if (edge.route !== "straight" || !edge.label) return widest;
         const source = (chart.nodes || []).find((node) => node.id === edge.from);
         if (!source || (source.column || 0) !== 0) return widest;
         return Math.max(widest, edge.label.length);
       }, 0);
-      const hasLeftLane = (chart.edges || []).some((edge) => edge.route === "lane" && edge.gutter === "left");
-      const labelGutter = leftLabel ? Math.min(hasLeftLane ? 280 : 210, Math.max(28, leftLabel * 6.6 + 20)) : 12;
+      const leftLaneText = (chart.edges || []).reduce((widest, edge) => {
+        if (edge.route !== "lane" || edge.gutter !== "left" || !edge.label) return widest;
+        return Math.max(widest, edge.label.length);
+      }, 0);
+      const hasLeftLane = leftLaneText > 0 || (chart.edges || []).some((edge) => edge.route === "lane" && edge.gutter === "left");
       const leftLaneCount = Math.max(0, ...(chart.edges || []).map((edge) => (
         edge.route === "lane" && edge.gutter === "left" ? (edge.lane || 0) + 1 : 0
       )));
-      const leftLaneSpace = leftLaneCount ? 14 + leftLaneCount * 8 + 12 : 0;
+      const labelGutter = hasLeftLane
+        ? (leftLaneText ? Math.min(280, leftLaneText * 6.6 + 16) : 12)
+        : (straightLeft ? Math.min(210, Math.max(28, straightLeft * 6.6 + 20)) : 12);
+      const straightBand = hasLeftLane && straightLeft ? straightLeft * 6.6 + 18 : 0;
+      const leftLaneSpace = leftLaneCount ? straightBand + 14 + leftLaneCount * 8 + 10 : 0;
       const lanePitch = 8;
       const laneInset = 14;
       const formerLanePitch = 168;
@@ -1918,7 +1930,7 @@ ${data}
       for (const node of nodes) {
         node.x = labelGutter + leftLaneSpace + node.column * (nodeWidth + columnGap);
         node.y = rowY.get(node.row);
-        if (node.column === 0 && leftLaneSpace) node.straightLabelX = labelGutter - 6;
+        if (node.column === 0 && hasLeftLane) node.leftLaneLabelX = labelGutter - 6;
       }
       const right = Math.max(...nodes.map((node) => node.x + nodeWidth));
       const laneCount = Math.max(0, ...(chart.edges || []).map((edge) => edge.route === "lane" ? (edge.lane || 0) + 1 : 0));
@@ -1940,7 +1952,7 @@ ${data}
               const sample = nodes.find((node) => (node.column || 0) === edge.channel);
               edgeLeft = sample ? sample.x : 0;
             }
-            return edgeLeft - laneInset - lane * lanePitch;
+            return edgeLeft - straightBand - laneInset - lane * lanePitch;
           }
           let edgeRight = 0;
           for (const node of nodes) {
@@ -2010,7 +2022,23 @@ ${data}
           const used = step * (leaves.length - 1);
           exitY = source.y + (source.height - used) / 2 + leaveIndex * step;
         }
-        const route = flowRoute(edge, source, target, nodeWidth, laneX, joinY, straightInto.has(target.id), exitY);
+        const leavesLeft = edge.gutter === "left" || (Number.isInteger(edge.channel) && (source.column || 0) > edge.channel);
+        const bottomTaken = (chart.edges || []).some((other) => {
+          if (other === edge || other.from !== source.id) return false;
+          if (other.route === "straight") return true;
+          if (other.route !== "side") return false;
+          const dest = byId.get(other.to);
+          return dest && dest.row !== source.row;
+        });
+        const exitBottom = edge.route === "lane" && leavesLeft && !bottomTaken && target.y > source.y;
+        const arrivesLeft = edge.gutter === "left" || (Number.isInteger(edge.channel) && (target.column || 0) > edge.channel);
+        const topTaken = straightInto.has(target.id) || (chart.edges || []).some((other) => {
+          if (other === edge || other.to !== target.id || other.route !== "side") return false;
+          const origin = byId.get(other.from);
+          return origin && origin.row !== target.row;
+        });
+        const arriveTop = edge.route === "lane" && arrivesLeft && !topTaken && target.y > source.y && (source.column || 0) === (target.column || 0);
+        const route = flowRoute(edge, source, target, nodeWidth, laneX, joinY, straightInto.has(target.id), exitY, exitBottom, arriveTop);
         const stackKey = `${source.column}:${source.row}`;
         const stacked = straightTotal.get(stackKey) || 0;
         if (edge.route === "straight" && stacked > 1) {
@@ -2071,35 +2099,111 @@ ${data}
         svg.append(path);
         if (!item.edge.label) continue;
         for (const spot of item.spots) {
+          const label = document.createElementNS(svgNs, "g");
+          label.setAttribute("class", "flow-label");
+          label.setAttribute("tabindex", "0");
+          label.setAttribute("role", "button");
+          label.setAttribute("aria-pressed", "false");
+          label.setAttribute("aria-label", `${item.edge.label}. Highlight this arrow and show its other end.`);
+          label.dataset.edge = edgeId;
           const text = document.createElementNS(svgNs, "text");
-          text.setAttribute("class", "flow-label");
           text.setAttribute("x", String(spot.x));
           text.setAttribute("y", String(spot.y));
           text.setAttribute("text-anchor", spot.anchor || item.route.anchor);
-          text.setAttribute("tabindex", "0");
-          text.setAttribute("role", "button");
-          text.setAttribute("aria-pressed", "false");
-          text.setAttribute("aria-label", `${item.edge.label}. Highlight this arrow and show its other end.`);
-          text.dataset.edge = edgeId;
           text.textContent = item.edge.label;
+          label.append(text);
           const showOtherEnd = (event) => {
             if (event.type === "keydown" && event.key !== "Enter" && event.key !== " ") return;
             event.preventDefault();
-            highlightFlowEdge(text);
+            highlightFlowEdge(label);
             const sourceEl = nodeElements.get(item.edge.from);
             const targetEl = nodeElements.get(item.edge.to);
             if (!sourceEl || !targetEl) return;
             const destination = viewDistance(targetEl) >= viewDistance(sourceEl) ? targetEl : sourceEl;
             destination.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
           };
-          text.addEventListener("focus", () => highlightFlowEdge(text));
-          text.addEventListener("click", showOtherEnd);
-          text.addEventListener("keydown", showOtherEnd);
-          svg.append(text);
+          label.addEventListener("focus", () => highlightFlowEdge(label));
+          label.addEventListener("click", showOtherEnd);
+          label.addEventListener("keydown", showOtherEnd);
+          svg.append(label);
         }
       }
       for (const node of nodes) svg.append(nodeElements.get(node.id));
+      widenFlowLabels(svg);
       return { svg, nodes, width, height, spineWidth };
+    }
+
+    function widenFlowLabels(svg) {
+      const svgNs = "http://www.w3.org/2000/svg";
+      const padX = 14;
+      const padY = 8;
+      const orphan = !svg.isConnected;
+      const holder = orphan ? document.createElement("div") : null;
+      if (holder) {
+        holder.style.cssText = "position:fixed;left:0;top:0;width:0;height:0;overflow:visible;visibility:hidden;pointer-events:none";
+        holder.append(svg);
+        document.body.append(holder);
+      }
+      try {
+        for (const label of svg.querySelectorAll(":scope > .flow-label")) {
+          const text = label.querySelector("text");
+          if (!text) continue;
+          const box = labelBox(text);
+          let hit = label.querySelector(".flow-label-hit");
+          if (!hit) {
+            hit = document.createElementNS(svgNs, "rect");
+            hit.setAttribute("class", "flow-label-hit");
+            label.insertBefore(hit, text);
+          }
+          hit.setAttribute("x", String(box.x - padX));
+          hit.setAttribute("y", String(box.y - padY));
+          hit.setAttribute("width", String(box.width + padX * 2));
+          hit.setAttribute("height", String(box.height + padY * 2));
+          label.hitTarget = hit;
+        }
+        parkFlowLabelHits(svg);
+      } finally {
+        if (holder) holder.remove();
+      }
+    }
+
+    function parkFlowLabelHits(svg) {
+      const svgNs = "http://www.w3.org/2000/svg";
+      const labels = [...svg.querySelectorAll(":scope > .flow-label")];
+      if (!labels.length) return;
+      const underlay = document.createElementNS(svgNs, "g");
+      underlay.setAttribute("class", "flow-label-hits");
+      svg.insertBefore(underlay, labels[0]);
+      for (const label of labels) {
+        const hit = label.hitTarget;
+        if (!hit) continue;
+        underlay.append(hit);
+        hit.addEventListener("pointerenter", () => label.classList.add("hot"));
+        hit.addEventListener("pointerleave", () => label.classList.remove("hot"));
+        hit.addEventListener("click", (event) => {
+          event.preventDefault();
+          label.focus({ preventScroll: true });
+          label.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+        });
+      }
+    }
+
+    function labelBox(text) {
+      try {
+        const box = text.getBBox();
+        if (box.width > 0 && box.height > 0) return box;
+      } catch (error) {
+        // A detached label has no box. The estimate below still pads the click.
+      }
+      const anchor = text.getAttribute("text-anchor") || "start";
+      const x = Number(text.getAttribute("x")) || 0;
+      const y = Number(text.getAttribute("y")) || 0;
+      const width = Math.max(22, (text.textContent || "").length * 6.6);
+      const height = 12;
+      let left = x;
+      if (anchor === "middle") left = x - width / 2;
+      else if (anchor === "end") left = x - width;
+      return { x: left, y: y - 10, width, height };
     }
 
     function highlightFlowEdge(label) {
@@ -2148,7 +2252,8 @@ ${data}
       const anchor = Array.from(parent.children).find((child) =>
         child.localName === "line" ||
         child.classList.contains("flow-node") ||
-        child.classList.contains("flow-label")
+        child.classList.contains("flow-label") ||
+        child.classList.contains("flow-label-hits")
       );
       if (!anchor) return;
       parent.insertBefore(halo, anchor);
@@ -2218,7 +2323,7 @@ ${data}
       return Math.abs(box.top + box.height / 2 - window.innerHeight / 2);
     }
 
-    function flowRoute(edge, source, target, nodeWidth, laneX, joinY, straightIn, exitY) {
+    function flowRoute(edge, source, target, nodeWidth, laneX, joinY, straightIn, exitY, exitBottom, arriveTop) {
       const bottom = [source.x + nodeWidth / 2, source.y + source.height];
       const top = [target.x + nodeWidth / 2, target.y];
       const fanY = ((edge.fan || 0) - ((edge.fanCount || 1) - 1) / 2) * 22;
@@ -2247,25 +2352,63 @@ ${data}
         };
       }
       const x = laneX(edge);
-      const y1 = exitY == null ? source.y + source.height / 2 : exitY;
       const channeled = Number.isInteger(edge.channel);
       const leftGutter = edge.gutter === "left";
       const leaveRight = !leftGutter && (!channeled || (source.column || 0) <= edge.channel);
       const arriveRight = !leftGutter && (!channeled || (target.column || 0) <= edge.channel);
-      const x1 = leaveRight ? source.x + nodeWidth : source.x;
       const x2 = arriveRight ? target.x + nodeWidth : target.x;
       const y2 = target.y + target.height / 2 + fanY;
+      const x1 = leaveRight ? source.x + nodeWidth : source.x;
+      const y1 = exitBottom ? source.y + source.height + 16 : (exitY == null ? source.y + source.height / 2 : exitY);
+      const approachY = joinY != null && joinY > y1 + 8 && joinY < target.y - 4 ? joinY : target.y - 16;
+      const landOnTop = arriveTop && approachY > y1 + 8;
+      const endDown = (pathSoFar) => {
+        if (!landOnTop) return { d: `${pathSoFar} L ${x} ${y2} L ${x2} ${y2}`, arrival: null };
+        const topX = target.x + nodeWidth / 2;
+        return {
+          d: `${pathSoFar} L ${x} ${approachY} L ${topX} ${approachY} L ${topX} ${target.y}`,
+          arrival: { x: target.x - 8, y: approachY - 4, anchor: "end" }
+        };
+      };
+      if (exitBottom) {
+        const cx = source.x + nodeWidth / 2;
+        const y0 = source.y + source.height;
+        const onTheLine = source.leftLaneLabelX || source.x - 8;
+        const landed = endDown(`M ${cx} ${y0} L ${cx} ${y1} L ${x} ${y1}`);
+        const spots = channeled
+          ? (leftGutter
+            ? [landed.arrival || { x: Math.min(source.x, target.x) - 8, y: y2 + 4, anchor: "end" }]
+            : [{ x: (x + x2) / 2, y: y2 - 10, anchor: "middle" }])
+          : [{ x: cx - 8, y: y0 + 12, anchor: "end" }];
+        if (leftGutter && Math.abs(y2 - y0) > 240) {
+          spots.unshift({ x: onTheLine, y: y1 - 8 + fanY, anchor: "end" });
+        }
+        if (leftGutter && (edge.fanCount || 1) < 2 && Math.abs((landed.arrival ? approachY : y2) - y0) > 420) {
+          spots.push({ x: onTheLine, y: (y0 + (landed.arrival ? approachY : y2)) / 2, anchor: "end" });
+        }
+        return {
+          d: landed.d,
+          labelX: spots[0].x,
+          labelY: spots[0].y,
+          anchor: spots[0].anchor,
+          spots
+        };
+      }
+      const onTheLine = source.leftLaneLabelX || source.x - 8;
       const spots = channeled
         ? (leftGutter
-          ? [{ x: (source.straightLabelX || source.x - 8), y: y2 + 4, anchor: "end" }]
+          ? [{ x: Math.min(source.x, target.x) - 8, y: y2 + 4, anchor: "end" }]
           : [{ x: (x + x2) / 2, y: y2 - 10, anchor: "middle" }])
         : [{
           x: leaveRight ? source.x + nodeWidth + 8 : source.x - 8,
           y: y1 - 6,
           anchor: leaveRight ? "start" : "end"
         }];
+      if (leftGutter && Math.abs(y2 - y1) > 240) {
+        spots.unshift({ x: onTheLine, y: y1 - 8 + fanY, anchor: "end" });
+      }
       if (leftGutter && (edge.fanCount || 1) < 2 && Math.abs(y2 - y1) > 420) {
-        spots.push({ x: spots[0].x, y: (y1 + y2) / 2, anchor: spots[0].anchor });
+        spots.push({ x: onTheLine, y: (y1 + y2) / 2, anchor: "end" });
       }
       // A lane back to this column meets the spine above the box. The side of the
       // box is where a lane leaves, so arriving there reads as one continuous link.
@@ -2277,8 +2420,14 @@ ${data}
         spots.push({ x: joinX + 10, y: joinY - 4, anchor: "start" });
         return { d, labelX: spots[0].x, labelY: spots[0].y, anchor: spots[0].anchor, spots };
       }
+      const landed = endDown(`M ${x1} ${y1} L ${x} ${y1}`);
+      if (landed.arrival) {
+        const side = spots.findIndex((spot) => Math.abs(spot.y - (y2 + 4)) < 2);
+        if (side >= 0) spots[side] = landed.arrival;
+        else spots.push(landed.arrival);
+      }
       return {
-        d: `M ${x1} ${y1} L ${x} ${y1} L ${x} ${y2} L ${x2} ${y2}`,
+        d: landed.d,
         labelX: spots[0].x,
         labelY: spots[0].y,
         anchor: spots[0].anchor,
@@ -2482,7 +2631,7 @@ ${data}
       }, { passive: false });
       let drag = null;
       frame.addEventListener("pointerdown", (event) => {
-        if (event.button !== 0 || event.target.closest("a, .flow-label, button")) return;
+        if (event.button !== 0 || event.target.closest("a, .flow-label, .flow-label-hit, button")) return;
         drag = { x: event.clientX, y: event.clientY, left: frame.scrollLeft, top: frame.scrollTop };
         frame.classList.add("panning");
         frame.setPointerCapture(event.pointerId);
@@ -2549,6 +2698,19 @@ ${data}
       rule.setAttribute("y2", String(drawn.height));
       rule.setAttribute("stroke", "#ddd4c4");
       copy.append(rule);
+      const pinned = [...drawn.svg.querySelectorAll(".flow-label")].filter((label) => {
+        const text = label.querySelector("text");
+        return Number((text || label).getAttribute("x")) <= drawn.spineWidth;
+      });
+      for (const label of pinned) {
+        if (!label.hitTarget) continue;
+        const hitClone = label.hitTarget.cloneNode(true);
+        hitClone.addEventListener("click", (event) => {
+          event.preventDefault();
+          label.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+        });
+        copy.append(hitClone);
+      }
       for (const node of drawn.nodes) {
         if ((node.column || 0) !== 0 || !node.domId) continue;
         const original = drawn.svg.querySelector(`[id="${node.domId}"]`);
@@ -2557,8 +2719,7 @@ ${data}
         clone.removeAttribute("id");
         copy.append(clone);
       }
-      drawn.svg.querySelectorAll(".flow-label").forEach((label) => {
-        if (Number(label.getAttribute("x")) > drawn.spineWidth) return;
+      for (const label of pinned) {
         label.dataset.pinned = "true";
         const clone = label.cloneNode(true);
         clone.removeAttribute("tabindex");
@@ -2568,7 +2729,7 @@ ${data}
           label.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
         });
         copy.append(clone);
-      });
+      }
       return copy;
     }
 

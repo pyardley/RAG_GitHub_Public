@@ -3,8 +3,8 @@
 The path names the first screen, for example ``/steps/opening/start_or_continue``.
 The step's controller names the decision tree, and that tree's destination
 says which screen comes next. A screen with no destination is followed through
-the Continue link in its template. The usual answer is the spine. Another
-answer is drawn as the next screen. Headings come from the English locale.
+the Continue link in its template. The usual answer is the spine. A branch is
+followed until it ends or rejoins that path. Headings come from the English locale.
 """
 
 from __future__ import annotations
@@ -102,13 +102,17 @@ def decision_chart(root: Path, start: str) -> dict | None:
     included = list(spine)
     seen = set(spine)
     drawn: list[dict] = []
-    for step in spine:
+    pending = list(spine)
+    while pending:
+        step = pending.pop(0)
+        _edges_from(context, step)
         for edge in context["edges"].get(step, []):
-            target = edge["to"]
             drawn.append(edge)
+            target = edge["to"]
             if target not in seen:
                 included.append(target)
                 seen.add(target)
+                pending.append(target)
     nodes: dict[str, dict] = {}
     for step in included:
         node = _step_node(context, step)

@@ -842,7 +842,11 @@ def _spread_routes(placed: list[dict], edges: list[dict]) -> list[dict]:
         item = {"from": edge["from"], "to": edge["to"], "label": edge.get("label") or ""}
         source_column, source_row = source["column"], source["row"]
         target_column, target_row = target["column"], target["row"]
-        if source_column == target_column and target_row == source_row + 1:
+        column_clear = source_column == target_column and target_row > source_row and not any(
+            node["column"] == source_column and source_row < node["row"] < target_row
+            for node in placed
+        )
+        if column_clear:
             item["route"] = "straight"
         elif abs(source_column - target_column) == 1 and source_row == target_row:
             item["route"] = "side"

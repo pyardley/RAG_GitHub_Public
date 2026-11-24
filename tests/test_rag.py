@@ -3420,6 +3420,8 @@ class FlowTest(unittest.TestCase):
         self.assertEqual(nowhere["kind"], "end")
         self.assertGreater(last["row"], needed["row"])
         self.assertGreater(needed["row"], start["row"])
+        self.assertIn(("opening/consent_order_upload", "opening/consent_order_sought", "Continue"), edges)
+        self.assertIn(("opening/consent_order_sought", "opening/child_protection_cases", "Continue"), edges)
 
     def test_a_long_inner_lane_crosses_a_shorter_one(self):
         nodes = [
@@ -3478,6 +3480,26 @@ class FlowTest(unittest.TestCase):
         self.assertEqual(first["route"], "side")
         self.assertEqual(second["route"], "lane")
         self.assertNotIn("gutter", second)
+
+    def test_a_clear_column_stays_straight(self):
+        nodes = [
+            {"id": name, "label": name, "row": index, "column": 0, "spine": True}
+            for index, name in enumerate("ab")
+        ]
+        nodes.extend([
+            {"id": "early", "label": "Early", "row": 2, "column": 0},
+            {"id": "later", "label": "Later", "row": 3, "column": 0},
+        ])
+        placed, routed = spread_layout(nodes, [
+            {"from": "a", "to": "b", "label": "No"},
+            {"from": "a", "to": "early", "label": "First"},
+            {"from": "a", "to": "later", "label": "Second"},
+        ])
+        position = {node["id"]: node for node in placed}
+        self.assertGreater(position["b"]["row"], position["a"]["row"] + 1)
+        onward = next(edge for edge in routed if edge["label"] == "No")
+        self.assertEqual(onward["route"], "straight")
+        self.assertNotIn("gutter", onward)
 
     def test_a_skip_along_the_spine_runs_down_the_left(self):
         nodes = [
@@ -3886,6 +3908,7 @@ Rails.application.routes.draw do
       edit_step :consent_order
       edit_step :consent_order_upload
       edit_step :child_protection_cases
+      edit_step :consent_order_sought
       edit_step :continue_application
       edit_step :sign_in_or_create_account
       show_step :no_court_found
@@ -3974,6 +3997,7 @@ end
         "start",
         "consent_order",
         "consent_order_upload",
+        "consent_order_sought",
         "child_protection_cases",
         "continue_application",
         "sign_in_or_create_account",
@@ -3991,6 +4015,16 @@ end
         root,
         "app/views/steps/opening/start/show.html.erb",
         "<%= link_button 'Continue', edit_steps_opening_consent_order_path %>\n",
+    )
+    _write(
+        root,
+        "app/views/steps/opening/consent_order_upload/edit.html.erb",
+        "<%= link_button 'Continue', edit_steps_opening_consent_order_sought_path %>\n",
+    )
+    _write(
+        root,
+        "app/views/steps/opening/consent_order_sought/edit.html.erb",
+        "<%= link_button 'Continue', edit_steps_opening_child_protection_cases_path %>\n",
     )
 
 
