@@ -44,7 +44,8 @@ from rag.features import behaviour_text, gherkin_lines, is_drafting_request, mat
 from rag.chunker import find_blocks
 from rag.history import HistoryError, file_history
 from rag.testing import command_phrases, resolve_feature_paths, retrieve_testing
-from rag.web import Handler, _attach_flow_urls, _progress_view, github_blob_url, public_status, run_features, run_flow, run_history, run_impact, run_query, run_testing, start_ingest
+from rag.web import Handler, _attach_flow_urls, _progress_view, github_blob_url, public_status, run_features, run_flow, run_history, run_impact, run_query, run_sequence, run_testing, start_ingest
+from rag.sequence import sequence_diagram
 from unittest.mock import patch
 
 from rag.plan import parse_queries, question_needs_plan, retrieval_model
@@ -2277,6 +2278,11 @@ class WebTest(unittest.TestCase):
             self.assertIn("Code on GitHub", page)
             self.assertIn(">Test page</option>", page)
             self.assertIn("Step definition on GitHub", page)
+            self.assertIn(">Sequence diagram</option>", page)
+            self.assertIn("a sequence diagram of the calls in that step", page)
+            self.assertIn('fetch("/api/sequence"', page)
+            self.assertIn("function renderSequence", page)
+            self.assertIn("function drawSequence", page)
             self.assertIn("The test site is the root address of that system.", page)
             self.assertIn('setAttribute("target", "_blank")', page)
             self.assertIn("Resources", page)
@@ -3268,6 +3274,143 @@ def _schema_after(schema, statements):
         elif statement.startswith("CREATE INDEX") and CODE_INDEX in statement:
             indexes.add(CODE_INDEX)
     return ChunkSchema(columns, frozenset(indexes))
+
+
+class SequenceTest(unittest.TestCase):
+    def test_a_controller_action_redirects_to_the_browser(self):
+        text = (
+            "class Partner\n"
+            "  def index\n"
+            "    redirect_to application_personal_informations_path(application)\n"
+            "  end\n"
+            "  def create\n"
+            "    record.save\n"
+            "  end\n"
+            "end\n"
+        )
+        diagram = sequence_diagram(text, "app/controllers/partner_controller.rb", 5)
+        self.assertEqual(diagram["symbol"], "Partner#create")
+        self.assertEqual(
+            [(item["from"], item["to"], item["label"]) for item in diagram["messages"]],
+            [("Partner", "record", "save")],
+        )
+        index = sequence_diagram(text, "app/controllers/partner_controller.rb", 2)
+        self.assertEqual(index["messages"][0]["label"], "redirect_to application_personal_informations_path")
+        self.assertEqual(index["messages"][0]["to"], "Browser")
+
+    def test_a_call_aimed_at_a_class_names_that_class(self):
+        text = (
+            "class ConsentOrderController\n"
+            "  def update\n"
+            "    update_and_advance(ConsentOrderForm)\n"
+            "  end\n"
+            "end\n"
+        )
+        diagram = sequence_diagram(text, "app/controllers/steps/opening/consent_order_controller.rb", 2)
+        self.assertEqual(
+            [(item["from"], item["to"], item["label"]) for item in diagram["messages"]],
+            [("ConsentOrderController", "ConsentOrderForm", "update_and_advance")],
+        )
+
+    def test_every_method_is_drawn_when_the_line_is_the_class(self):
+        text = (
+            "class ApplyPage\n"
+            "  def start\n"
+            "    start_button.click\n"
+            "  end\n"
+            "  def return_to\n"
+            "    return_button.click\n"
+            "  end\n"
+            "end\n"
+        )
+        diagram = sequence_diagram(text, "features/pages/apply_page.rb", 1)
+        labels = [item["label"] for item in diagram["messages"]]
+        self.assertEqual(labels, ["start", "click", "return_to", "click"])
+        self.assertEqual(diagram["messages"][0]["from"], "Request")
+        self.assertEqual(diagram["messages"][1]["to"], "start_button")
+        self.assertEqual(diagram["participants"][0], "Request")
+
+    def test_a_same_class_call_is_followed_one_level(self):
+        text = (
+            "class Fee\n"
+            "  def update\n"
+            "    save_record\n"
+            "  end\n"
+            "  def save_record\n"
+            "    record.save\n"
+            "  end\n"
+            "end\n"
+        )
+        diagram = sequence_diagram(text, "app/models/forms/fee.rb", 2)
+        self.assertEqual(
+            [(item["from"], item["to"], item["label"]) for item in diagram["messages"]],
+            [("Fee", "record", "save")],
+        )
+
+    def test_a_delegated_call_is_followed_into_that_class(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write(
+                root,
+                "app/services/details_router.rb",
+                "class DetailsRouter\n  def approval_or_continue\n    application_approve_path(application)\n  end\nend\n",
+            )
+            text = (
+                "class Details\n"
+                "  def index\n"
+                "    DetailsRouter.new(application).approval_or_continue\n"
+                "  end\n"
+                "end\n"
+            )
+            diagram = sequence_diagram(text, "app/controllers/details_controller.rb", 2, root)
+        labels = [(item["from"], item["to"], item["label"]) for item in diagram["messages"]]
+        self.assertEqual(labels, [
+            ("Details", "DetailsRouter", "new"),
+            ("DetailsRouter", "Routes", "application_approve_path"),
+        ])
+        self.assertIn("followed one level", diagram["note"])
+
+    def test_a_file_with_no_calls_says_so(self):
+        diagram = sequence_diagram("module Forms\n  class Fee\n  end\nend\n", "app/models/forms/fee.rb", 2)
+        self.assertEqual(diagram["messages"], [])
+        self.assertIn("no method calls", diagram["note"])
+        other = sequence_diagram("navigation:\n  - :fee\n", "config/settings.yml", 1)
+        self.assertIn("not a Ruby file", other["note"])
+
+    def test_the_page_asks_for_the_sequence_of_one_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write(
+                root,
+                "app/controllers/partner_controller.rb",
+                "class Partner\n  def create\n    redirect_to application_details_path(application)\n  end\nend\n",
+            )
+            repo = {
+                "id": 1,
+                "name": "hmcts/hwf-publicapp",
+                "branch": "master",
+                "commit_sha": "abc123def456",
+            }
+
+            class Conn:
+                def close(self):
+                    return None
+
+            with (
+                patch("rag.web.connect", return_value=Conn()),
+                patch("rag.web.resolve_repositories", return_value=[repo]),
+                patch("rag.web.checkout_dir", return_value=root),
+            ):
+                status, payload = run_sequence({
+                    "repo": "hmcts/hwf-publicapp",
+                    "path": "app/controllers/partner_controller.rb",
+                    "line": 2,
+                    "label": "Partner",
+                })
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["title"], "Partner")
+        self.assertEqual(payload["messages"][0]["to"], "Browser")
+        self.assertTrue(payload["url"].startswith("https://github.com/hmcts/hwf-publicapp/blob/abc123def456/"))
 
 
 class FlowTest(unittest.TestCase):

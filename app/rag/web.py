@@ -40,6 +40,7 @@ from rag.intent import impact_target
 from rag.log import logger
 from rag.plan import retrieval_model
 from rag.search import Hit, impact, retrieve
+from rag.sequence import sequence_diagram
 from rag.usage import Meter, Stage
 
 _PAGE = Path(__file__).with_name("static") / "index.html"
@@ -125,6 +126,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/search": run_search,
             "/api/impact": run_impact,
             "/api/flow": run_flow,
+            "/api/sequence": run_sequence,
             "/api/features": run_features,
             "/api/testing": run_testing,
             "/api/history": run_history,
@@ -753,6 +755,76 @@ def _chart_path(value: object) -> str:
     if not relative or len(relative) > 300 or any(part in {"", ".", ".."} for part in parts):
         return ""
     return relative
+
+
+def run_sequence(body: dict) -> tuple[int, dict]:
+    """The calls in one flow step, in the order its file writes them."""
+    repo = _required_text(body, "repo", "Choose one repository")
+    path = _chart_path(body.get("path"))
+    if not path:
+        raise ValueError("Enter a file path")
+    line = _optional_line(body)
+    label = body.get("label", "")
+    if label is None:
+        label = ""
+    if not isinstance(label, str):
+        raise ValueError("Label must be text")
+    label = " ".join(label.split())[:200]
+    try:
+        conn = connect()
+    except SystemExit as exc:
+        return 503, {"error": _failure_text(exc)}
+    try:
+        repositories = resolve_repositories(conn, repo)
+    except SystemExit as exc:
+        return 400, {"error": _failure_text(exc)}
+    finally:
+        conn.close()
+    if len(repositories) != 1:
+        raise ValueError("Choose one repository")
+    item = repositories[0]
+    root = checkout_dir(item["name"])
+    if not root.is_dir():
+        return 404, {"error": "The checkout for this repository is not on disk."}
+    full = root / path
+    if not full.is_file():
+        return 404, {"error": "That file is not in the checkout."}
+    try:
+        if full.stat().st_size > 500_000:
+            diagram = {
+                "symbol": "",
+                "participants": [],
+                "messages": [],
+                "note": "This file is too large to draw as a sequence.",
+                "start_line": line,
+                "end_line": line,
+            }
+        else:
+            text = full.read_text(encoding="utf-8", errors="replace")
+            diagram = sequence_diagram(text, path, line, root)
+    except OSError:
+        return 404, {"error": "That file is not in the checkout."}
+    diagram["title"] = label or diagram.get("symbol") or path
+    diagram["path"] = path
+    url = github_blob_url(
+        item["name"],
+        str(item.get("commit_sha") or ""),
+        path,
+        int(diagram.get("start_line") or line),
+        int(diagram.get("end_line") or line),
+    )
+    if url:
+        diagram["url"] = url
+    return 200, diagram
+
+
+def _optional_line(body: dict) -> int:
+    line = body.get("line", 1)
+    if line is None or line == "":
+        return 1
+    if isinstance(line, bool) or not isinstance(line, int) or not 1 <= line <= 100_000:
+        raise ValueError("Line must be a number")
+    return line
 
 
 def _optional_start(body: dict) -> str | None:

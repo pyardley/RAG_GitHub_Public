@@ -43,6 +43,7 @@ A written answer waits on the language model. With Ollama that wait can run to `
 - [POST /api/testing](#post-apitesting)
 - [POST /api/impact](#post-apiimpact)
 - [POST /api/flow](#post-apiflow)
+- [POST /api/sequence](#post-apisequence)
 - [POST /api/history](#post-apihistory)
 - [POST /api/ingest](#post-apiingest)
 - [POST /api/remove](#post-apiremove)
@@ -487,6 +488,46 @@ When the branch has commits newer than the index, a chart includes `changes`:
 | `unavailable` | True when the tip could not be compared. |
 
 `message` is empty when every selected repository produced a chart. Otherwise it says the checkout is missing, the start path was not found, or no journey was found. A missing checkout asks you to index that repository again.
+
+## POST /api/sequence
+
+The calls in one flow step, in the order its file writes them. The page calls this when Open a box in is Sequence diagram and a box is chosen.
+
+```json
+{
+  "repo": "hmcts/hwf-publicapp",
+  "path": "app/controllers/applications/process/partner_informations_controller.rb",
+  "line": 4,
+  "label": "Partner"
+}
+```
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `repo` | yes | One indexed repository. |
+| `path` | yes | The file the box points at. |
+| `line` | no | A line in that file. The method that contains it is drawn. Omit it to draw every instance method. |
+| `label` | no | The box label, used as the diagram title. |
+
+```json
+{
+  "title": "Partner",
+  "symbol": "Partner#create",
+  "path": "app/controllers/applications/process/partner_informations_controller.rb",
+  "participants": ["Partner", "Browser"],
+  "messages": [
+    {"from": "Partner", "to": "Browser", "label": "redirect_to application_details_path", "line": 5}
+  ],
+  "note": "Calls in Partner#create, in the order that file writes them.",
+  "start_line": 4,
+  "end_line": 6,
+  "url": "https://github.com/hmcts/hwf-publicapp/blob/abc123def456/app/controllers/applications/process/partner_informations_controller.rb#L4-L6"
+}
+```
+
+`participants` are the class and each receiver, left to right. `Request` is the caller when more than one method is drawn. `Browser` receives `redirect_to` and `render`. `Routes` receives a path helper. A call to another method in the same class is followed one level, and so is a call into one other class in the checkout. `messages` keeps source order, including both arms of a branch. At most 24 messages are returned. `note` says when the file is not Ruby, has no calls, or was cut short.
+
+400 when the repository, path, or line is missing or invalid. 404 when the checkout or the file is not on disk.
 
 ## POST /api/history
 

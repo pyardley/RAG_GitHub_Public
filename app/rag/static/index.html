@@ -261,6 +261,25 @@
     .saved-banner h1 { margin: 0 0 0.4rem; }
     .diagram-node:focus { outline: none; }
     .diagram-node:focus rect { stroke: var(--ink); stroke-width: 2; }
+    .sequence { display: grid; gap: 0.35rem; max-height: 42vh; overflow: auto; }
+    .sequence h3 { margin: 0.6rem 0 0; font-size: 1.05rem; }
+    .sequence-frame {
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+    .sequence-frame svg { display: block; }
+    .sequence-life { stroke: var(--line); stroke-dasharray: 3 4; }
+    .sequence-msg { fill: none; stroke: var(--muted); stroke-width: 1.4; }
+    .sequence-actor rect { fill: var(--paper); stroke: var(--line); }
+    .sequence-actor.owner rect { fill: var(--accent); stroke: var(--accent); }
+    .sequence-actor text, .sequence-msg text {
+      font: 12px/1.25 "Segoe UI", "Helvetica Neue", sans-serif;
+      fill: var(--ink);
+    }
+    .sequence-actor.owner text { fill: var(--accent-ink); }
+    .flow-node.flow-sequence rect { stroke: var(--accent); stroke-width: 3; vector-effect: non-scaling-stroke; }
     .flow-chart { display: grid; gap: 0.45rem; }
     .flow-tools { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; }
     .flow-tools button { padding: 0.3rem 0.7rem; font-size: 0.85rem; }
@@ -276,6 +295,10 @@
     }
     .flow-find-note { color: var(--muted); font-size: 0.85rem; white-space: nowrap; }
     .flow-node.flow-found rect { stroke: var(--ink); stroke-width: 3; vector-effect: non-scaling-stroke; }
+    .flow-chart.has-sequence .flow-frame { max-height: 34vh; }
+    .sequence-head { display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; }
+    .sequence-head h3 { margin: 0; }
+    .sequence-head button { padding: 0.25rem 0.65rem; font-size: 0.85rem; }
     .flow-frame {
       overflow: auto;
       max-height: 70vh;
@@ -496,6 +519,7 @@
             <option value="code">Code on GitHub</option>
             <option value="test">Test page</option>
             <option value="step">Step definition on GitHub</option>
+            <option value="sequence">Sequence diagram</option>
           </select>
         </label>
       </div>
@@ -536,7 +560,7 @@
         button: "Show",
         answer: false,
         k: false,
-        hint: "Leave this blank to draw a question list, redirects, or page objects. A decision tree with none of those starts at its opening step, such as /steps/opening/start_or_continue. Type a path to start at that step instead. Spine keeps the main path in one column. Spread, ELK, Dagre, d3-dag, and Graphviz draw the same steps another way. The number on each button is how many arrows cross, and overlapping boxes are counted beside it. Open a box in chooses the code on GitHub, the test page, or the step definition on GitHub. The test site is the root address of that system. Ask about this journey once the chart is drawn."
+        hint: "Leave this blank to draw a question list, redirects, or page objects. A decision tree with none of those starts at its opening step, such as /steps/opening/start_or_continue. Type a path to start at that step instead. Spine keeps the main path in one column. Spread, ELK, Dagre, d3-dag, and Graphviz draw the same steps another way. The number on each button is how many arrows cross, and overlapping boxes are counted beside it. Open a box in chooses the code on GitHub, the test page, the step definition on GitHub, or a sequence diagram of the calls in that step. The test site is the root address of that system. Ask about this journey once the chart is drawn."
       },
       features: {
         label: "Feature or step",
@@ -680,10 +704,13 @@
       }
     }
 
+    function flowOpenChoice(value) {
+      return value === "test" || value === "step" || value === "sequence" ? value : "code";
+    }
+
     function storedFlowOpen() {
       try {
-        const value = localStorage.getItem(`flow-open:${repoSelect.value}`) || "code";
-        return value === "test" || value === "step" ? value : "code";
+        return flowOpenChoice(localStorage.getItem(`flow-open:${repoSelect.value}`) || "code");
       } catch (error) {
         return "code";
       }
@@ -702,7 +729,7 @@
         const choice = document.querySelector("#flow-open").value;
         if (site) localStorage.setItem(`flow-site:${repo}`, site);
         else localStorage.removeItem(`flow-site:${repo}`);
-        localStorage.setItem(`flow-open:${repo}`, choice === "test" || choice === "step" ? choice : "code");
+        localStorage.setItem(`flow-open:${repo}`, flowOpenChoice(choice));
       } catch (error) {
         return;
       }
@@ -749,8 +776,17 @@
         } else if (chosen.choice === "step") {
           href = link.dataset.step || "";
           if (!href) note = "No step definition names this step.";
+        } else if (chosen.choice === "sequence") {
+          note = "";
         } else {
           href = link.dataset.code || "";
+        }
+        if (chosen.choice === "sequence") {
+          link.setAttribute("role", "button");
+          link.setAttribute("tabindex", "0");
+        } else {
+          link.removeAttribute("role");
+          link.removeAttribute("tabindex");
         }
         if (href) {
           link.setAttribute("href", href);
@@ -762,8 +798,237 @@
           link.removeAttribute("rel");
         }
         const title = link.querySelector("title");
-        if (title) title.textContent = note ? `${detail}\n${note}` : detail;
+        if (title) {
+          title.textContent = chosen.choice === "sequence"
+            ? (link.dataset.name || "Sequence diagram")
+            : (note ? `${detail}\n${note}` : detail);
+        }
+        if (!link.dataset.sequenceBound) {
+          link.dataset.sequenceBound = "1";
+          link.addEventListener("click", (event) => {
+            if (currentFlowLink().choice !== "sequence") return;
+            event.preventDefault();
+            event.stopPropagation();
+            openSequence(link);
+          });
+          link.addEventListener("keydown", (event) => {
+            if (event.key !== "Enter" && event.key !== " ") return;
+            if (currentFlowLink().choice !== "sequence") return;
+            event.preventDefault();
+            openSequence(link);
+          });
+        }
       }
+    }
+
+    let sequenceToken = 0;
+
+    function openSequence(link) {
+      const chart = link.closest(".flow-chart");
+      if (!chart) return;
+      const key = `${link.dataset.path || ""}|${link.dataset.line || ""}`;
+      chart.querySelectorAll("a.flow-node").forEach((node) => {
+        node.classList.toggle("flow-sequence", `${node.dataset.path || ""}|${node.dataset.line || ""}` === key);
+      });
+      const frame = chart.querySelector(".flow-frame");
+      let panel = chart.querySelector(":scope > .sequence");
+      if (!panel) {
+        panel = document.createElement("section");
+        panel.className = "sequence";
+        if (frame) frame.before(panel);
+        else chart.append(panel);
+      }
+      chart.classList.add("has-sequence");
+      const token = sequenceToken += 1;
+      panel.dataset.token = String(token);
+      panel.replaceChildren();
+      const waiting = document.createElement("p");
+      waiting.className = "scope";
+      waiting.textContent = "Reading the calls in this step…";
+      panel.append(waiting);
+      panel.scrollIntoView({ block: "nearest" });
+      const repo = link.dataset.repo || repoSelect.value;
+      fetch("/api/sequence", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          repo,
+          path: link.dataset.path || "",
+          line: Number(link.dataset.line || 1),
+          label: link.dataset.name || ""
+        })
+      }).then(async (response) => {
+        const body = await response.json();
+        if (panel.dataset.token !== String(token)) return;
+        panel.replaceChildren();
+        if (!response.ok) {
+          const error = document.createElement("p");
+          error.className = "empty";
+          error.textContent = body.error || "The request failed";
+          panel.append(error);
+          return;
+        }
+        renderSequence(panel, body);
+      }).catch(() => {
+        if (panel.dataset.token !== String(token)) return;
+        panel.replaceChildren();
+        const error = document.createElement("p");
+        error.className = "empty";
+        error.textContent = "The request failed before a response arrived";
+        panel.append(error);
+      });
+    }
+
+    function renderSequence(panel, body) {
+      const head = document.createElement("div");
+      head.className = "sequence-head";
+      const heading = document.createElement("h3");
+      heading.textContent = body.title ? `Sequence: ${body.title}` : "Sequence";
+      const close = document.createElement("button");
+      close.type = "button";
+      close.className = "secondary";
+      close.textContent = "Close";
+      close.addEventListener("click", () => {
+        const chart = panel.closest(".flow-chart");
+        panel.remove();
+        if (!chart) return;
+        chart.classList.remove("has-sequence");
+        chart.querySelectorAll(".flow-sequence").forEach((node) => node.classList.remove("flow-sequence"));
+      });
+      head.append(heading, close);
+      const note = document.createElement("p");
+      note.className = "hint";
+      note.textContent = body.note || "";
+      panel.append(head, note);
+      if (body.url) {
+        const file = document.createElement("p");
+        file.className = "hint";
+        const link = document.createElement("a");
+        link.href = body.url;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.textContent = body.path || "Open this file on GitHub";
+        file.append(link);
+        panel.append(file);
+      }
+      const drawn = drawSequence(body);
+      if (drawn) {
+        const frame = document.createElement("div");
+        frame.className = "sequence-frame";
+        frame.append(drawn);
+        panel.append(frame);
+      }
+      panel.scrollIntoView({ block: "nearest" });
+    }
+
+    function drawSequence(body) {
+      const messages = body.messages || [];
+      const participants = body.participants || [];
+      if (!messages.length || !participants.length) return null;
+      const svgNs = "http://www.w3.org/2000/svg";
+      const boxWidth = 148;
+      const gap = 36;
+      const headY = 16;
+      const headH = 34;
+      const msgStart = 78;
+      const msgPitch = 36;
+      const pad = 20;
+      const owner = participants.find((name) => name !== "Request") || participants[0];
+      const selfOnEdge = messages.some((message) => (
+        message.from === message.to && message.from === participants[participants.length - 1]
+      ));
+      const xOf = new Map(participants.map((name, index) => [name, pad + index * (boxWidth + gap)]));
+      const center = (name) => (xOf.get(name) || pad) + boxWidth / 2;
+      const width = pad * 2 + participants.length * boxWidth + Math.max(0, participants.length - 1) * gap + (selfOnEdge ? 140 : 0);
+      const height = msgStart + messages.length * msgPitch + headH + 12;
+      const svg = document.createElementNS(svgNs, "svg");
+      svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+      svg.setAttribute("width", String(width));
+      svg.setAttribute("height", String(height));
+      svg.setAttribute("role", "img");
+      svg.setAttribute("aria-label", body.title ? `Sequence diagram of ${body.title}` : "Sequence diagram");
+      const defs = document.createElementNS(svgNs, "defs");
+      const markerId = `sequence-arrow-${sequenceToken}`;
+      const marker = document.createElementNS(svgNs, "marker");
+      marker.setAttribute("id", markerId);
+      marker.setAttribute("viewBox", "0 0 10 10");
+      marker.setAttribute("refX", "9");
+      marker.setAttribute("refY", "5");
+      marker.setAttribute("markerWidth", "7");
+      marker.setAttribute("markerHeight", "7");
+      marker.setAttribute("orient", "auto");
+      const head = document.createElementNS(svgNs, "path");
+      head.setAttribute("d", "M 0 0 L 10 5 L 0 10 z");
+      head.setAttribute("fill", "#5e574c");
+      marker.append(head);
+      defs.append(marker);
+      svg.append(defs);
+      const lifeBottom = height - headH - 8;
+      for (const name of participants) {
+        const x = xOf.get(name);
+        const line = document.createElementNS(svgNs, "line");
+        line.setAttribute("class", "sequence-life");
+        line.setAttribute("x1", String(center(name)));
+        line.setAttribute("x2", String(center(name)));
+        line.setAttribute("y1", String(headY + headH));
+        line.setAttribute("y2", String(lifeBottom));
+        svg.append(line);
+      }
+      messages.forEach((message, index) => {
+        const y = msgStart + index * msgPitch;
+        const from = center(message.from);
+        const to = center(message.to);
+        const path = document.createElementNS(svgNs, "path");
+        path.setAttribute("class", "sequence-msg");
+        path.setAttribute("marker-end", `url(#${markerId})`);
+        if (message.from === message.to) {
+          path.setAttribute("d", `M ${from} ${y} H ${from + 28} V ${y + 16} H ${from}`);
+        } else {
+          path.setAttribute("d", `M ${from} ${y} H ${to}`);
+        }
+        const title = document.createElementNS(svgNs, "title");
+        title.textContent = message.label || "";
+        path.append(title);
+        svg.append(path);
+        const text = document.createElementNS(svgNs, "text");
+        const label = sequenceLabel(message.label || "");
+        if (message.from === message.to) {
+          text.setAttribute("x", String(from + 32));
+          text.setAttribute("y", String(y + 12));
+          text.setAttribute("text-anchor", "start");
+        } else {
+          text.setAttribute("x", String((from + to) / 2));
+          text.setAttribute("y", String(y - 6));
+          text.setAttribute("text-anchor", "middle");
+        }
+        text.textContent = label;
+        svg.append(text);
+      });
+      for (const name of participants) sequenceActor(svg, svgNs, name, xOf.get(name), headY, boxWidth, headH, name === owner);
+      for (const name of participants) sequenceActor(svg, svgNs, name, xOf.get(name), lifeBottom, boxWidth, headH, name === owner);
+      return svg;
+    }
+
+    function sequenceLabel(label) {
+      return label.length > 42 ? `${label.slice(0, 41)}…` : label;
+    }
+
+    function sequenceActor(svg, svgNs, name, x, y, width, height, owner) {
+      const group = document.createElementNS(svgNs, "g");
+      group.setAttribute("class", owner ? "sequence-actor owner" : "sequence-actor");
+      const rect = document.createElementNS(svgNs, "rect");
+      rect.setAttribute("x", String(x));
+      rect.setAttribute("y", String(y));
+      rect.setAttribute("width", String(width));
+      rect.setAttribute("height", String(height));
+      rect.setAttribute("rx", "6");
+      const text = document.createElementNS(svgNs, "text");
+      text.setAttribute("x", String(x + width / 2));
+      text.setAttribute("y", String(y + 22));
+      text.setAttribute("text-anchor", "middle");
+      text.textContent = sequenceLabel(name);
+      group.append(rect, text);
+      svg.append(group);
     }
 
     function setMode(next) {
@@ -1380,12 +1645,12 @@
         await settleFlowLayouts(flowPanel);
         host.append(flowSaveCopy(flowPanel));
       } else {
-        const previous = output;
-        output = host;
-        try {
-          fillResult(body, requested);
-        } finally {
-          output = previous;
+      const previous = output;
+      output = host;
+      try {
+        fillResult(body, requested);
+      } finally {
+        output = previous;
         }
       }
       savedHeadings(host);
@@ -2322,12 +2587,12 @@
             }
             return edgeLeft - straightBand - laneInset - lane * lanePitch;
           }
-          let edgeRight = 0;
-          for (const node of nodes) {
+        let edgeRight = 0;
+        for (const node of nodes) {
             if ((node.column || 0) !== edge.channel) continue;
-            if (node.y + node.height <= top || node.y >= bottom) continue;
-            edgeRight = Math.max(edgeRight, node.x + nodeWidth);
-          }
+          if (node.y + node.height <= top || node.y >= bottom) continue;
+          edgeRight = Math.max(edgeRight, node.x + nodeWidth);
+        }
           if (!edgeRight) {
             const sample = nodes.find((node) => (node.column || 0) === edge.channel);
             edgeRight = sample ? sample.x + nodeWidth : 0;
@@ -2449,7 +2714,7 @@
         if (event.key !== "Escape") return;
         clearFlowTrace(svg.closest(".flow-canvas") || svg);
       });
-      const nodeElements = new Map(nodes.map((node) => [node.id, flowNode(svgNs, node, nodeWidth, lineHeight, padY)]));
+      const nodeElements = new Map(nodes.map((node) => [node.id, flowNode(svgNs, node, nodeWidth, lineHeight, padY, chart.repository)]));
       const outgoing = new Map();
       let edgeCount = 0;
       for (const item of prepared) {
@@ -3545,7 +3810,7 @@
       const chartId = chartKey || `flow-${flowMarker += 1}`;
       const usedIds = new Set();
       for (const node of nodes) node.domId = flowDomId(chartId, node, usedIds);
-      const nodeElements = new Map(nodes.map((node) => [node.id, flowNode(svgNs, node, nodeWidth, 15, 10)]));
+      const nodeElements = new Map(nodes.map((node) => [node.id, flowNode(svgNs, node, nodeWidth, 15, 10, chart.repository)]));
       let maxX = 32;
       let maxY = 32;
       for (const node of nodes) {
@@ -4003,7 +4268,7 @@
       return copy;
     }
 
-    function flowNode(svgNs, node, nodeWidth, lineHeight, padY) {
+    function flowNode(svgNs, node, nodeWidth, lineHeight, padY, repository) {
       const link = document.createElementNS(svgNs, "a");
       link.setAttribute("class", node.kind && node.kind !== "step" ? `flow-node ${node.kind}` : "flow-node");
       if (node.domId) link.id = node.domId;
@@ -4014,6 +4279,8 @@
       link.dataset.code = node.url || "";
       link.dataset.page = node.page || "";
       link.dataset.step = node.step_url || "";
+      link.dataset.line = String(node.start_line || 1);
+      link.dataset.repo = repository || "";
       const title = document.createElementNS(svgNs, "title");
       const visits = (node.visits || []).join("\n");
       title.textContent = visits ? `${node.detail || node.label}\n${visits}` : (node.detail || node.label);
