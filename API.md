@@ -44,6 +44,7 @@ A written answer waits on the language model. With Ollama that wait can run to `
 - [POST /api/impact](#post-apiimpact)
 - [POST /api/flow](#post-apiflow)
 - [POST /api/sequence](#post-apisequence)
+- [POST /api/erd](#post-apierd)
 - [POST /api/history](#post-apihistory)
 - [POST /api/ingest](#post-apiingest)
 - [POST /api/remove](#post-apiremove)
@@ -528,6 +529,71 @@ The calls in one flow step, in the order its file writes them. The page calls th
 `participants` are the class and each receiver, left to right. `Request` is the caller when more than one method is drawn. `Browser` receives `redirect_to` and `render`. `Routes` receives a path helper. A call to another method in the same class is followed one level, and so is a call into one other class in the checkout. `messages` keeps source order, including both arms of a branch. At most 24 messages are returned. `note` says when the file is not Ruby, has no calls, or was cut short.
 
 400 when the repository, path, or line is missing or invalid. 404 when the checkout or the file is not on disk.
+
+## POST /api/erd
+
+The ActiveRecord tables and the associations that stay in the database. A flow chart is one request. This is the model that outlives that request. The page calls this from the ERD tab.
+
+```json
+{
+  "repo": "hmcts/hwf-staffapp",
+  "focus": "Application"
+}
+```
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `repo` | yes | One indexed repository. |
+| `focus` | no | A table or model name. Omit it to draw every application table. A name draws that table and the tables it joins. |
+
+```json
+{
+  "repositories": [],
+  "tables": [
+    {
+      "name": "appeals",
+      "models": ["Appeal"],
+      "subtitle": "Appeal",
+      "polymorphic": false,
+      "path": "app/models/appeal.rb",
+      "line": 1,
+      "columns": [
+        {"name": "id", "type": "bigint", "primary": true, "null": false},
+        {"name": "application_id", "type": "bigint", "primary": false, "null": false, "references": "applications"}
+      ],
+      "more": 2,
+      "focused": true,
+      "url": "https://github.com/hmcts/hwf-staffapp/blob/abc123def456/app/models/appeal.rb#L1"
+    }
+  ],
+  "associations": [
+    {
+      "from": "appeals",
+      "to": "applications",
+      "kind": "one",
+      "label": "application",
+      "inverse": "appeal",
+      "column": "application_id",
+      "optional": false,
+      "path": "app/models/appeal.rb",
+      "line": 2
+    }
+  ],
+  "note": "Appeal and the tables it joins. 3 of 20 tables. Tables come from db/schema.rb and the ActiveRecord models. Framework tables are left out.",
+  "message": "",
+  "focus": "appeals",
+  "table_count": 20,
+  "usage": {}
+}
+```
+
+`tables` are the boxes. `models` lists the ActiveRecord classes stored in that table, so a single-table inheritance hierarchy shares one box. `columns` are the ones to draw: the primary key, the foreign keys, and a short list of other columns. `more` is how many further columns were left out. A focused table keeps a longer list than its neighbours. A column that is a foreign key has `references`. `polymorphic` is true for an interface such as `notable`, and its `name` is `poly:` plus that association.
+
+`associations` are the lines. `from` is the table that holds the foreign key. `kind` is `many` (many of `from` belong to one `to`), `one` (one to one), `many_to_many`, `through`, or `polymorphic`. `label` is the `belongs_to` name. `inverse` is the `has_many` or `has_one` name when the model declares it. A `through` association also has `through`. `optional` is true when the `belongs_to` is optional.
+
+Framework tables such as `active_storage`, `action_text`, `schema_migrations`, and `ar_internal_metadata` are left out. A `belongs_to` whose table is not in the checkout is counted in `note` and is not drawn. `message` is set when `focus` names nothing. `table_count` is the number of application tables before a focus is applied.
+
+400 when the repository is missing or the focus is not text. 404 when the checkout is not on disk.
 
 ## POST /api/history
 

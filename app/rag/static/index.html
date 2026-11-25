@@ -279,6 +279,23 @@
       fill: var(--ink);
     }
     .sequence-actor.owner text { fill: var(--accent-ink); }
+    .erd { display: grid; gap: 0.45rem; }
+    .erd-frame { height: 70vh; }
+    .erd-node rect { fill: var(--paper); stroke: var(--line); }
+    .erd-node .erd-head { fill: var(--accent); stroke: var(--accent); }
+    .erd-node.focused .erd-head { stroke: var(--ink); stroke-width: 2.5; }
+    .erd-node.polymorphic .erd-head { fill: var(--paper); stroke: var(--accent); stroke-dasharray: 4 3; }
+    .erd-node text { font: 12px/1.25 "Segoe UI", "Helvetica Neue", sans-serif; fill: var(--ink); }
+    .erd-node .erd-title { fill: var(--accent-ink); font-weight: 650; }
+    .erd-node .erd-sub { fill: var(--accent-ink); font-size: 11px; }
+    .erd-node.polymorphic .erd-title { fill: var(--ink); }
+    .erd-node.polymorphic .erd-sub { fill: var(--muted); }
+    .erd-node .erd-head-square { fill: var(--accent); stroke: none; }
+    .erd-node.polymorphic .erd-head-square { fill: var(--paper); }
+    .erd-node .erd-muted { fill: var(--muted); }
+    .erd-edge { fill: none; stroke: var(--muted); stroke-width: 1.3; }
+    .erd-edge.dashed { stroke-dasharray: 4 3; }
+    .erd-mark, .erd-label { font: 11px/1.2 "Segoe UI", "Helvetica Neue", sans-serif; fill: var(--muted); }
     .flow-node.flow-sequence rect { stroke: var(--accent); stroke-width: 3; vector-effect: non-scaling-stroke; }
     .flow-chart { display: grid; gap: 0.45rem; }
     .flow-tools { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; }
@@ -500,6 +517,7 @@
       <button type="button" role="tab" id="tab-features" aria-controls="ask" data-mode="features" aria-selected="false" tabindex="-1">Features</button>
       <button type="button" role="tab" id="tab-testing" aria-controls="ask" data-mode="testing" aria-selected="false" tabindex="-1">Testing</button>
       <button type="button" role="tab" id="tab-history" aria-controls="ask" data-mode="history" aria-selected="false" tabindex="-1">History</button>
+      <button type="button" role="tab" id="tab-erd" aria-controls="ask" data-mode="erd" aria-selected="false" tabindex="-1">ERD</button>
     </nav>
 
     <form class="ask" id="ask" role="tabpanel" aria-labelledby="tab-query">
@@ -585,9 +603,17 @@
         answer: false,
         k: false,
         hint: "Enter a path in the selected repository, such as app/helpers/application_helper.rb. Leave the block blank to step through the whole file. A block such as address_lookup_access_token shows only that method, class, or scenario, and only the versions that change it. Step backward and Step forward move through the changes, and Play walks them in order. Each change shows who made it and when. Versions come from the branch, including commits newer than the index. The indexed commit is marked."
+      },
+      erd: {
+        label: "Table or model",
+        placeholder: "Application",
+        button: "Show",
+        answer: false,
+        k: false,
+        hint: "Leave this blank to draw every application table. A name such as Application or online_applications draws that table and the tables it joins. A box opens the model on the indexed commit, or db/schema.rb when the table has no model. Framework tables such as active_storage are left out. A star on a line is many and a 1 is one. A dashed line is polymorphic or goes through another table."
       }
     };
-    const prompts = { query: "", impact: "", search: "", flow: "", features: "", testing: "", history: "" };
+    const prompts = { query: "", impact: "", search: "", flow: "", features: "", testing: "", history: "", erd: "" };
     const queryHint = document.querySelector("#prompt-hint").textContent;
     let mode = "query";
     let historyStop = () => {};
@@ -1051,7 +1077,7 @@
       document.querySelector("#flow-open-row").hidden = next !== "flow";
       if (next === "flow") restoreFlowLinks();
       const hint = document.querySelector("#prompt-hint");
-      hint.hidden = next !== "query" && next !== "flow" && next !== "features" && next !== "testing" && next !== "history";
+      hint.hidden = next !== "query" && next !== "flow" && next !== "features" && next !== "testing" && next !== "history" && next !== "erd";
       hint.textContent = next === "query" ? queryHint : spec.hint;
       document.querySelector("#answer-wrap").hidden = !spec.answer;
       document.querySelectorAll(".modes button").forEach((button) => {
@@ -1459,7 +1485,7 @@
       go.disabled = true;
       if (requested === "history") stopHistory();
       panel.replaceChildren();
-      if (requested === "history" && !repoSelect.value) {
+      if ((requested === "history" || requested === "erd") && !repoSelect.value) {
         setTabStatus(requested, "Choose one repository", true);
         go.disabled = false;
         return;
@@ -1469,7 +1495,9 @@
         ? "Drawing the journey…"
         : requested === "history"
           ? (historyBlock ? "Reading the history of that block…" : "Reading the history of that file…")
-          : spec.answer && document.querySelector("#answer").checked ? "Searching and writing an answer…" : "Searching the index…");
+          : requested === "erd"
+            ? "Reading the model…"
+            : spec.answer && document.querySelector("#answer").checked ? "Searching and writing an answer…" : "Searching the index…");
       const payload = { repo: repoSelect.value };
       if (requested === "impact") payload.target = asked;
       else if (requested === "history") {
@@ -1477,6 +1505,7 @@
         if (historyBlock) payload.block = historyBlock;
       }
       else if (requested === "flow") payload.start = asked.trim();
+      else if (requested === "erd") payload.focus = asked.trim();
       else if (requested === "features" || requested === "testing") {
         payload.question = asked;
         payload.k = Number(document.querySelector("#k").value);
@@ -1539,6 +1568,10 @@
       }
       if (requested === "history") {
         renderHistory(body);
+        return;
+      }
+      if (requested === "erd") {
+        output.erdDrawing = renderErd(body);
         return;
       }
       if (body.index) {
@@ -1634,6 +1667,367 @@
     // first paint, so the copy waits for the drawing that is on screen. The
     // layout programs travel inside the file, because opening it does not have
     // the application. Save static chart is the same drawing with no script.
+    async function renderErd(body) {
+      const panel = output;
+      const wrap = document.createElement("div");
+      wrap.className = "erd";
+      panel.append(wrap);
+      if (body.note) {
+        const note = document.createElement("p");
+        note.className = "scope";
+        note.textContent = body.note;
+        wrap.append(note);
+      }
+      if (body.message) {
+        const message = document.createElement("p");
+        message.className = "empty";
+        message.textContent = body.message;
+        wrap.append(message);
+        return;
+      }
+      const tables = body.tables || [];
+      if (!tables.length) {
+        const empty = document.createElement("p");
+        empty.className = "empty";
+        empty.textContent = "No tables to draw.";
+        wrap.append(empty);
+        return;
+      }
+      const pending = document.createElement("p");
+      pending.className = "scope";
+      pending.textContent = "Drawing the model…";
+      wrap.append(pending);
+      const measured = tables.map(measureErdTable);
+      const known = new Set(measured.map((node) => node.id));
+      const edges = (body.associations || []).filter((edge) => known.has(edge.from) && known.has(edge.to));
+      const byId = new Map(measured.map((node) => [node.id, node]));
+      let placed;
+      try {
+        placed = await placeElk(measured, edges.map(erdLayoutEdge), "RIGHT", {
+          "elk.spacing.nodeNode": "28",
+          "elk.layered.spacing.nodeNodeBetweenLayers": "64",
+          "elk.aspectRatio": "1.5",
+          "elk.separateConnectedComponents": "true",
+          "elk.spacing.componentComponent": "36"
+        });
+      } catch (error) {
+        placed = placeErdGrid(measured, edges);
+      }
+      if (!wrap.isConnected) return;
+      pending.remove();
+      const frame = document.createElement("div");
+      frame.className = "flow-frame erd-frame";
+      mountErd(wrap, frame, drawErd(placed, byId));
+    }
+
+    function measureErdTable(table) {
+      const title = erdTitle(table);
+      const subtitle = table.subtitle || "";
+      const columnLines = (table.columns || []).map(erdColumnLine);
+      if (table.more) columnLines.push(`+ ${table.more} ${table.more === 1 ? "column" : "columns"}`);
+      const longest = Math.max(
+        title.length,
+        Math.min(subtitle.length, 46),
+        ...columnLines.map((line) => line.length),
+        16
+      );
+      const width = Math.max(240, Math.min(480, Math.ceil(longest * 8.4) + 36));
+      const head = subtitle ? 40 : 26;
+      const height = 8 + head + columnLines.length * 16 + 8;
+      return { id: table.name, width, height, table, head, columnLines, title, subtitle };
+    }
+
+    function erdTitle(table) {
+      return table.polymorphic ? String(table.name || "").replace(/^poly:/, "") : table.name;
+    }
+
+    function erdColumnLine(column) {
+      const mark = column.primary ? "PK " : column.references ? "FK " : "";
+      return `${mark}${column.name}  ${column.type}`;
+    }
+
+    function erdLayoutEdge(edge) {
+      return { ...edge, label: erdEdgeLabel(edge) };
+    }
+
+    function erdEdgeLabel(edge) {
+      if (edge.kind === "through") return `${edge.label} through ${edge.through}`;
+      if (edge.inverse) return `${edge.label} / ${edge.inverse}`;
+      return edge.label || "";
+    }
+
+    function drawErd(placed, byId) {
+      const svgNs = "http://www.w3.org/2000/svg";
+      const svg = document.createElementNS(svgNs, "svg");
+      let maxX = 32;
+      let maxY = 32;
+      const boxes = new Map();
+      for (const node of placed.nodes || []) {
+        const measured = byId.get(node.id);
+        if (!measured) continue;
+        const box = { x: node.x, y: node.y, width: measured.width, height: measured.height };
+        boxes.set(node.id, box);
+        maxX = Math.max(maxX, box.x + box.width);
+        maxY = Math.max(maxY, box.y + box.height);
+      }
+      svg.append(erdMarker(svgNs));
+      for (const edge of placed.edges || []) {
+        const points = edge.points && edge.points.length >= 2 ? edge.points : erdStraight(boxes.get(edge.from), boxes.get(edge.to));
+        if (!points || points.length < 2) continue;
+        for (const point of points) {
+          maxX = Math.max(maxX, point.x);
+          maxY = Math.max(maxY, point.y);
+        }
+        svg.append(erdEdge(svgNs, edge, points));
+      }
+      for (const node of placed.nodes || []) {
+        const measured = byId.get(node.id);
+        const box = boxes.get(node.id);
+        if (measured && box) svg.append(erdBox(svgNs, measured, box));
+      }
+      svg.setAttribute("width", String(Math.ceil(maxX + 24)));
+      svg.setAttribute("height", String(Math.ceil(maxY + 24)));
+      return svg;
+    }
+
+    function erdMarker(svgNs) {
+      const marker = document.createElementNS(svgNs, "marker");
+      marker.setAttribute("id", "erd-arrow");
+      marker.setAttribute("viewBox", "0 0 10 10");
+      marker.setAttribute("refX", "9");
+      marker.setAttribute("refY", "5");
+      marker.setAttribute("markerWidth", "7");
+      marker.setAttribute("markerHeight", "7");
+      marker.setAttribute("orient", "auto-start-reverse");
+      const head = document.createElementNS(svgNs, "path");
+      head.setAttribute("d", "M 0 1.2 L 9 5 L 0 8.8 z");
+      head.setAttribute("fill", "#5e574c");
+      marker.append(head);
+      const defs = document.createElementNS(svgNs, "defs");
+      defs.append(marker);
+      return defs;
+    }
+
+    function erdStraight(source, target) {
+      if (!source || !target) return [];
+      return [
+        borderPoint(source, { x: target.x + target.width / 2, y: target.y + target.height / 2 }),
+        borderPoint(target, { x: source.x + source.width / 2, y: source.y + source.height / 2 })
+      ];
+    }
+
+    function erdEdge(svgNs, edge, points) {
+      const group = document.createElementNS(svgNs, "g");
+      const path = document.createElementNS(svgNs, "path");
+      path.setAttribute("d", points.map((point, index) => `${index ? "L" : "M"} ${point.x} ${point.y}`).join(" "));
+      path.setAttribute("class", edge.kind === "through" || edge.kind === "polymorphic" ? "erd-edge dashed" : "erd-edge");
+      path.setAttribute("marker-end", "url(#erd-arrow)");
+      group.append(path);
+      const label = erdEdgeLabel(edge);
+      const at = erdLabelPoint(points);
+      if (label && at) {
+        const text = document.createElementNS(svgNs, "text");
+        text.setAttribute("x", String(at.x));
+        text.setAttribute("y", String(at.y));
+        text.setAttribute("class", "erd-label");
+        text.setAttribute("text-anchor", "middle");
+        text.textContent = label.length > 48 ? `${label.slice(0, 47)}…` : label;
+        const title = document.createElementNS(svgNs, "title");
+        title.textContent = label;
+        text.append(title);
+        group.append(text);
+      }
+      const marks = erdMarks(edge);
+      const start = erdMarkPoint(points, false);
+      const end = erdMarkPoint(points, true);
+      if (marks[0] && start) group.append(erdMark(svgNs, marks[0], start));
+      if (marks[1] && end) group.append(erdMark(svgNs, marks[1], end));
+      return group;
+    }
+
+    function erdMarks(edge) {
+      if (edge.kind === "through" || edge.kind === "polymorphic") return ["", ""];
+      if (edge.kind === "many_to_many") return ["*", "*"];
+      const one = edge.optional ? "0..1" : "1";
+      if (edge.kind === "one") return [one, "1"];
+      return ["*", one];
+    }
+
+    function erdLabelPoint(points) {
+      let best = null;
+      let span = -1;
+      for (let index = 1; index < points.length; index += 1) {
+        const from = points[index - 1];
+        const to = points[index];
+        const length = Math.hypot(to.x - from.x, to.y - from.y);
+        if (length <= span) continue;
+        span = length;
+        best = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 - 6 };
+      }
+      return best;
+    }
+
+    function erdMarkPoint(points, end) {
+      const tip = end ? points[points.length - 1] : points[0];
+      const next = end ? points[points.length - 2] : points[1];
+      if (!tip || !next) return null;
+      const dx = next.x - tip.x;
+      const dy = next.y - tip.y;
+      const length = Math.hypot(dx, dy) || 1;
+      return { x: tip.x + (dx / length) * 16, y: tip.y + (dy / length) * 16 - 8 };
+    }
+
+    function erdMark(svgNs, mark, point) {
+      const text = document.createElementNS(svgNs, "text");
+      text.setAttribute("class", "erd-mark");
+      text.setAttribute("x", String(point.x));
+      text.setAttribute("y", String(point.y));
+      text.setAttribute("text-anchor", "middle");
+      text.textContent = mark;
+      return text;
+    }
+
+    function erdBox(svgNs, measured, box) {
+      const table = measured.table;
+      const group = document.createElementNS(svgNs, table.url ? "a" : "g");
+      const classes = ["erd-node"];
+      if (table.polymorphic) classes.push("polymorphic");
+      if (table.focused) classes.push("focused");
+      group.setAttribute("class", classes.join(" "));
+      const clipId = `erd-clip-${String(measured.id).replace(/[^A-Za-z0-9_-]/g, "-")}`;
+      const clip = document.createElementNS(svgNs, "clipPath");
+      clip.setAttribute("id", clipId);
+      const clipRect = document.createElementNS(svgNs, "rect");
+      clipRect.setAttribute("x", String(box.x));
+      clipRect.setAttribute("y", String(box.y));
+      clipRect.setAttribute("width", String(box.width));
+      clipRect.setAttribute("height", String(box.height));
+      clipRect.setAttribute("rx", "6");
+      clip.append(clipRect);
+      group.append(clip);
+      group.setAttribute("clip-path", `url(#${clipId})`);
+      if (table.url) {
+        group.setAttribute("href", table.url);
+        group.setAttribute("target", "_blank");
+      }
+      const body = document.createElementNS(svgNs, "rect");
+      body.setAttribute("x", String(box.x));
+      body.setAttribute("y", String(box.y));
+      body.setAttribute("width", String(box.width));
+      body.setAttribute("height", String(box.height));
+      body.setAttribute("rx", "6");
+      const head = document.createElementNS(svgNs, "rect");
+      head.setAttribute("class", "erd-head");
+      head.setAttribute("x", String(box.x));
+      head.setAttribute("y", String(box.y));
+      head.setAttribute("width", String(box.width));
+      head.setAttribute("height", String(measured.head));
+      head.setAttribute("rx", "6");
+      const headSquare = document.createElementNS(svgNs, "rect");
+      headSquare.setAttribute("class", "erd-head-square");
+      headSquare.setAttribute("x", String(box.x));
+      headSquare.setAttribute("y", String(box.y + Math.max(0, measured.head - 8)));
+      headSquare.setAttribute("width", String(box.width));
+      headSquare.setAttribute("height", "8");
+      group.append(body, head, headSquare);
+      const title = document.createElementNS(svgNs, "text");
+      title.setAttribute("class", "erd-title");
+      title.setAttribute("x", String(box.x + 12));
+      title.setAttribute("y", String(box.y + 17));
+      title.textContent = measured.title;
+      group.append(title);
+      if (measured.subtitle) {
+        const sub = document.createElementNS(svgNs, "text");
+        sub.setAttribute("class", "erd-sub");
+        sub.setAttribute("x", String(box.x + 12));
+        sub.setAttribute("y", String(box.y + 33));
+        const shown = measured.subtitle.length > 46 ? `${measured.subtitle.slice(0, 45)}…` : measured.subtitle;
+        sub.textContent = shown;
+        group.append(sub);
+      }
+      measured.columnLines.forEach((line, index) => {
+        const text = document.createElementNS(svgNs, "text");
+        text.setAttribute("x", String(box.x + 12));
+        text.setAttribute("y", String(box.y + measured.head + 14 + index * 16));
+        if (line.startsWith("+ ")) text.setAttribute("class", "erd-muted");
+        text.textContent = line;
+        group.append(text);
+      });
+      if (table.path) {
+        const hint = document.createElementNS(svgNs, "title");
+        hint.textContent = table.path;
+        group.append(hint);
+      }
+      return group;
+    }
+
+    function placeErdGrid(measured, edges) {
+      const columns = Math.max(1, Math.ceil(Math.sqrt(measured.length)));
+      const nodes = measured.map((node, index) => ({
+        id: node.id,
+        x: (index % columns) * (node.width + 56) + 16,
+        y: Math.floor(index / columns) * (node.height + 40) + 16,
+        width: node.width,
+        height: node.height
+      }));
+      const boxes = new Map(nodes.map((node) => [node.id, node]));
+      return {
+        nodes,
+        edges: edges.map((edge) => ({ ...edge, label: erdEdgeLabel(edge), points: erdStraight(boxes.get(edge.from), boxes.get(edge.to)) }))
+      };
+    }
+
+    function mountErd(wrap, frame, svg) {
+      const tools = document.createElement("div");
+      tools.className = "flow-tools";
+      let scale = 1;
+      const readout = document.createElement("span");
+      readout.className = "flow-zoom";
+      const apply = (next) => {
+        scale = Math.min(2.5, Math.max(0.05, next));
+        const width = Number(svg.dataset.baseWidth);
+        const height = Number(svg.dataset.baseHeight);
+        svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+        svg.setAttribute("width", String(Math.round(width * scale)));
+        svg.setAttribute("height", String(Math.round(height * scale)));
+        readout.textContent = `${Math.round(scale * 100)}%`;
+      };
+      svg.dataset.baseWidth = svg.getAttribute("width");
+      svg.dataset.baseHeight = svg.getAttribute("height");
+      const fit = () => {
+        const width = Number(svg.dataset.baseWidth) || 1;
+        const height = Number(svg.dataset.baseHeight) || 1;
+        if (!frame.clientWidth || !frame.clientHeight) {
+          apply(1);
+          return;
+        }
+        apply(Math.min((frame.clientWidth - 16) / width, (frame.clientHeight - 16) / height, 1));
+        frame.scrollLeft = 0;
+        frame.scrollTop = 0;
+      };
+      tools.append(
+        toolButton("Zoom out", () => apply(scale / 1.25)),
+        toolButton("Zoom in", () => apply(scale * 1.25)),
+        toolButton("Fit", fit),
+        readout
+      );
+      frame.append(svg);
+      wrap.append(tools, frame);
+      requestAnimationFrame(fit);
+      frame.addEventListener("wheel", (event) => {
+        if (!event.ctrlKey && !event.metaKey) return;
+        event.preventDefault();
+        const rect = frame.getBoundingClientRect();
+        const anchorX = frame.scrollLeft + event.clientX - rect.left;
+        const anchorY = frame.scrollTop + event.clientY - rect.top;
+        const pointX = anchorX / scale;
+        const pointY = anchorY / scale;
+        apply(scale * (event.deltaY < 0 ? 1.1 : 1 / 1.1));
+        frame.scrollLeft = pointX * scale - (event.clientX - rect.left);
+        frame.scrollTop = pointY * scale - (event.clientY - rect.top);
+      }, { passive: false });
+    }
+
     async function downloadResult(body, requested, asked) {
       const saved = { mode: requested, asked: asked.trim(), body };
       const host = document.createElement("div");
@@ -1649,6 +2043,7 @@
       output = host;
       try {
         fillResult(body, requested);
+        if (host.erdDrawing) await host.erdDrawing;
       } finally {
         output = previous;
         }
@@ -3573,7 +3968,7 @@
       return String(value || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
     }
 
-    async function placeElk(measured, edges) {
+    async function placeElk(measured, edges, direction = "DOWN", extra = {}) {
       await loadScript("/vendor/elk.bundled.js");
       if (typeof ELK !== "function") throw new Error("ELK did not load");
       const elk = new ELK();
@@ -3581,11 +3976,12 @@
         id: "root",
         layoutOptions: {
           "elk.algorithm": "layered",
-          "elk.direction": "DOWN",
+          "elk.direction": direction,
           "elk.edgeRouting": "ORTHOGONAL",
           "elk.spacing.nodeNode": "36",
           "elk.layered.spacing.nodeNodeBetweenLayers": "48",
-          "elk.layered.considerModelOrder.strategy": "NODES_AND_EDGES"
+          "elk.layered.considerModelOrder.strategy": "NODES_AND_EDGES",
+          ...extra
         },
         children: measured.map((node) => ({ id: node.id, width: node.width, height: node.height })),
         edges: edges.map((edge, index) => ({

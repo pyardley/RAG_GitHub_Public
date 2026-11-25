@@ -44,7 +44,8 @@ from rag.features import behaviour_text, gherkin_lines, is_drafting_request, mat
 from rag.chunker import find_blocks
 from rag.history import HistoryError, file_history
 from rag.testing import command_phrases, resolve_feature_paths, retrieve_testing
-from rag.web import Handler, _attach_flow_urls, _progress_view, github_blob_url, public_status, run_features, run_flow, run_history, run_impact, run_query, run_sequence, run_testing, start_ingest
+from rag.erd import entity_diagram
+from rag.web import Handler, _attach_flow_urls, _progress_view, github_blob_url, public_status, run_erd, run_features, run_flow, run_history, run_impact, run_query, run_sequence, run_testing, start_ingest
 from rag.sequence import sequence_diagram
 from unittest.mock import patch
 
@@ -2257,6 +2258,12 @@ class WebTest(unittest.TestCase):
             self.assertIn(">Testing</button>", page)
             self.assertIn('data-mode="history"', page)
             self.assertIn(">History</button>", page)
+            self.assertIn('data-mode="erd"', page)
+            self.assertIn(">ERD</button>", page)
+            self.assertIn("function renderErd", page)
+            self.assertIn("Reading the model…", page)
+            self.assertIn("Leave this blank to draw every application table.", page)
+            self.assertIn("Framework tables such as active_storage are left out.", page)
             self.assertIn("function renderHistory", page)
             self.assertIn("app/helpers/application_helper.rb", page)
             self.assertIn("Step backward and Step forward move through the changes", page)
@@ -4514,6 +4521,248 @@ class JourneyTest(unittest.TestCase):
             assert tip is not None
             self.assertEqual((tip / "README").read_text(encoding="utf-8"), "two\n")
             self.assertEqual(git("rev-parse", "HEAD", cwd=clone), first)
+
+
+class ErdTest(unittest.TestCase):
+    def test_tables_and_associations_outlive_one_request(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_model_checkout(root)
+            diagram = entity_diagram(root)
+
+        names = {table["name"] for table in diagram["tables"]}
+        self.assertNotIn("active_storage_blobs", names)
+        self.assertIn("applications", names)
+        self.assertIn("email_submissions_audit", names)
+        self.assertIn("poly:notable", names)
+        self.assertNotIn("OnlineApplication", " ".join(
+            model for table in diagram["tables"] for model in table["models"]
+        ))
+        applications = next(table for table in diagram["tables"] if table["name"] == "applications")
+        shown = [column["name"] for column in applications["columns"]]
+        self.assertIn("id", shown)
+        self.assertIn("user_id", shown)
+        self.assertNotIn("created_at", shown)
+        self.assertGreaterEqual(applications["more"], 1)
+        audit = next(table for table in diagram["tables"] if table["name"] == "email_submissions_audit")
+        self.assertEqual(audit["models"], ["EmailSubmissionsAudit"])
+        self.assertNotIn("id", [column["name"] for column in audit["columns"]])
+        people = next(table for table in diagram["tables"] if table["name"] == "people")
+        self.assertEqual(people["models"][0], "Person")
+        self.assertIn("Child", people["models"])
+        edges = {
+            (edge["from"], edge["to"], edge["kind"], edge["label"])
+            for edge in diagram["associations"]
+        }
+        self.assertIn(("appeals", "applications", "one", "application"), edges)
+        self.assertIn(("appeals", "users", "many", "completed_by"), edges)
+        self.assertIn(("feedbacks", "users", "many", "user"), edges)
+        people_edge = next(
+            edge for edge in diagram["associations"]
+            if edge["from"] == "people" and edge["to"] == "c100_applications"
+        )
+        self.assertEqual(people_edge["kind"], "many")
+        self.assertIn("people", people_edge["inverse"])
+        self.assertIn("children", people_edge["inverse"])
+        solicitor = next(edge for edge in diagram["associations"] if edge["from"] == "solicitors")
+        self.assertEqual(solicitor["kind"], "one")
+        notable = next(table for table in diagram["tables"] if table["polymorphic"])
+        self.assertIn("Application", notable["subtitle"])
+        self.assertIn("1 association was left out", diagram["note"])
+
+    def test_a_name_draws_that_table_and_the_tables_it_joins(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_model_checkout(root)
+            diagram = entity_diagram(root, "Child")
+        names = {table["name"] for table in diagram["tables"]}
+        self.assertEqual(names, {"people", "c100_applications"})
+        self.assertEqual(diagram["focus"], "people")
+        people = next(table for table in diagram["tables"] if table["name"] == "people")
+        self.assertTrue(people["focused"])
+        self.assertIn("first_name", [column["name"] for column in people["columns"]])
+        self.assertNotIn("created_at", [column["name"] for column in people["columns"]])
+        self.assertGreaterEqual(people["more"], 1)
+        missing = entity_diagram(root, "NoSuchModel")
+        self.assertEqual(missing["tables"], [])
+        self.assertIn("No table or model named NoSuchModel", missing["message"])
+
+    def test_a_through_association_is_a_dashed_line(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write(root, "db/schema.rb", """
+              create_table "offices" do |t|
+                t.string "name"
+              end
+              create_table "jurisdictions" do |t|
+                t.string "name"
+              end
+              create_table "office_jurisdictions" do |t|
+                t.bigint "office_id"
+                t.bigint "jurisdiction_id"
+              end
+              add_foreign_key "office_jurisdictions", "offices"
+              add_foreign_key "office_jurisdictions", "jurisdictions"
+            """)
+            _write(root, "app/models/registry/office.rb", """
+              module Registry
+                class Office < ApplicationRecord
+                  has_many :office_jurisdictions
+                  has_many :jurisdictions, through: :office_jurisdictions
+                end
+              end
+            """)
+            _write(root, "app/models/jurisdiction.rb", """
+              class Jurisdiction < ApplicationRecord
+                has_many :office_jurisdictions
+              end
+            """)
+            _write(root, "app/models/office_jurisdiction.rb", """
+              class OfficeJurisdiction < ApplicationRecord
+                belongs_to :office
+                belongs_to :jurisdiction
+              end
+            """)
+            diagram = entity_diagram(root)
+        through = next(edge for edge in diagram["associations"] if edge["kind"] == "through")
+        self.assertEqual((through["from"], through["to"], through["label"], through["through"]), (
+            "offices", "jurisdictions", "jurisdictions", "office_jurisdictions",
+        ))
+
+    def test_a_checkout_without_a_model_says_so(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            diagram = entity_diagram(Path(tmp))
+        self.assertEqual(diagram["tables"], [])
+        self.assertIn("no ActiveRecord models", diagram["note"])
+
+    def test_the_page_asks_for_one_repository(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_model_checkout(root)
+            repo = {
+                "id": 1,
+                "name": "hmcts/hwf-staffapp",
+                "branch": "master",
+                "commit_sha": "abc123def456",
+            }
+
+            class Conn:
+                def close(self):
+                    return None
+
+            with (
+                patch("rag.web.connect", return_value=Conn()),
+                patch("rag.web.resolve_repositories", return_value=[repo]),
+                patch("rag.web.checkout_dir", return_value=root),
+            ):
+                status, payload = run_erd({"repo": "hmcts/hwf-staffapp", "focus": "Appeal"})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["focus"], "appeals")
+        appeal = next(table for table in payload["tables"] if table["name"] == "appeals")
+        self.assertTrue(appeal["url"].startswith(
+            "https://github.com/hmcts/hwf-staffapp/blob/abc123def456/app/models/appeal.rb"
+        ))
+        with self.assertRaises(ValueError):
+            run_erd({})
+
+
+def _write_model_checkout(root: Path) -> None:
+    _write(root, "db/schema.rb", """
+      ActiveRecord::Schema[7.1].define(version: 1) do
+        create_table "active_storage_blobs", force: :cascade do |t|
+          t.string "key", null: false
+        end
+        create_table "applications", id: :serial, force: :cascade do |t|
+          t.string "reference"
+          t.integer "user_id"
+          t.integer "office_id"
+          t.datetime "created_at", null: false
+          t.datetime "updated_at", null: false
+        end
+        create_table "appeals", force: :cascade do |t|
+          t.bigint "application_id", null: false
+          t.bigint "completed_by_id", null: false
+          t.boolean "correct", null: false
+          t.datetime "created_at", null: false
+          t.datetime "updated_at", null: false
+        end
+        create_table "users", force: :cascade do |t|
+          t.string "name"
+        end
+        create_table "feedbacks", force: :cascade do |t|
+          t.bigint "user_id"
+        end
+        create_table "people", id: :uuid, force: :cascade do |t|
+          t.uuid "c100_application_id"
+          t.string "type"
+          t.string "first_name"
+          t.datetime "created_at", null: false
+        end
+        create_table "c100_applications", id: :uuid, force: :cascade do |t|
+          t.uuid "user_id"
+        end
+        create_table "email_submissions_audit", id: false, force: :cascade do |t|
+          t.string "reference"
+        end
+        add_foreign_key "appeals", "applications"
+        add_foreign_key "appeals", "users", column: "completed_by_id"
+        add_foreign_key "feedbacks", "users"
+        add_foreign_key "people", "c100_applications"
+      end
+    """)
+    _write(root, "app/models/application.rb", """
+      class Application < ActiveRecord::Base
+        belongs_to :user
+        belongs_to :office, optional: true
+        has_one :appeal, dependent: :destroy
+        has_many :dev_notes, as: :notable
+      end
+    """)
+    _write(root, "app/models/appeal.rb", """
+      class Appeal < ActiveRecord::Base
+        belongs_to :application, optional: false
+        belongs_to :completed_by, -> { with_deleted }, class_name: 'User', optional: false
+      end
+    """)
+    _write(root, "app/models/user.rb", """
+      class User < ActiveRecord::Base
+        has_many :applications
+      end
+    """)
+    _write(root, "app/models/dev_note.rb", """
+      class DevNote < ApplicationRecord
+        belongs_to :notable, polymorphic: true
+      end
+    """)
+    _write(root, "app/models/online_application.rb", """
+      class OnlineApplication
+        include ActiveModel::Model
+      end
+    """)
+    _write(root, "app/models/person.rb", """
+      class Person < ApplicationRecord
+        belongs_to :c100_application
+      end
+    """)
+    _write(root, "app/models/minor.rb", "class Minor < Person\nend\n")
+    _write(root, "app/models/child.rb", "class Child < Minor\nend\n")
+    _write(root, "app/models/c100_application.rb", """
+      class C100Application < ApplicationRecord
+        has_many :people
+        has_many :children
+        has_one :solicitor
+      end
+    """)
+    _write(root, "app/models/solicitor.rb", """
+      class Solicitor < ApplicationRecord
+        belongs_to :c100_application
+      end
+    """)
+    _write(root, "app/models/email_submissions_audit.rb", """
+      class EmailSubmissionsAudit < ApplicationRecord
+        self.table_name = 'email_submissions_audit'
+      end
+    """)
 
 
 if __name__ == "__main__":

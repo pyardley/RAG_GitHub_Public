@@ -40,6 +40,7 @@ from rag.intent import impact_target
 from rag.log import logger
 from rag.plan import retrieval_model
 from rag.search import Hit, impact, retrieve
+from rag.erd import entity_diagram
 from rag.sequence import sequence_diagram
 from rag.usage import Meter, Stage
 
@@ -127,6 +128,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/impact": run_impact,
             "/api/flow": run_flow,
             "/api/sequence": run_sequence,
+            "/api/erd": run_erd,
             "/api/features": run_features,
             "/api/testing": run_testing,
             "/api/history": run_history,
@@ -816,6 +818,71 @@ def run_sequence(body: dict) -> tuple[int, dict]:
     if url:
         diagram["url"] = url
     return 200, diagram
+
+
+def run_erd(body: dict) -> tuple[int, dict]:
+    """The ActiveRecord tables and associations in one repository."""
+    repo = _optional_repo(body)
+    if not repo:
+        raise ValueError("Choose one repository")
+    focus = _optional_focus(body)
+    try:
+        conn = connect()
+    except SystemExit as exc:
+        return 503, {"error": _failure_text(exc)}
+    try:
+        repositories = resolve_repositories(conn, repo)
+    except SystemExit as exc:
+        return 400, {"error": _failure_text(exc)}
+    finally:
+        conn.close()
+    if len(repositories) != 1:
+        raise ValueError("Choose one repository")
+    item = repositories[0]
+    root = checkout_dir(item["name"])
+    if not root.is_dir():
+        return 404, {"error": "The checkout for this repository is not on disk."}
+    started = time.perf_counter()
+    diagram = entity_diagram(root, focus)
+    _attach_erd_urls(diagram, item["name"], str(item.get("commit_sha") or ""))
+    count = len(diagram.get("tables") or [])
+    if diagram.get("message"):
+        found = diagram["message"]
+    elif count == 1:
+        found = "1 table."
+    else:
+        found = f"{count} tables."
+    meter = Meter()
+    meter.add(Stage("Read the model", time.perf_counter() - started, note=found))
+    return 200, {
+        "repositories": [_scope(item)],
+        **diagram,
+        "usage": meter.as_dict(),
+    }
+
+
+def _attach_erd_urls(diagram: dict, repo: str, commit_sha: str) -> None:
+    for table in diagram.get("tables") or []:
+        if not isinstance(table, dict) or not table.get("path"):
+            continue
+        url = github_blob_url(repo, commit_sha, str(table["path"]), int(table.get("line") or 1), int(table.get("line") or 1))
+        if url:
+            table["url"] = url
+    for edge in diagram.get("associations") or []:
+        if not isinstance(edge, dict) or not edge.get("path"):
+            continue
+        url = github_blob_url(repo, commit_sha, str(edge["path"]), int(edge.get("line") or 1), int(edge.get("line") or 1))
+        if url:
+            edge["url"] = url
+
+
+def _optional_focus(body: dict) -> str:
+    value = body.get("focus", "")
+    if value is None or value == "":
+        return ""
+    if not isinstance(value, str):
+        raise ValueError("Table or model must be text")
+    return " ".join(value.split())[:200]
 
 
 def _optional_line(body: dict) -> int:
