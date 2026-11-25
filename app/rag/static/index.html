@@ -1652,7 +1652,7 @@ ${data}
         if (chart.note || (chart.edges || []).some((edge) => edge.label)) {
           const note = document.createElement("p");
           note.className = "scope";
-          let hint = "Choose a label to highlight that arrow and move to its other end. The label at that end brings you back.";
+          let hint = "Choose a label to highlight that arrow and move to its other end. The label at that end brings you back. Click empty space to clear the highlight.";
           if (chart.layouts && chart.layouts.spread) {
             hint += " Spread puts each branch beside the step that leaves it.";
           }
@@ -3540,21 +3540,28 @@ ${data}
         pinSpine();
       }, { passive: false });
       let drag = null;
+      const chartControl = "a, .flow-label, .flow-label-hit, button, .flow-edge";
       frame.addEventListener("pointerdown", (event) => {
-        if (event.button !== 0 || event.target.closest("a, .flow-label, .flow-label-hit, button")) return;
-        drag = { x: event.clientX, y: event.clientY, left: frame.scrollLeft, top: frame.scrollTop };
+        if (event.button !== 0 || event.target.closest(chartControl)) return;
+        drag = { x: event.clientX, y: event.clientY, left: frame.scrollLeft, top: frame.scrollTop, moved: false };
         frame.classList.add("panning");
         frame.setPointerCapture(event.pointerId);
       });
       frame.addEventListener("pointermove", (event) => {
         if (!drag) return;
+        if (Math.hypot(event.clientX - drag.x, event.clientY - drag.y) > 3) drag.moved = true;
         frame.scrollLeft = drag.left - (event.clientX - drag.x);
         frame.scrollTop = drag.top - (event.clientY - drag.y);
         pinSpine();
       });
-      const endDrag = () => {
+      const endDrag = (event) => {
+        const tap = drag && !drag.moved;
         drag = null;
         frame.classList.remove("panning");
+        if (!tap || !event || event.type === "pointercancel") return;
+        const active = document.activeElement;
+        if (active && canvas.contains(active)) active.blur();
+        clearFlowTrace(canvas);
       };
       frame.addEventListener("pointerup", endDrag);
       frame.addEventListener("pointercancel", endDrag);
