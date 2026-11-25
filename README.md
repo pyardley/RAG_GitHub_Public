@@ -79,9 +79,35 @@ A Model Context Protocol server lets another language model call the running app
 python mcp/server.py
 ```
 
-Cursor loads that command from `.cursor/mcp.json` under the name `code-rag`. `CODE_RAG_URL` defaults to `http://127.0.0.1:8080`.
+Cursor loads that command from `.cursor/mcp.json` under the name `code-rag`. `CODE_RAG_URL` defaults to `http://127.0.0.1:8080`. Confirm the app is answering before you ask the agent to use the tools:
 
-Claude Code, including the Claude extension for VS Code, does not read `.cursor/mcp.json`. It reads `.mcp.json` in the project root, which defines the same `code-rag` server over stdio. Open the project folder, type `/mcp` in the Claude chat, and approve `code-rag`. Until you approve it, it is listed as pending and its tools are not offered. Then ask in plain words, for example "Use code-rag to list the indexed repositories".
+```powershell
+Invoke-RestMethod http://127.0.0.1:8080/api/status
+```
+
+Cursor leaves a project server switched off, and it does not ask you to turn it on. Open **Customize** in the sidebar, choose **MCPs**, and switch on `code-rag` for this project. A chat that is already open does not gain the tools. Start a new chat after the switch is on.
+
+A personal server starts on its own. On Windows that file is `%USERPROFILE%\.cursor\mcp.json`. On macOS and Linux it is `~/.cursor/mcp.json`. Put the full path to this checkout's `mcp/server.py` in `args`, because that file is used from every project:
+
+```json
+{
+  "mcpServers": {
+    "code-rag": {
+      "command": "python",
+      "args": ["C:\\Users\\you\\Projects\\HwF_Public\\mcp\\server.py"],
+      "env": {
+        "CODE_RAG_URL": "http://127.0.0.1:8080"
+      }
+    }
+  }
+}
+```
+
+Cursor then offers the tools under `user-code-rag`. The project entry can still show as off. The personal server is the one that answers. `python` has to be on the host path. This process does not use the Python inside the app container.
+
+Name the server and the tool in the request. "Use the code-rag MCP tool repositories to list the indexed repositories." `repositories` calls `GET /api/status`. Cursor has other tools that list repositories on other hosts, so a request that only says "list the repositories" can reach one of those.
+
+Claude Code, including the Claude extension for VS Code, does not read `.cursor/mcp.json`. It reads `.mcp.json` in the project root, which defines the same `code-rag` server over stdio. Open the project folder, type `/mcp` in the Claude chat, and approve `code-rag`. Until you approve it, it is listed as pending and its tools are not offered. Then ask in plain words, for example "Use the code-rag MCP tool repositories to list the indexed repositories".
 
 `.mcp.json` starts the server with `python3`, which is the name macOS and Linux use. Where the command is `python`, as on Windows, set `CODE_RAG_PYTHON` to `python` before you start VS Code or `claude`. Check what Claude Code has loaded with:
 
@@ -90,6 +116,22 @@ claude mcp get code-rag
 ```
 
 The tools are `repositories`, `query`, `search`, `features`, `testing`, `impact`, `flow`, `default_branch`, `branches`, `ingest`, and `remove_index`. `features` matches a pasted Gherkin step, or searches a request to write a feature as the behaviour and quotes only steps already in the suite. `testing` explains how to run or debug the Cucumber suite under `features/`, and quotes only commands from that repository. `flow` returns the same journeys as the Flow button, with a GitHub URL on each step. `branches` lists a GitHub repository's branches with the default first, so the model can choose one for `ingest`. `query` returns the passages and leaves the app's own written answer off, so the calling model reads the code. Set `answer` to true when you also want that reply. `query` takes an optional `index` of `text`, `code`, or `both` (the default is `code`) and an optional `fusion` of `rrf` or `score` (the default is `rrf`; use `score` with `both`). `impact` returns the definitions, the callers, and the diagram. `FactoryBot.create(:claim)` is a valid impact target. `remove_index` deletes one index only when `confirm` is true. Passage text is shortened in the tool result. The page still shows the full chunk.
+
+One prompt for each tool:
+
+```text
+Use the code-rag MCP tool repositories to list the indexed repositories.
+Use the code-rag MCP tool query to ask hmcts/hwf-publicapp where the application is submitted.
+Use the code-rag MCP tool search to find "with income '8000' and average" in hmcts/hwf-publicapp.
+Use the code-rag MCP tool features to match the step "When I submit the form with income '8000' and average 'average'" in hmcts/hwf-publicapp.
+Use the code-rag MCP tool testing to explain how to run features/fee.feature in hmcts/hwf-publicapp.
+Use the code-rag MCP tool impact to show what reaches ApplicationController#online_application in hmcts/hwf-publicapp.
+Use the code-rag MCP tool flow to draw the journey in ministryofjustice/c100-application starting at /steps/opening/start_or_continue.
+Use the code-rag MCP tool default_branch to read the default branch of hmcts/hwf-publicapp.
+Use the code-rag MCP tool branches to list the branches of hmcts/hwf-publicapp.
+Use the code-rag MCP tool ingest to start indexing hmcts/hwf-publicapp on its default branch.
+Use the code-rag MCP tool remove_index to delete the hmcts/hwf-publicapp index and confirm the deletion.
+```
 
 On macOS or Linux the same commands work. `rag.ps1` and `rag.sh` are thin wrappers:
 
