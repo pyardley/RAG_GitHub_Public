@@ -156,7 +156,8 @@
       }
     }
     .row { display: flex; gap: 0.75rem; align-items: end; flex-wrap: wrap; margin-top: 0.75rem; }
-    #index-wrap, #fusion-wrap { min-width: 9rem; }
+    #flow-site-wrap { flex: 1 1 100%; }
+    #flow-open-wrap { flex: 0 1 20rem; }
     .check { display: flex; align-items: center; gap: 0.4rem; }
     .index-form { display: grid; gap: 0.75rem; }
     .index-form[hidden] { display: none; }
@@ -486,6 +487,18 @@
         <input id="history-block" type="text" placeholder="address_lookup_access_token" autocomplete="off">
       </label>
       <p class="hint" id="prompt-hint">Ask in your own words, or quote text to match it exactly. Inside quotes, [0-9]* matches any amount. under /features limits the directory. Ignore /features/support leaves that folder out. Index chooses the text model, the code model, or both.</p>
+      <div class="row" id="flow-open-row" hidden>
+        <label class="grow" id="flow-site-wrap">Test site
+          <input id="flow-site" type="text" placeholder="https://c100-application-staging.apps.live.cloud-platform.service.justice.gov.uk" autocomplete="off">
+        </label>
+        <label id="flow-open-wrap">Open a box in
+          <select id="flow-open" aria-label="Where a box opens">
+            <option value="code">Code on GitHub</option>
+            <option value="test">Test page</option>
+            <option value="step">Step definition on GitHub</option>
+          </select>
+        </label>
+      </div>
       <div class="row">
         <label id="index-wrap">Index
           <select id="search-index" aria-label="Vector index">
@@ -523,7 +536,7 @@
         button: "Show",
         answer: false,
         k: false,
-        hint: "Leave this blank to draw a question list, redirects, or page objects. A decision tree with none of those starts at its opening step, such as /steps/opening/start_or_continue. Type a path to start at that step instead. Spine keeps the main path in one column. Spread, ELK, Dagre, d3-dag, and Graphviz draw the same steps another way. The number on each button is how many arrows cross, and overlapping boxes are counted beside it. Each box opens that step in the indexed commit on GitHub. Ask about this journey once the chart is drawn."
+        hint: "Leave this blank to draw a question list, redirects, or page objects. A decision tree with none of those starts at its opening step, such as /steps/opening/start_or_continue. Type a path to start at that step instead. Spine keeps the main path in one column. Spread, ELK, Dagre, d3-dag, and Graphviz draw the same steps another way. The number on each button is how many arrows cross, and overlapping boxes are counted beside it. Open a box in chooses the code on GitHub, the test page, or the step definition on GitHub. The test site is the root address of that system. Ask about this journey once the chart is drawn."
       },
       features: {
         label: "Feature or step",
@@ -615,6 +628,8 @@
       if (mode === "flow") {
         prompts.flow = storedFlowStart();
         prompt.value = prompts.flow;
+        restoreFlowLinks();
+        applyFlowLinks(panels.flow);
       }
     });
     document.querySelector("#index-repo").addEventListener("input", () => {
@@ -623,6 +638,14 @@
     });
     document.querySelector("#index-toggle").addEventListener("click", () => {
       setIndexPane(document.querySelector("#index-form").hidden);
+    });
+    document.querySelector("#flow-open").addEventListener("change", () => {
+      rememberFlowLinks();
+      applyFlowLinks(panels.flow);
+    });
+    document.querySelector("#flow-site").addEventListener("input", () => {
+      rememberFlowLinks();
+      if (document.querySelector("#flow-open").value === "test") applyFlowLinks(panels.flow);
     });
     prompt.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
@@ -649,6 +672,100 @@
       }
     }
 
+    function storedFlowSite() {
+      try {
+        return localStorage.getItem(`flow-site:${repoSelect.value}`) || "";
+      } catch (error) {
+        return "";
+      }
+    }
+
+    function storedFlowOpen() {
+      try {
+        const value = localStorage.getItem(`flow-open:${repoSelect.value}`) || "code";
+        return value === "test" || value === "step" ? value : "code";
+      } catch (error) {
+        return "code";
+      }
+    }
+
+    function restoreFlowLinks() {
+      document.querySelector("#flow-site").value = storedFlowSite();
+      document.querySelector("#flow-open").value = storedFlowOpen();
+    }
+
+    function rememberFlowLinks() {
+      try {
+        const repo = repoSelect.value;
+        if (!repo) return;
+        const site = document.querySelector("#flow-site").value.trim();
+        const choice = document.querySelector("#flow-open").value;
+        if (site) localStorage.setItem(`flow-site:${repo}`, site);
+        else localStorage.removeItem(`flow-site:${repo}`);
+        localStorage.setItem(`flow-open:${repo}`, choice === "test" || choice === "step" ? choice : "code");
+      } catch (error) {
+        return;
+      }
+    }
+
+    function currentFlowLink() {
+      const select = document.querySelector("#flow-open");
+      if (select) {
+        return {
+          choice: select.value || "code",
+          site: document.querySelector("#flow-site").value.trim()
+        };
+      }
+      return { choice: flowLinkChoice || "code", site: flowLinkSite || "" };
+    }
+
+    function testPageUrl(site, page) {
+      const root = String(site || "").trim().replace(/\/+$/, "");
+      const path = String(page || "");
+      if (!/^https?:\/\//i.test(root) || !path.startsWith("/")) return "";
+      try {
+        const base = new URL(root);
+        const url = new URL(path, `${base.origin}/`);
+        if (url.origin !== base.origin) return "";
+        return url.href;
+      } catch (error) {
+        return "";
+      }
+    }
+
+    function applyFlowLinks(root) {
+      const scope = root && root.querySelectorAll ? root : document;
+      const chosen = currentFlowLink();
+      for (const link of scope.querySelectorAll("a.flow-node")) {
+        const detail = link.dataset.detail || (link.querySelector("title") && link.querySelector("title").textContent) || "";
+        if (!link.dataset.detail) link.dataset.detail = detail;
+        let href = "";
+        let note = "";
+        if (chosen.choice === "test") {
+          href = testPageUrl(chosen.site, link.dataset.page || "");
+          if (!href && !chosen.site) note = "Enter the test site address.";
+          else if (!href && !/^https?:\/\//i.test(chosen.site)) note = "The test site needs an http or https address.";
+          else if (!href) note = "This step has no page on the test site.";
+        } else if (chosen.choice === "step") {
+          href = link.dataset.step || "";
+          if (!href) note = "No step definition names this step.";
+        } else {
+          href = link.dataset.code || "";
+        }
+        if (href) {
+          link.setAttribute("href", href);
+          link.setAttribute("target", "_blank");
+          link.setAttribute("rel", "noopener noreferrer");
+        } else {
+          link.removeAttribute("href");
+          link.removeAttribute("target");
+          link.removeAttribute("rel");
+        }
+        const title = link.querySelector("title");
+        if (title) title.textContent = note ? `${detail}\n${note}` : detail;
+      }
+    }
+
     function setMode(next) {
       if (next !== mode) stopHistory();
       prompts[mode] = prompt.value;
@@ -666,6 +783,8 @@
       document.querySelector("#fusion-wrap").hidden = !retrieval;
       document.querySelector("#prompt-label").hidden = spec.prompt === false;
       document.querySelector("#block-wrap").hidden = next !== "history";
+      document.querySelector("#flow-open-row").hidden = next !== "flow";
+      if (next === "flow") restoreFlowLinks();
       const hint = document.querySelector("#prompt-hint");
       hint.hidden = next !== "query" && next !== "flow" && next !== "features" && next !== "testing" && next !== "history";
       hint.textContent = next === "query" ? queryHint : spec.hint;
@@ -1245,15 +1364,19 @@
     // A result is saved as one HTML file. Markdown cannot open and close the
     // grouped boxes in the diagram, and this file can. The page builds it and
     // the browser downloads it. Nothing is stored on the server.
-    // A flow chart is copied from the screen. ELK, Dagre, d3-dag, and Graphviz
-    // replace the first drawing after they finish, so a fresh render would save
-    // that first drawing with the chosen button still waiting.
+    // A flow chart is copied from the screen, then the saved file draws it again
+    // with the same controls. ELK, Dagre, d3-dag, and Graphviz finish after the
+    // first paint, so the copy waits for the drawing that is on screen. The
+    // layout programs travel inside the file, because opening it does not have
+    // the application. Save static chart is the same drawing with no script.
     async function downloadResult(body, requested, asked) {
       const saved = { mode: requested, asked: asked.trim(), body };
       const host = document.createElement("div");
       host.id = "results";
       const flowPanel = requested === "flow" ? panels.flow : null;
-      if (flowPanel && flowPanel.querySelector(".flow-chart")) {
+      const interactive = Boolean(flowPanel && flowPanel.querySelector(".flow-chart"));
+      const vendorsPromise = interactive ? flowVendorBlocks() : null;
+      if (interactive) {
         await settleFlowLayouts(flowPanel);
         host.append(flowSaveCopy(flowPanel));
       } else {
@@ -1268,7 +1391,79 @@
       savedHeadings(host);
       host.prepend(contentsNav(host));
       host.prepend(savedBanner(saved));
-      downloadText(resultFileName(saved), savedPage(saved, host), "text/html");
+      let extra = "";
+      if (interactive) {
+        const pressed = flowPanel.querySelector('.flow-chart [data-layout][aria-pressed="true"]');
+        extra = `${await vendorsPromise}\n${flowScript(saved.body.charts || [], pressed ? pressed.dataset.layout : "spine", currentFlowLink().choice, currentFlowLink().site)}`;
+      }
+      downloadText(resultFileName(saved), savedPage(saved, host, extra), "text/html");
+    }
+
+    async function flowVendorBlocks() {
+      const parts = [];
+      const endScript = "<" + "/script>";
+      for (const path of ["/vendor/elk.bundled.js", "/vendor/dagre.js", "/vendor/d3-dag.js"]) {
+        const response = await fetch(path);
+        if (!response.ok) throw new Error(`Could not read ${path}`);
+        const source = (await response.text()).replace(/<\/script/gi, "<\\/script>");
+        parts.push("<script type=\"text/plain\" data-vendor=\"" + path + "\">" + source + endScript);
+      }
+      const graphviz = await fetch("/vendor/graphviz.js");
+      if (!graphviz.ok) throw new Error("Could not read /vendor/graphviz.js");
+      const packed = JSON.stringify(await graphviz.text()).replace(/</g, "\\u003c");
+      parts.push("<script type=\"application/json\" id=\"graphviz-source\">" + packed + endScript);
+      return parts.join("\n");
+    }
+
+    function flowScript(charts, layout, choice, site) {
+      const source = [
+        drawFlow, continuedEdgeIds, widenFlowLabels, fitFlowLabelHits, svgPoint, nearestLabel,
+        parkFlowLabelHits, labelBox, highlightFlowEdge, clearFlowTrace, placeTraceHalo, flowBoxRank,
+        flowFinder, flowDomId, labelSpots, viewDistance, flowRoute, labelExtent, settleLaneLabels,
+        loadScript, graphvizModule, measuredNodes, borderPoint, pointInBox, segmentHitsBox, dockEnds,
+        openCycles, orient, pointsNear, segmentsCross, scorePlacement, scoreDrawing, scoreText,
+        scoreTitle, normalizePlacement, finishPlacement, dotEscape, placeRanked, graphvizRoute,
+        parseGraphviz, pointLabel, drawLayoutNote, drawPointFlow, laidOut, storedFlowLayout, flowView,
+        toolButton, pathStaysInside, flowSpine, flowNode, wrapLabel, placeElk, placeDagre, placeD3Dag,
+        placeGraphviz, placeEngine, currentFlowLink, testPageUrl, applyFlowLinks
+      ].map((fn) => fn.toString()).join("\n\n");
+      const endScript = "<" + "/script>";
+      const data = JSON.stringify(charts).replace(/</g, "\\u003c");
+      const boot = [
+        "flowLinkChoice = " + JSON.stringify(choice === "test" || choice === "step" ? choice : "code") + ";",
+        "flowLinkSite = " + JSON.stringify(site || "") + ";",
+        "const savedCharts = JSON.parse(document.getElementById(\"flow-charts\").textContent);",
+        "const savedLayout = " + JSON.stringify(layout || "") + ";",
+        "(async () => {",
+        "  try {",
+        "    if (savedLayout) localStorage.setItem(\"flow-layout\", savedLayout);",
+        "  } catch (error) {",
+        "    // The file still opens on the drawing that was saved.",
+        "  }",
+        "  const boxes = [...document.querySelectorAll(\"#results .flow-chart\")];",
+        "  for (let index = 0; index < boxes.length; index += 1) {",
+        "    const chart = savedCharts[index];",
+        "    if (!chart) continue;",
+        "    const marker = [...boxes[index].querySelectorAll(\"marker\")].find((item) => item.id.endsWith(\"-arrow\"));",
+        "    const chartKey = marker ? marker.id.slice(0, -\"-arrow\".length) : \"flow-\" + (index + 1);",
+        "    const live = flowView(chart, chartKey);",
+        "    if (live.layoutReady) await live.layoutReady;",
+        "    boxes[index].replaceWith(live);",
+        "  }",
+        "  document.querySelectorAll(\".flow-unmarked a\").forEach((link) => {",
+        "    link.addEventListener(\"click\", (event) => {",
+        "      const target = document.getElementById((link.getAttribute(\"href\") || \"\").slice(1));",
+        "      if (!target) return;",
+        "      event.preventDefault();",
+        "      target.focus({ preventScroll: true });",
+        "      target.scrollIntoView({ behavior: \"smooth\", block: \"center\", inline: \"nearest\" });",
+        "    });",
+        "  });",
+        "})();"
+      ].join("\n");
+      return "<script type=\"application/json\" id=\"flow-charts\">" + data + endScript
+        + "\n<script>\nlet flowMarker = 0;\nlet flowLinkChoice = \"code\";\nlet flowLinkSite = \"\";\nconst layoutEngines = " + JSON.stringify(layoutEngines) + ";\n"
+        + source + "\n" + boot + "\n" + endScript;
     }
 
     async function settleFlowLayouts(panel) {
@@ -1289,12 +1484,147 @@
         copy.append(child.cloneNode(true));
       }
       for (const form of copy.querySelectorAll(".journey-ask")) form.remove();
+      for (const button of copy.querySelectorAll(".flow-static-save")) button.remove();
       for (const spine of copy.querySelectorAll(".flow-spine")) {
         spine.classList.remove("active");
         spine.style.transform = "";
       }
       for (const label of copy.querySelectorAll("[data-pinned]")) label.style.visibility = "";
       return copy;
+    }
+
+    function staticChartButton(chartBox, chart) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "secondary flow-static-save";
+      button.textContent = "Save static chart";
+      button.title = "Download this drawing as HTML with no script, so it can be opened where scripts are blocked.";
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        try {
+          await downloadStaticChart(chartBox, chart);
+        } catch (error) {
+          setTabStatus("flow", "The static chart could not be saved", true);
+        } finally {
+          button.disabled = false;
+        }
+      });
+      return button;
+    }
+
+    async function downloadStaticChart(chartBox, chart) {
+      let ready = chartBox.layoutReady;
+      while (ready) {
+        await ready;
+        if (chartBox.layoutReady === ready) break;
+        ready = chartBox.layoutReady;
+      }
+      const svg = chartBox.querySelector(".flow-canvas > svg");
+      if (!svg) throw new Error("The chart is not drawn");
+      const pressed = chartBox.querySelector('[data-layout][aria-pressed="true"]');
+      const host = document.createElement("div");
+      host.id = "results";
+      host.append(staticChartBanner(chart));
+      const section = chartBox.closest("section");
+      const change = section && [...section.querySelectorAll(":scope > p.scope")]
+        .map((item) => item.textContent)
+        .find((text) => text.startsWith("The branch is now"));
+      if (change) host.append(staticChartNote(change));
+      if (chart.note) host.append(staticChartNote(chart.note));
+      const layoutText = pressed ? pressed.textContent : "";
+      const layoutNote = pressed ? pressed.title : "";
+      if (layoutText || layoutNote) {
+        host.append(staticChartNote(layoutNote ? `${layoutText}. ${layoutNote}` : layoutText));
+      }
+      const size = flowDrawingSize(svg);
+      const canvas = document.createElement("div");
+      canvas.className = "flow-canvas";
+      canvas.style.width = `${Math.round(size.width)}px`;
+      canvas.style.height = `${Math.round(size.height)}px`;
+      canvas.append(staticFlowSvg(svg, size));
+      const frame = document.createElement("div");
+      frame.className = "flow-frame";
+      frame.append(canvas);
+      host.append(frame);
+      const title = chart.title || chart.repository || "Flow";
+      const page = staticFlowPage(title, host);
+      if (/<script|javascript\s*:|<\/?\s*(?:iframe|object|embed|foreignObject)\b|\son[a-z]+\s*=/i.test(page)) {
+        throw new Error("The static chart still contained active content");
+      }
+      downloadText(staticFlowFileName(chart, pressed && pressed.dataset.layout), page, "text/html");
+    }
+
+    function staticChartBanner(chart) {
+      const box = document.createElement("header");
+      box.className = "saved-banner";
+      const heading = document.createElement("h1");
+      heading.textContent = chart.title || "Flow";
+      box.append(heading);
+      const repo = chart.repository || "";
+      if (repo) {
+        const line = document.createElement("p");
+        const strong = document.createElement("strong");
+        strong.textContent = "Repository: ";
+        line.append(strong, repo);
+        box.append(line);
+      }
+      return box;
+    }
+
+    function staticChartNote(text) {
+      const note = document.createElement("p");
+      note.className = "scope";
+      note.textContent = text;
+      return note;
+    }
+
+    function flowDrawingSize(svg) {
+      const width = Number.parseFloat(svg.style.width);
+      const height = Number.parseFloat(svg.style.height);
+      if (width > 0 && height > 0) return { width, height };
+      const box = svg.viewBox.baseVal;
+      if (box.width > 0 && box.height > 0) return { width: box.width, height: box.height };
+      return { width: 800, height: 600 };
+    }
+
+    function staticFlowSvg(svg, size) {
+      const drawing = svg.cloneNode(true);
+      drawing.querySelectorAll("script, iframe, object, embed, foreignObject").forEach((node) => node.remove());
+      for (const node of [drawing, ...drawing.querySelectorAll("*")]) {
+        for (const attr of [...node.attributes]) {
+          const name = attr.name.toLowerCase();
+          if (name.startsWith("on") || /javascript\s*:/i.test(attr.value || "")) node.removeAttribute(attr.name);
+        }
+        if (node.style) node.style.visibility = "";
+        if (!node.classList || !node.classList.contains("flow-label")) continue;
+        node.removeAttribute("role");
+        node.removeAttribute("tabindex");
+        node.removeAttribute("aria-pressed");
+        node.removeAttribute("aria-label");
+      }
+      drawing.style.width = `${Math.round(size.width)}px`;
+      drawing.style.height = `${Math.round(size.height)}px`;
+      return drawing;
+    }
+
+    function staticFlowFileName(chart, layout) {
+      const day = new Date().toISOString().slice(0, 10);
+      const slug = (value) => String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/g, "");
+      const repo = slug(chart.repository || "");
+      const title = slug(chart.title || "");
+      const named = title && title !== repo ? title : "";
+      const drawing = slug(layout || "");
+      return `code-rag-flow-${day}${repo ? `-${repo}` : ""}${named ? `-${named}` : ""}-static${drawing ? `-${drawing}` : ""}.html`;
+    }
+
+    function staticFlowPage(title, host) {
+      const style = document.querySelector("style").textContent.replace(/<\/style/gi, "<\\/style");
+      const still = ".saved-banner{display:block}.flow-frame{cursor:auto}.flow-label{cursor:auto}";
+      return "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n"
+        + "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
+        + "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; img-src data:\">\n"
+        + "<title>" + escapeText(title) + "</title>\n<style>" + style + still + "</style>\n</head>\n<body>\n<main>\n"
+        + host.outerHTML + "\n</main>\n</body>\n</html>\n";
     }
 
     function resultFileName(saved) {
@@ -1380,7 +1710,7 @@
       return nav;
     }
 
-    function savedPage(saved, host) {
+    function savedPage(saved, host, extra = "") {
       const titles = { impact: "Impact", search: "Search", query: "Query", flow: "Flow" };
       const title = `${titles[saved.mode] || "Query"}${saved.asked ? `: ${saved.asked}` : ""}`;
       const style = document.querySelector("style").textContent.replace(/<\/style/gi, "<\\/style");
@@ -1388,27 +1718,14 @@
       const hasDiagram = Boolean(diagram && diagram.edges && diagram.edges.length);
       const endScript = "<" + "/script>";
       const data = hasDiagram
-        ? `<script type="application/json" id="diagram-data">${JSON.stringify(diagram).replace(/</g, "\\u003c")}${endScript}
-<script>
-${diagramScript().split(endScript).join("<\\" + "/script>")}
-${endScript}`
+        ? "<script type=\"application/json\" id=\"diagram-data\">"
+          + JSON.stringify(diagram).replace(/</g, "\\u003c") + endScript
+          + "\n<script>\n" + diagramScript().split(endScript).join("<\\" + "/script>") + "\n" + endScript
         : "";
-      return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${escapeText(title)}</title>
-<style>${style}</style>
-</head>
-<body>
-<main>
-${host.outerHTML}
-</main>
-${data}
-</body>
-</html>
-`;
+      return "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n"
+        + "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>"
+        + escapeText(title) + "</title>\n<style>" + style + "</style>\n</head>\n<body>\n<main>\n"
+        + host.outerHTML + "\n</main>\n" + data + "\n" + extra + "\n</body>\n</html>\n";
     }
 
     function diagramScript() {
@@ -1631,6 +1948,8 @@ ${data}
     }
 
     let flowMarker = 0;
+    let flowLinkChoice = "code";
+    let flowLinkSite = "";
 
     function renderFlow(body) {
       if (body.message) {
@@ -1668,7 +1987,9 @@ ${data}
         const drawn = drawFlow(chart, chartKey);
         const unmarked = unmarkedList(drawn.nodes);
         if (unmarked) section.append(unmarked);
-        section.append(flowView(chart, chartKey));
+        const chartBox = flowView(chart, chartKey);
+        chartBox.querySelector(".flow-tools").append(staticChartButton(chartBox, chart));
+        section.append(chartBox);
         output.append(section);
       }
       renderUsage(body.usage);
@@ -2708,6 +3029,16 @@ ${data}
     ];
 
     function loadScript(src) {
+      const embedded = document.querySelector(`script[data-vendor="${src}"]`);
+      if (embedded) {
+        if (!embedded.dataset.ran) {
+          embedded.dataset.ran = "1";
+          const inline = document.createElement("script");
+          inline.textContent = embedded.textContent;
+          document.head.append(inline);
+        }
+        return Promise.resolve();
+      }
       const existing = document.querySelector(`script[src="${src}"]`);
       if (existing) return existing.loaded || Promise.resolve();
       const script = document.createElement("script");
@@ -2719,6 +3050,21 @@ ${data}
       script.src = src;
       document.head.append(script);
       return ready;
+    }
+
+    function graphvizModule() {
+      if (!window.__graphvizModule) {
+        const embedded = document.getElementById("graphviz-source");
+        if (embedded) {
+          const source = JSON.parse(embedded.textContent);
+          embedded.remove();
+          const blob = new Blob([source], { type: "text/javascript" });
+          window.__graphvizModule = import(URL.createObjectURL(blob));
+        } else {
+          window.__graphvizModule = import("/vendor/graphviz.js");
+        }
+      }
+      return window.__graphvizModule;
     }
 
     function measuredNodes(chart) {
@@ -3105,7 +3451,7 @@ ${data}
     }
 
     async function placeGraphviz(measured, edges) {
-      const module = await import("/vendor/graphviz.js");
+      const module = await graphvizModule();
       const Graphviz = module.Graphviz;
       if (!Graphviz) throw new Error("Graphviz did not load");
       const graphviz = await Graphviz.load();
@@ -3432,6 +3778,7 @@ ${data}
       const showDrawing = () => {
         canvas.replaceChildren(drawn.svg);
         if (spine) canvas.append(spine);
+        applyFlowLinks(chartBox);
         fit();
       };
       const rememberScore = (name, score) => {
@@ -3572,6 +3919,7 @@ ${data}
         observer.observe(frame);
       }
       requestAnimationFrame(fit);
+      applyFlowLinks(chartBox);
       return chartBox;
     }
 
@@ -3659,15 +4007,13 @@ ${data}
       const link = document.createElementNS(svgNs, "a");
       link.setAttribute("class", node.kind && node.kind !== "step" ? `flow-node ${node.kind}` : "flow-node");
       if (node.domId) link.id = node.domId;
-      if (node.url) {
-        link.setAttribute("href", node.url);
-        link.setAttribute("target", "_blank");
-        link.setAttribute("rel", "noopener noreferrer");
-      }
       const visited = node.visited ? " A feature names this step." : "";
       link.setAttribute("aria-label", `${node.label}. ${node.path || ""}.${visited}`);
       link.dataset.name = node.label || "";
       link.dataset.path = node.path || node.id || "";
+      link.dataset.code = node.url || "";
+      link.dataset.page = node.page || "";
+      link.dataset.step = node.step_url || "";
       const title = document.createElementNS(svgNs, "title");
       const visits = (node.visits || []).join("\n");
       title.textContent = visits ? `${node.detail || node.label}\n${visits}` : (node.detail || node.label);

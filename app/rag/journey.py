@@ -101,6 +101,108 @@ def journey_scopes(nodes: list[dict], root: Path | None = None) -> list[str]:
     return scopes
 
 
+def attach_step_definitions(root: Path, chart: dict) -> None:
+    """Point a step at the Cucumber step definition that names its page.
+
+    A file named for the step wins, such as ``consent_order_steps.rb`` for
+    ``/steps/opening/consent_order``. A longer name such as
+    ``consent_order_upload`` does not take that step. Otherwise a step
+    definition that contains the page path is used, and then one that calls
+    the page object for that address, such as ``miam_attended_page`` in
+    ``miam_steps.rb``.
+    """
+    files = _step_definition_files(root)
+    if not files:
+        return
+    for node in chart.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        page = str(node.get("page") or "")
+        if not page.startswith("/steps/") or ".." in page:
+            continue
+        found = _step_definition(files, page, _page_method(root, page))
+        if found is None:
+            continue
+        node["step_path"], node["step_line"] = found
+
+
+def _step_definition_files(root: Path) -> list[tuple[str, str]]:
+    folder = root / "features" / "step_definitions"
+    if not folder.is_dir():
+        return []
+    found: list[tuple[str, str]] = []
+    for path in sorted(folder.glob("*.rb")):
+        if not path.is_file() or path.stat().st_size > 1_000_000:
+            continue
+        relative = path.relative_to(root).as_posix()
+        try:
+            found.append((relative, path.read_text(encoding="utf-8", errors="replace")))
+        except OSError:
+            continue
+    return found
+
+
+def _step_definition(files: list[tuple[str, str]], page: str, page_method: str = "") -> tuple[str, int] | None:
+    step = page.rstrip("/").split("/")[-1]
+    if not step:
+        return None
+    named = [item for item in files if _named_for_step(item[0], step)]
+    for relative, text in named:
+        line = _line_of(text, page)
+        if line:
+            return relative, line
+    if named:
+        return named[0][0], 1
+    for relative, text in files:
+        line = _line_of(text, page)
+        if line:
+            return relative, line
+    if page_method:
+        for relative, text in files:
+            line = _line_of(text, page_method)
+            if line:
+                return relative, line
+    return None
+
+
+def _page_method(root: Path, page: str) -> str:
+    """The SitePrism method whose ``set_url`` is this step."""
+    folder = root / "features"
+    if not folder.is_dir():
+        return ""
+    quoted = re.escape(page)
+    pattern = re.compile(rf"set_url(?:\s+|\s*\(\s*)['\"]{quoted}['\"]")
+    stems: list[str] = []
+    for path in sorted(folder.rglob("*.rb")):
+        if "step_definitions" in path.parts or not path.is_file() or path.stat().st_size > 1_000_000:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if pattern.search(text):
+            stems.append(path.stem)
+    step = page.rstrip("/").split("/")[-1]
+    for stem in stems:
+        if stem == f"{step}_page" or stem.endswith(f"_{step}_page"):
+            return stem
+    return stems[0] if stems else ""
+
+
+def _named_for_step(relative: str, step: str) -> bool:
+    stem = relative.rsplit("/", 1)[-1]
+    if stem.endswith(".rb"):
+        stem = stem[:-3]
+    return stem in {step, f"{step}_steps"} or stem.endswith(f"_{step}_steps") or stem.endswith(f"_{step}")
+
+
+def _line_of(text: str, needle: str) -> int:
+    for index, line in enumerate(text.splitlines(), start=1):
+        if _contains_name(line, needle):
+            return index
+    return 0
+
+
 def mark_visits(root: Path, chart: dict) -> None:
     """Set ``visited`` on steps named by a feature or a step definition."""
     nodes = [node for node in chart.get("nodes") or [] if isinstance(node, dict)]

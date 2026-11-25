@@ -38,13 +38,13 @@ from rag.follow import (
     step_phrases,
 )
 from rag.gitrepo import branch_list, default_branch_name
-from rag.journey import branch_answers, diff_chart, journey_scopes, mark_visits
+from rag.journey import attach_step_definitions, branch_answers, diff_chart, journey_scopes, mark_visits
 from rag.flows import charts_for, count_crossings, parse_navigation, question_texts, seal_chart, spread_layout
 from rag.features import behaviour_text, gherkin_lines, is_drafting_request, matched_step_texts, retrieve_features
 from rag.chunker import find_blocks
 from rag.history import HistoryError, file_history
 from rag.testing import command_phrases, resolve_feature_paths, retrieve_testing
-from rag.web import Handler, _progress_view, github_blob_url, public_status, run_features, run_flow, run_history, run_impact, run_query, run_testing, start_ingest
+from rag.web import Handler, _attach_flow_urls, _progress_view, github_blob_url, public_status, run_features, run_flow, run_history, run_impact, run_query, run_testing, start_ingest
 from unittest.mock import patch
 
 from rag.plan import parse_queries, question_needs_plan, retrieval_model
@@ -3415,6 +3415,7 @@ class FlowTest(unittest.TestCase):
         self.assertEqual(start["label"], "Start or continue an application")
         self.assertEqual(start["kind"], "choice")
         self.assertEqual(start["path"], "app/controllers/steps/opening/start_or_continue_controller.rb")
+        self.assertEqual(start["page"], "/steps/opening/start_or_continue")
         self.assertEqual(needed["label"], "What you will need")
         self.assertEqual(last["kind"], "end")
         self.assertEqual(nowhere["kind"], "end")
@@ -4153,6 +4154,88 @@ class JourneyTest(unittest.TestCase):
         self.assertNotIn("visited", chart["nodes"][2])
         self.assertTrue(chart["nodes"][3]["visited"])
         self.assertIn("corner mark", chart["note"])
+
+    def test_a_step_definition_named_for_the_step_wins(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            folder = root / "features" / "step_definitions"
+            folder.mkdir(parents=True)
+            (folder / "consent_order_upload_steps.rb").write_text(
+                "visit '/steps/opening/consent_order_upload'\n",
+                encoding="utf-8",
+            )
+            (folder / "consent_order_steps.rb").write_text(
+                "When('I am on the consent order page') do\n"
+                "  expect(page).to have_current_path('/steps/opening/consent_order')\n"
+                "end\n",
+                encoding="utf-8",
+            )
+            (folder / "common.rb").write_text(
+                "expect(page).to have_current_path('/steps/opening/consent_order')\n",
+                encoding="utf-8",
+            )
+            chart = {"nodes": [{"id": "opening/consent_order", "page": "/steps/opening/consent_order"}]}
+            attach_step_definitions(root, chart)
+        self.assertEqual(chart["nodes"][0]["step_path"], "features/step_definitions/consent_order_steps.rb")
+        self.assertEqual(chart["nodes"][0]["step_line"], 2)
+
+    def test_a_step_definition_falls_back_to_the_file_that_names_the_page(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            folder = root / "features" / "step_definitions"
+            folder.mkdir(parents=True)
+            (folder / "common.rb").write_text(
+                "When('elsewhere') do\nend\n"
+                "expect(page).to have_current_path('/steps/opening/consent_order')\n",
+                encoding="utf-8",
+            )
+            chart = {"nodes": [
+                {"id": "opening/consent_order", "page": "/steps/opening/consent_order"},
+                {"id": "fee", "path": "app/models/forms/fee.rb"},
+            ]}
+            attach_step_definitions(root, chart)
+        self.assertEqual(chart["nodes"][0]["step_path"], "features/step_definitions/common.rb")
+        self.assertEqual(chart["nodes"][0]["step_line"], 3)
+        self.assertNotIn("step_path", chart["nodes"][1])
+
+    def test_a_page_object_finds_the_step_definition_that_calls_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            page = root / "features" / "support" / "page_objects" / "miam" / "miam_attended_page.rb"
+            page.parent.mkdir(parents=True)
+            page.write_text("class MiamAttendedPage < YesNoPage\n  set_url '/steps/miam/attended'\nend\n", encoding="utf-8")
+            steps = root / "features" / "step_definitions" / "miam_steps.rb"
+            steps.parent.mkdir(parents=True)
+            steps.write_text(
+                "When('I reach MIAM') do\n"
+                "  expect(miam_attended_page).to be_displayed\n"
+                "end\n",
+                encoding="utf-8",
+            )
+            (steps.parent / "other_steps.rb").write_text("other_page.ok\n", encoding="utf-8")
+            chart = {"nodes": [{"id": "miam/attended", "page": "/steps/miam/attended"}]}
+            attach_step_definitions(root, chart)
+        self.assertEqual(chart["nodes"][0]["step_path"], "features/step_definitions/miam_steps.rb")
+        self.assertEqual(chart["nodes"][0]["step_line"], 2)
+
+    def test_a_step_definition_link_uses_the_indexed_commit(self) -> None:
+        chart = {"nodes": [{
+            "path": "app/controllers/steps/opening/consent_order_controller.rb",
+            "start_line": 4,
+            "end_line": 4,
+            "page": "/steps/opening/consent_order",
+            "step_path": "features/step_definitions/consent_order_steps.rb",
+            "step_line": 2,
+        }]}
+        _attach_flow_urls(chart, "ministryofjustice/c100-application", "abc123def456")
+        self.assertEqual(
+            chart["nodes"][0]["url"],
+            "https://github.com/ministryofjustice/c100-application/blob/abc123def456/app/controllers/steps/opening/consent_order_controller.rb#L4",
+        )
+        self.assertEqual(
+            chart["nodes"][0]["step_url"],
+            "https://github.com/ministryofjustice/c100-application/blob/abc123def456/features/step_definitions/consent_order_steps.rb#L2",
+        )
 
     def test_diff_lists_added_removed_and_rewired_steps(self) -> None:
         indexed = {

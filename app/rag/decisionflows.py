@@ -836,7 +836,7 @@ def _step_node(context: dict, path: str) -> dict | None:
         match = re.search(r"class\s+(\w+)", text)
         if match:
             class_name = match.group(1)
-        return _node(
+        node = _node(
             step_id,
             _short(label, 72),
             relative,
@@ -844,18 +844,22 @@ def _step_node(context: dict, path: str) -> dict | None:
             [item for item in (f"class {class_name}", f"def {route['action']}") if item.strip()],
             detail=f"{label}\n{path}",
         )
-    tree = _tree_for(context, route)
-    if tree is None:
-        return _node(step_id, _short(label, 72), relative, "", [], detail=f"{label}\n{path}")
-    tree_path, _methods_of = tree
-    return _node(
-        step_id,
-        _short(label, 72),
-        tree_path.relative_to(root).as_posix(),
-        _read(tree_path),
-        [f"when :{route['step']}"],
-        detail=f"{label}\n{path}",
-    )
+    else:
+        tree = _tree_for(context, route)
+        if tree is None:
+            node = _node(step_id, _short(label, 72), relative, "", [], detail=f"{label}\n{path}")
+        else:
+            tree_path, _methods_of = tree
+            node = _node(
+                step_id,
+                _short(label, 72),
+                tree_path.relative_to(root).as_posix(),
+                _read(tree_path),
+                [f"when :{route['step']}"],
+                detail=f"{label}\n{path}",
+            )
+    node["page"] = path
+    return node
 
 
 def _heading(locales: dict[str, str], route: dict, view: str) -> str:

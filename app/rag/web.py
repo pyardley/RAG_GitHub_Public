@@ -34,7 +34,7 @@ from rag.files import parse_repo
 from rag.history import HistoryError, file_history
 from rag.flows import charts_for, unmapped_message
 from rag.gitrepo import checkout_dir, list_branches, remote_commit, tip_checkout
-from rag.journey import apply_journey_diff, branch_answers, journey_scopes, mark_visits
+from rag.journey import apply_journey_diff, attach_step_definitions, branch_answers, journey_scopes, mark_visits
 from rag.ingest import delete_repository, ingest_lock_held, ingest_repository
 from rag.intent import impact_target
 from rag.log import logger
@@ -539,6 +539,7 @@ def run_flow(body: dict) -> tuple[int, dict]:
             if chart.pop("reader", None) == "decision":
                 followed = True
             mark_visits(root, chart)
+            attach_step_definitions(root, chart)
         read_seconds += time.perf_counter() - started
         if start and not followed:
             missed_start.append(item["name"])
@@ -637,6 +638,18 @@ def _attach_flow_urls(chart: dict, repo: str, commit_sha: str) -> None:
         )
         if url:
             node["url"] = url
+        step_line = node.get("step_line")
+        if isinstance(step_line, bool) or not isinstance(step_line, int):
+            step_line = 0
+        step_url = github_blob_url(
+            repo,
+            commit_sha,
+            str(node.get("step_path") or ""),
+            step_line,
+            step_line,
+        )
+        if step_url:
+            node["step_url"] = step_url
 
 
 def _flow_message(
